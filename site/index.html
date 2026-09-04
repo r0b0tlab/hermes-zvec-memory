@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zvec-memory — local-first recall for Hermes Agent</title>
+<meta name="description" content="A Hermes Agent memory provider backed by zvec-grep hybrid search. No cloud, measured recall, MIT licensed.">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950;
+    --amber: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px 80px; }
+  header.hero { padding: 72px 0 32px; border-bottom: 1px solid var(--line); }
+  .kicker { color: var(--green); font-family: var(--mono); font-size: 13px;
+            letter-spacing: 2px; text-transform: uppercase; }
+  h1 { font-size: 44px; line-height: 1.15; margin: 12px 0; }
+  h1 .zg { color: var(--accent); }
+  .tag { font-size: 19px; color: var(--dim); max-width: 640px; }
+  .badges { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .badge { font-family: var(--mono); font-size: 12px; border: 1px solid var(--line);
+           border-radius: 20px; padding: 3px 12px; color: var(--dim); }
+  .badge.ok { color: var(--green); border-color: var(--green); }
+  section { padding: 36px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 24px; margin: 0 0 16px; }
+  h2 .n { color: var(--accent); font-family: var(--mono); font-size: 15px;
+          display: block; margin-bottom: 4px; }
+  p, li { color: var(--text); }
+  .dim { color: var(--dim); }
+  code, pre { font-family: var(--mono); font-size: 13.5px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 16px; overflow-x: auto; }
+  code.inline, p code, li code, td code { background: var(--panel); padding: 1px 6px;
+        border-radius: 5px; border: 1px solid var(--line); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } h1 { font-size: 32px; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 18px; }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  .card p { margin: 0; font-size: 14px; color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 12px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; font-family: var(--mono); font-size: 12px;
+       text-transform: uppercase; letter-spacing: 1px; }
+  td.big { font-size: 20px; font-weight: 700; color: var(--green); }
+  .flow { font-family: var(--mono); font-size: 13px; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 8px; padding: 18px;
+          white-space: pre; overflow-x: auto; line-height: 1.7; }
+  .flow .hl { color: var(--accent); } .flow .ok { color: var(--green); }
+  footer { padding-top: 32px; color: var(--dim); font-size: 13px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker">Hermes Agent memory provider &middot; MIT</div>
+    <h1><span class="zg">zvec-memory</span><br>local-first recall for Hermes</h1>
+    <p class="tag">A memory provider that gives Hermes Agent long-term recall over a
+    Markdown vault — hybrid keyword + semantic search, no cloud, no account,
+    nothing leaves the machine.</p>
+    <div class="badges">
+      <span class="badge ok">near-vocabulary recall 10/10</span>
+      <span class="badge">prefetch p50 ~0.25 s</span>
+      <span class="badge">warmed cache ~265&times; faster</span>
+      <span class="badge">stdlib + zg only</span>
+    </div>
+  </header>
+
+  <section>
+    <h2><span class="n">01</span>What it does</h2>
+    <p>Hermes ships with small built-in memory (MEMORY.md / USER.md, a few thousand
+    characters). <code class="inline">zvec-memory</code> adds the deep layer beside it:
+    every turn it recalls relevant facts and session notes; every turn it files the
+    conversation away. Two tools, one vault:</p>
+    <div class="cols">
+      <div class="card"><h3>memory_search</h3>
+        <p>Hybrid, fts-only, or vector-only retrieval over facts, decisions and
+        session logs. Returns compact <code class="inline">path:line</code> citations
+        with short previews, capped at 2000 chars of injected context.</p></div>
+      <div class="card"><h3>memory_store</h3>
+        <p>Append a durable fact — preference, decision, convention, fix.
+        Reindexing happens in the background; the tool returns immediately.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span>How it works</h2>
+    <div class="flow">each turn:   user msg ──▶ <span class="hl">queue_prefetch</span> warms cache (background)
+                ──▶ <span class="hl">prefetch</span> reads cache <span class="ok">(dict lookup, ~0 ms)</span>
+                         └── cold fallback: <span class="hl">zg query --preview short --limit 5</span> (~0.27 s)
+each turn:   <span class="hl">sync_turn</span> appends sessions/YYYY-MM-DD.md (background)
+                └── debounced <span class="hl">zg index</span> (serialized, never per-turn)
+session end: pattern extraction → facts/ (compaction handoffs excluded)
+             built-in memory writes mirrored → facts/
+engine:      <span class="hl">zvec-grep</span> — BM25 + vector with RRF fusion, managed ripgrep</div>
+    <p class="dim">Recall runs through the <code class="inline">zg</code> CLI against a
+    per-profile vault (<code class="inline">$HERMES_HOME/zvec-memory/</code>: facts/ +
+    sessions/, index in <code class="inline">.zvec-grep/</code>). The shared
+    <code class="inline">zg server</code> daemon keeps models loaded and refreshes in
+    the background when running; <code class="inline">--mode auto</code> uses it when
+    present and runs in-process otherwise.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span>Measured value</h2>
+    <p>From <code class="inline">scripts/measure_recall.py</code> — 20 seeded facts,
+    10 queries per set, reproducible on any machine with
+    <code class="inline">zg</code> installed:</p>
+    <table>
+      <tr><th>query set</th><th>hybrid hit@5</th><th>fts hit@5</th><th>p50</th></tr>
+      <tr><td>same-vocabulary (the realistic case)</td><td class="big">10/10</td><td>10/10</td><td>0.25 s</td></tr>
+      <tr><td>paraphrased, no shared keywords (adversarial)</td><td class="big">6/10</td><td>4/10</td><td>0.28 s</td></tr>
+    </table>
+    <p>All 10 realistic hits were visible under the 2000-char injection cap. The
+    warmed prefetch cache serves in ~0.000 s vs ~0.27 s cold. And the bigger
+    <code class="inline">embeddinggemma-300m</code> model scored the same 6/10 on
+    paraphrases while taking 125 s to build vs 3 s — so the tiny
+    <code class="inline">potion-retrieval-32m</code> stays the default. Honest limits,
+    shipped with the repo.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span>Install</h2>
+<pre>npm install -g @zvec/zvec-grep   # needs Node.js 22+
+cp -r zvec-memory "${HERMES_HOME:-~/.hermes}/plugins/zvec-memory"
+hermes memory status               # zvec-memory appears as local
+hermes memory setup                # activate (one provider at a time)
+zg server on                       # optional: shared models, background refresh</pre>
+    <p class="dim">Configure via <code class="inline">plugins.zvec-memory</code> in
+    config.yaml (vault, embedding, recall_limit, context_chars, auto_extract) or the
+    desktop config panel. Remote embeddings stay opt-in behind an explicit
+    <code class="inline">zg auth grant</code> — never automatic.</p>
+  </section>
+
+  <footer>
+    Built on <a href="https://github.com/zvec-ai/zvec-grep">zvec-grep</a> (Apache-2.0)
+    for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.
+    Provider pattern follows Hermes's bundled holographic provider.
+    Source: <code class="inline">r0b0tlab/hermes-zvec-memory</code> (MIT) — 8/8 tests green,
+    recall numbers reproducible via <code class="inline">scripts/measure_recall.py</code>.
+  </footer>
+
+</div>
+</body>
+</html>
