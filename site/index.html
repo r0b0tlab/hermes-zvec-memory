@@ -4,93 +4,209 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zvec-memory — local-first recall for Hermes Agent</title>
-<meta name="description" content="A Hermes Agent memory provider backed by zvec-grep hybrid search. No cloud, measured recall, MIT licensed.">
+<meta name="description" content="A Hermes Agent memory provider backed by zvec-grep hybrid search. Private, fast, measured recall, MIT licensed.">
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --line: #30363d;
-    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950;
-    --amber: #d29922; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #0a0e14; --bg2: #0d1117; --panel: #131a24; --panel2: #161e2b;
+    --line: #26303f; --text: #e8eef5; --dim: #93a1b3; --faint: #5d6b7e;
+    --accent: #5aa9ff; --accent2: #8a7bff; --green: #3fd08a; --amber: #e0a63c;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --grad: linear-gradient(135deg, var(--accent), var(--accent2));
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px 80px; }
-  header.hero { padding: 72px 0 32px; border-bottom: 1px solid var(--line); }
-  .kicker { color: var(--green); font-family: var(--mono); font-size: 13px;
-            letter-spacing: 2px; text-transform: uppercase; }
-  h1 { font-size: 44px; line-height: 1.15; margin: 12px 0; }
-  h1 .zg { color: var(--accent); }
-  .tag { font-size: 19px; color: var(--dim); max-width: 640px; }
-  .badges { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 var(--sans); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px 90px; }
+
+  nav.top { display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0; border-bottom: 1px solid var(--line); }
+  .brand { font-family: var(--mono); font-size: 15px; font-weight: 700; }
+  .brand span { background: var(--grad); -webkit-background-clip: text;
+    background-clip: text; color: transparent; }
+  .btn { display: inline-block; text-decoration: none; font-weight: 600; font-size: 14px;
+    padding: 10px 20px; border-radius: 10px; border: 1px solid var(--line);
+    color: var(--text); background: var(--panel); transition: transform .12s, border-color .12s; }
+  .btn:hover { transform: translateY(-1px); border-color: var(--accent); }
+  .btn.primary { background: var(--grad); border: none; color: #fff; }
+  .btn.small { padding: 7px 14px; font-size: 13px; }
+
+  header.hero { padding: 84px 0 44px; text-align: left; position: relative; }
+  header.hero::before { content: ""; position: absolute; inset: -40px -24px auto; height: 340px;
+    background: radial-gradient(600px 220px at 20% 0%, rgba(90,169,255,.14), transparent 70%),
+                radial-gradient(500px 200px at 85% 20%, rgba(138,123,255,.12), transparent 70%);
+    pointer-events: none; }
+  .kicker { color: var(--green); font-family: var(--mono); font-size: 12.5px;
+    letter-spacing: 2.5px; text-transform: uppercase; }
+  h1 { font-size: clamp(36px, 6vw, 58px); line-height: 1.08; margin: 14px 0 18px;
+    letter-spacing: -1px; }
+  h1 .zg { background: var(--grad); -webkit-background-clip: text;
+    background-clip: text; color: transparent; }
+  .tag { font-size: 19px; color: var(--dim); max-width: 660px; margin: 0 0 28px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; }
   .badge { font-family: var(--mono); font-size: 12px; border: 1px solid var(--line);
-           border-radius: 20px; padding: 3px 12px; color: var(--dim); }
-  .badge.ok { color: var(--green); border-color: var(--green); }
-  section { padding: 36px 0; border-bottom: 1px solid var(--line); }
-  h2 { font-size: 24px; margin: 0 0 16px; }
-  h2 .n { color: var(--accent); font-family: var(--mono); font-size: 15px;
-          display: block; margin-bottom: 4px; }
+    border-radius: 20px; padding: 4px 13px; color: var(--dim); background: var(--panel); }
+  .badge.ok { color: var(--green); border-color: rgba(63,208,138,.5); }
+
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 27px; margin: 0 0 8px; letter-spacing: -.4px; }
+  h2 .n { color: var(--accent); font-family: var(--mono); font-size: 14px;
+    display: block; margin-bottom: 6px; letter-spacing: 2px; }
+  .lede { color: var(--dim); font-size: 17px; max-width: 700px; margin: 0 0 24px; }
   p, li { color: var(--text); }
   .dim { color: var(--dim); }
-  code, pre { font-family: var(--mono); font-size: 13.5px; }
-  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-        padding: 16px; overflow-x: auto; }
-  code.inline, p code, li code, td code { background: var(--panel); padding: 1px 6px;
-        border-radius: 5px; border: 1px solid var(--line); }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } h1 { font-size: 32px; } }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-          padding: 18px; }
-  .card h3 { margin: 0 0 8px; font-size: 16px; }
-  .card p { margin: 0; font-size: 14px; color: var(--dim); }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 12px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-  th { color: var(--dim); font-weight: 600; font-family: var(--mono); font-size: 12px;
-       text-transform: uppercase; letter-spacing: 1px; }
-  td.big { font-size: 20px; font-weight: 700; color: var(--green); }
-  .flow { font-family: var(--mono); font-size: 13px; background: var(--panel);
-          border: 1px solid var(--line); border-radius: 8px; padding: 18px;
-          white-space: pre; overflow-x: auto; line-height: 1.7; }
-  .flow .hl { color: var(--accent); } .flow .ok { color: var(--green); }
-  footer { padding-top: 32px; color: var(--dim); font-size: 13px; }
   a { color: var(--accent); }
+
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+  @media (max-width: 720px) { .grid3, .grid2 { grid-template-columns: 1fr; } }
+  .card { background: linear-gradient(180deg, var(--panel2), var(--panel));
+    border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .card .ico { font-size: 22px; }
+  .card h3 { margin: 10px 0 8px; font-size: 17px; }
+  .card p { margin: 0; font-size: 14.5px; color: var(--dim); }
+  .card b { color: var(--text); }
+
+  .analogy { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 0 12px 12px 0; padding: 20px 22px; margin: 20px 0; color: var(--dim); font-size: 16px; }
+  .analogy b { color: var(--text); }
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 20px 0;
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  @media (max-width: 640px) { .vs { grid-template-columns: 1fr; } }
+  .vs div { padding: 18px 20px; font-size: 14.5px; }
+  .vs .old { background: var(--bg2); color: var(--dim); }
+  .vs .new { background: rgba(63,208,138,.06); }
+  .vs h4 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 1.5px; font-family: var(--mono); }
+
+  code, pre { font-family: var(--mono); font-size: 13.5px; }
+  pre { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px; overflow-x: auto; }
+  code.inline, p code, li code, td code { background: var(--panel2); padding: 1px 7px;
+    border-radius: 6px; border: 1px solid var(--line); white-space: nowrap; }
+  .flow { font-family: var(--mono); font-size: 13px; background: var(--bg2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 20px;
+    white-space: pre; overflow-x: auto; line-height: 1.75; }
+  .flow .hl { color: var(--accent); } .flow .ok { color: var(--green); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin-top: 16px;
+    background: var(--panel); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; font-family: var(--mono); font-size: 12px;
+    text-transform: uppercase; letter-spacing: 1px; }
+  tr:last-child td { border-bottom: none; }
+  td.big { font-size: 22px; font-weight: 800; color: var(--green); }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 20px 0 0; }
+  .steps li { counter-increment: s; padding: 12px 0 12px 52px; position: relative;
+    border-bottom: 1px dashed var(--line); }
+  .steps li:last-child { border-bottom: none; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 10px;
+    width: 32px; height: 32px; border-radius: 50%; background: var(--grad);
+    color: #fff; font-weight: 700; font-size: 14px; text-align: center; line-height: 32px; }
+
+  footer { padding-top: 40px; color: var(--faint); font-size: 13.5px; }
+  footer .links { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
+  <nav class="top">
+    <div class="brand"><span>zvec</span>-memory</div>
+    <a class="btn small" href="https://github.com/r0b0tlab/hermes-zvec-memory">View on GitHub</a>
+  </nav>
+
   <header class="hero">
-    <div class="kicker">Hermes Agent memory provider &middot; MIT</div>
-    <h1><span class="zg">zvec-memory</span><br>local-first recall for Hermes</h1>
-    <p class="tag">A memory provider that gives Hermes Agent long-term recall over a
-    Markdown vault — hybrid keyword + semantic search, no cloud, no account,
-    nothing leaves the machine.</p>
+    <div class="kicker">Hermes Agent memory provider &middot; MIT licensed</div>
+    <h1><span class="zg">zvec-memory</span><br>an agent that remembers.</h1>
+    <p class="tag">Hermes is sharp inside one conversation and forgetful between them.
+    zvec-memory fixes that: a private, on-device recall layer over your own Markdown
+    vault — no cloud, no account, nothing leaves the machine.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/r0b0tlab/hermes-zvec-memory">Get it on GitHub</a>
+      <a class="btn" href="#install">Install in 4 steps</a>
+    </div>
     <div class="badges">
-      <span class="badge ok">near-vocabulary recall 10/10</span>
-      <span class="badge">prefetch p50 ~0.25 s</span>
+      <span class="badge ok">realistic recall 10/10</span>
+      <span class="badge">recall p50 ~0.25 s</span>
       <span class="badge">warmed cache ~265&times; faster</span>
       <span class="badge">stdlib + zg only</span>
     </div>
   </header>
 
   <section>
-    <h2><span class="n">01</span>What it does</h2>
-    <p>Hermes ships with small built-in memory (MEMORY.md / USER.md, a few thousand
-    characters). <code class="inline">zvec-memory</code> adds the deep layer beside it:
-    every turn it recalls relevant facts and session notes; every turn it files the
-    conversation away. Two tools, one vault:</p>
-    <div class="cols">
-      <div class="card"><h3>memory_search</h3>
-        <p>Hybrid, fts-only, or vector-only retrieval over facts, decisions and
-        session logs. Returns compact <code class="inline">path:line</code> citations
-        with short previews, capped at 2000 chars of injected context.</p></div>
-      <div class="card"><h3>memory_store</h3>
-        <p>Append a durable fact — preference, decision, convention, fix.
-        Reindexing happens in the background; the tool returns immediately.</p></div>
+    <h2><span class="n">01</span>The problem it solves</h2>
+    <p class="lede">Every chat with an AI starts from zero. Your preferences, past decisions,
+    project conventions, hard-won environment fixes — all gone next session.</p>
+    <div class="vs">
+      <div class="old"><h4>Without it</h4>You re-explain your setup, re-state decisions,
+      and watch the agent re-derive things it already solved last week. Built-in memory
+      holds a few thousand characters — a sticky note, not an archive.</div>
+      <div class="new"><h4>With zvec-memory</h4>Every turn, relevant facts surface automatically.
+      Every turn, the conversation is filed away. Ask about a decision from last month
+      and the answer comes back with a citation to the exact note.</div>
     </div>
   </section>
 
   <section>
-    <h2><span class="n">02</span>How it works</h2>
+    <h2><span class="n">02</span>What zvec and zvec-grep are</h2>
+    <p class="lede">zvec-memory is the Hermes plugin. Its engine is
+    <a href="https://github.com/zvec-ai/zvec-grep">zvec-grep</a> (<code class="inline">zg</code>),
+    an open-source search tool by zvec. Here is why that pairing matters, in plain terms.</p>
+    <div class="analogy"><b>Think of a great research librarian with two skills.</b>
+    First, a perfect index of every word in every book (keyword search). Second, an
+    understanding of what you <i>mean</i>, even when you use different words (semantic search).
+    zvec-grep does both at once over your notes, then fuses the two rankings so the best
+    answer from either route wins.</div>
+    <div class="grid3">
+      <div class="card"><div class="ico">&#128270;</div><h3>Keyword search (BM25)</h3>
+        <p>The classic book-index approach: exact terms, ranked by rarity and frequency.
+        <b>Unbeatable when you remember the exact words</b> — error codes, names, commands.</p></div>
+      <div class="card"><div class="ico">&#129504;</div><h3>Meaning search (vectors)</h3>
+        <p>Your notes are converted to numeric fingerprints by a small embedding model that
+        runs <b>on your machine</b>. Queries match by meaning, so "deployment broke" finds
+        "the release failed" with zero shared words.</p></div>
+      <div class="card"><div class="ico">&#128279;</div><h3>Smart fusion (RRF)</h3>
+        <p>A fusion algorithm merges both rankings. Keyword precision plus semantic reach,
+        with neither able to drown out the other. That is the <b>hybrid</b> in hybrid search.</p></div>
+    </div>
+    <div class="grid3" style="margin-top:16px">
+      <div class="card"><div class="ico">&#128274;</div><h3>Private by architecture</h3>
+        <p>Index, models, and notes all live on your disk. There is no server to leak from
+        and no subscription. Remote AI models stay strictly opt-in behind an explicit grant.</p></div>
+      <div class="card"><div class="ico">&#9889;</div><h3>Fast enough to be invisible</h3>
+        <p>Typical recall takes ~0.25 s, and a warmed cache answers in ~0 ms — recall happens
+        before the model even starts thinking, so memory never slows a reply.</p></div>
+      <div class="card"><div class="ico">&#128202;</div><h3>Measured, not promised</h3>
+        <p>Recall quality ships with numbers from a reproducible script in the repo —
+        including the adversarial cases where it misses. See section 05.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span>What it does inside Hermes</h2>
+    <p class="lede">Two tools, one vault, three background habits. The agent does the
+    remembering; you just talk.</p>
+    <div class="grid2">
+      <div class="card"><h3>memory_search</h3>
+        <p>Ask anything about the past — preferences, decisions, projects. Hybrid, keyword-only,
+        or meaning-only modes with path scoping. Answers come back as compact
+        <code class="inline">path:line</code> citations, capped at 2000 chars of context.</p></div>
+      <div class="card"><h3>memory_store</h3>
+        <p>Tell it to remember something durable and it files a timestamped note instantly.
+        Reindexing happens in the background; the tool returns immediately.</p></div>
+    </div>
+    <ol class="steps">
+      <li><b>Before each reply</b> — relevant notes are recalled and injected as context.</li>
+      <li><b>After each turn</b> — the exchange is appended to today's session log.</li>
+      <li><b>At session end</b> — stated preferences and decisions are extracted as facts (opt-in).</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span>How it works</h2>
     <div class="flow">each turn:   user msg ──▶ <span class="hl">queue_prefetch</span> warms cache (background)
                 ──▶ <span class="hl">prefetch</span> reads cache <span class="ok">(dict lookup, ~0 ms)</span>
                          └── cold fallback: <span class="hl">zg query --preview short --limit 5</span> (~0.27 s)
@@ -108,10 +224,10 @@ engine:      <span class="hl">zvec-grep</span> — BM25 + vector with RRF fusion
   </section>
 
   <section>
-    <h2><span class="n">03</span>Measured value</h2>
-    <p>From <code class="inline">scripts/measure_recall.py</code> — 20 seeded facts,
-    10 queries per set, reproducible on any machine with
-    <code class="inline">zg</code> installed:</p>
+    <h2><span class="n">05</span>Measured value</h2>
+    <p class="lede">From <code class="inline">scripts/measure_recall.py</code> in
+    <a href="https://github.com/r0b0tlab/hermes-zvec-memory">the repo</a> — 20 seeded facts,
+    10 queries per set, reproducible on any machine with <code class="inline">zg</code> installed.</p>
     <table>
       <tr><th>query set</th><th>hybrid hit@5</th><th>fts hit@5</th><th>p50</th></tr>
       <tr><td>same-vocabulary (the realistic case)</td><td class="big">10/10</td><td>10/10</td><td>0.25 s</td></tr>
@@ -125,24 +241,29 @@ engine:      <span class="hl">zvec-grep</span> — BM25 + vector with RRF fusion
     shipped with the repo.</p>
   </section>
 
-  <section>
-    <h2><span class="n">04</span>Install</h2>
-<pre>npm install -g @zvec/zvec-grep   # needs Node.js 22+
-cp -r zvec-memory "${HERMES_HOME:-~/.hermes}/plugins/zvec-memory"
+  <section id="install">
+    <h2><span class="n">06</span>Install</h2>
+<pre>git clone https://github.com/r0b0tlab/hermes-zvec-memory
+npm install -g @zvec/zvec-grep   # needs Node.js 22+
+cp -r hermes-zvec-memory/zvec-memory "${HERMES_HOME:-~/.hermes}/plugins/zvec-memory"
 hermes memory status               # zvec-memory appears as local
-hermes memory setup                # activate (one provider at a time)
+hermes memory setup zvec-memory    # activate (one provider at a time)
 zg server on                       # optional: shared models, background refresh</pre>
-    <p class="dim">Configure via <code class="inline">plugins.zvec-memory</code> in
-    config.yaml (vault, embedding, recall_limit, context_chars, auto_extract) or the
-    desktop config panel. Remote embeddings stay opt-in behind an explicit
+    <p class="dim">Configure via the setup wizard or the desktop config panel (vault, embedding,
+    recall limit, context cap, auto-extract). Remote embeddings stay opt-in behind an explicit
     <code class="inline">zg auth grant</code> — never automatic.</p>
+    <div class="cta" style="margin-top:20px">
+      <a class="btn primary" href="https://github.com/r0b0tlab/hermes-zvec-memory">Star it on GitHub</a>
+    </div>
   </section>
 
   <footer>
-    Built on <a href="https://github.com/zvec-ai/zvec-grep">zvec-grep</a> (Apache-2.0)
-    for <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.
-    Provider pattern follows Hermes's bundled holographic provider.
-    Source: <code class="inline">r0b0tlab/hermes-zvec-memory</code> (MIT) — 8/8 tests green,
+    <div class="links">
+      <a href="https://github.com/r0b0tlab/hermes-zvec-memory">r0b0tlab/hermes-zvec-memory (MIT)</a>
+      <a href="https://github.com/zvec-ai/zvec-grep">zvec-grep (Apache-2.0)</a>
+      <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>
+    </div>
+    Provider pattern follows Hermes's bundled holographic provider. 8/8 tests green;
     recall numbers reproducible via <code class="inline">scripts/measure_recall.py</code>.
   </footer>
 
