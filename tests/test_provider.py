@@ -99,6 +99,40 @@ def test_backup_paths(tmp_path):
         p.shutdown()
 
 
+def test_prefetch_cache_avoids_subprocess(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / ".zvec-grep").mkdir(parents=True)
+    (vault / ".zvec-grep" / "manifest.json").write_text("{}")
+    p = make_provider(tmp_path)
+    try:
+        calls = []
+
+        def fake_run(cmd, timeout):
+            calls.append(cmd)
+            return 0, "facts/x.md:1-2\nsome recalled fact", ""
+        monkeypatch.setattr(p, "_run_zg", fake_run)
+        p.queue_prefetch("what is the deploy process")
+        p.shutdown()  # join the warming thread
+        assert p._cached_prefetch("what is the deploy process").startswith("## Zvec Memory")
+
+        def boom(cmd, timeout):
+            raise AssertionError("cache hit must not shell out")
+        monkeypatch.setattr(p, "_run_zg", boom)
+        assert "some recalled fact" in p.prefetch("what is the deploy process")
+    finally:
+        p.shutdown()
+
+
+def test_prefetch_skips_unready_index(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    try:
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not shell out without an index")))
+        assert p.prefetch("what is the deploy process") == ""
+    finally:
+        p.shutdown()
+
+
 @needs_zg
 def test_store_then_search_roundtrip(tmp_path):
     p = make_provider(tmp_path, reindex_min_seconds=0)

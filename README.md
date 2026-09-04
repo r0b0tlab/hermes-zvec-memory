@@ -98,6 +98,36 @@ zg status <vault> --check-ready
 Then in a fresh session ask something stored in the vault and confirm
 `memory_search` returns it with a `path:line` citation.
 
+## Measure recall
+
+`scripts/measure_recall.py` seeds an isolated vault with 20 known facts,
+rebuilds the index, and runs two query sets (10 paraphrased worst-case
+queries + 10 same-vocabulary realistic queries) through `memory_search`:
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py
+~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py \
+  --embedding local/embeddinggemma-300m
+```
+
+Reference numbers (20 facts, `local/potion-retrieval-32m`, 2026-09-04):
+
+| set | hybrid hit@5 | fts hit@5 | p50 |
+| --- | --- | --- | --- |
+| same-vocabulary (realistic) | 10/10, all visible under the 2000-char cap | 10/10 | 0.25 s |
+| paraphrased (adversarial) | 6/10 | 4/10 | 0.28 s |
+| paraphrased, `embeddinggemma-300m` | 6/10 (different misses, same count) | 4/10 | 0.29 s, p95 4.3 s |
+
+The bigger model did not move paraphrase recall but cost 125 s to build vs
+3 s — so `potion-retrieval-32m` stays the default; paraphrase-heavy recall
+is a retrieval-tuning limit, not a model-size limit, at this vault scale.
+
+Plus: warmed-cache prefetch is ~0.000 s vs ~0.27 s cold (~265x) — that is
+what `queue_prefetch` buys every turn. If your vault needs better
+paraphrase-heavy recall, the levers are query-side (hybrid groups, `--fuse`,
+globs) and content-side (richer fact wording), not a bigger embedding —
+see `docs/04-pipeline.md` upstream.
+
 ## Run tests
 
 ```bash

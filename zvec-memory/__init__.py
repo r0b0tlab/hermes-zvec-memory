@@ -128,12 +128,19 @@ def _today() -> str:
 class ZvecMemoryProvider(MemoryProvider):
     """Local-first memory over a zg-indexed Markdown vault."""
 
+    # Vaults with a first-build already in flight in this process. Prevents
+    # two handles on the same vault (e.g. measure + prod) from racing
+    # concurrent `zg index` builds against each other.
+    _building_vaults: set = set()
+    _building_lock = threading.Lock()
+
     def __init__(self, config: dict | None = None):
         self._config = config or _load_plugin_config()
         self._vault: Path | None = None
         self._session_id = ""
         self._lock = threading.Lock()
         self._index_lock = threading.Lock()
+        self._prefetch_cache: Dict[str, tuple] = {}
         self._threads: List[threading.Thread] = []
         self._last_reindex = 0.0
         self._stop = threading.Event()
@@ -173,8 +180,13 @@ class ZvecMemoryProvider(MemoryProvider):
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
         (self._vault / "sessions").mkdir(parents=True, exist_ok=True)
         # First-run index build in the background: never block agent startup
-        # on an embedding-model download.
+        # on an embedding-model download. Claimed per-vault so two handles on
+        # the same vault never run concurrent builds against each other.
         if not (self._vault / ".zvec-grep" / "manifest.json").exists():
+            with ZvecMemoryProvider._building_lock:
+                if str(self._vault) in ZvecMemoryProvider._building_vaults:
+                    return
+                ZvecMemoryProvider._building_vaults.add(str(self._vault))
             self._run_in_background(self._build_index)
 
     def system_prompt_block(self) -> str:
@@ -200,27 +212,82 @@ class ZvecMemoryProvider(MemoryProvider):
             )
         return "\n".join(lines)
 
+    def _index_ready(self) -> bool:
+        try:
+            return bool(self._vault) and (self._vault / ".zvec-grep" / "manifest.json").exists()
+        except Exception:
+            return False
+
+    def _prefetch_cache_ttl(self) -> float:
+        try:
+            return max(0.0, float(self._config.get("prefetch_cache_seconds", 120)))
+        except (TypeError, ValueError):
+            return 120.0
+
+    def _store_prefetch(self, query: str, text: str) -> None:
+        with self._lock:
+            self._prefetch_cache[query] = (time.time(), text)
+            while len(self._prefetch_cache) > 32:
+                oldest = min(self._prefetch_cache,
+                             key=lambda k: self._prefetch_cache[k][0])
+                del self._prefetch_cache[oldest]
+
+    def _cached_prefetch(self, query: str) -> str:
+        with self._lock:
+            hit = self._prefetch_cache.get(query)
+            if not hit:
+                return ""
+            ts, text = hit
+            if time.time() - ts > self._prefetch_cache_ttl():
+                return ""
+            return text
+
+    def _run_prefetch_query(self, query: str) -> str:
+        rc, out, _err = self._run_zg(
+            self._search_cmd(query[:MAX_QUERY_CHARS], "hybrid", self._recall_limit()),
+            timeout=QUERY_TIMEOUT_S,
+        )
+        out = out.strip()
+        if rc != 0 or not out:
+            return ""
+        return "## Zvec Memory\n" + self._cap(out)
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._vault or not query or is_trivial_prompt(query):
             return ""
-        if not self.is_available():
+        if not self.is_available() or not self._index_ready():
             return ""
         try:
-            _rc, out, _err = self._run_zg(
-                self._search_cmd(query[:MAX_QUERY_CHARS], "hybrid", self._recall_limit()),
-                timeout=QUERY_TIMEOUT_S,
-            )
-            out = out.strip()
-            if not out:
-                return ""
-            return "## Zvec Memory\n" + self._cap(out)
+            cached = self._cached_prefetch(query)
+            if cached:
+                return cached
+            text = self._run_prefetch_query(query)
+            if text:
+                self._store_prefetch(query, text)
+            return text
         except Exception as exc:
             logger.debug("zvec-memory prefetch failed: %s", exc)
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        # Recall is cheap enough to run inline in prefetch(); nothing to queue.
-        return None
+        # Warm the cache for the next turn off the critical path, so the
+        # inline prefetch is usually a dict lookup, not a subprocess spawn.
+        if not self._vault or not query or is_trivial_prompt(query):
+            return
+        if not self.is_available() or not self._index_ready():
+            return
+        if self._cached_prefetch(query):
+            return
+
+        def _warm() -> None:
+            try:
+                text = self._run_prefetch_query(query)
+                if text:
+                    self._store_prefetch(query, text)
+            except Exception as exc:
+                logger.debug("zvec-memory background prefetch failed: %s", exc)
+
+        self._run_in_background(_warm)
 
     def sync_turn(
         self,
@@ -323,7 +390,8 @@ class ZvecMemoryProvider(MemoryProvider):
         preview = str(self._config.get("preview", "short"))
         if preview not in ("none", "short", "full"):
             preview = "short"
-        cmd = ["query", "--mode", "auto", "--preview", preview, "--limit", str(limit)]
+        cmd = ["query", "--mode", "auto", "--refresh", "background",
+               "--preview", preview, "--limit", str(limit)]
         if mode == "fts":
             cmd += ["--fts", query]
         elif mode == "vector":
@@ -346,8 +414,12 @@ class ZvecMemoryProvider(MemoryProvider):
             logger.debug("zvec-memory background task failed: %s", exc)
 
     def _build_index(self) -> None:
-        embedding = str(self._config.get("embedding", DEFAULT_EMBEDDING))
-        self._reindex_guarded(["--embedding", embedding])
+        try:
+            embedding = str(self._config.get("embedding", DEFAULT_EMBEDDING))
+            self._reindex_guarded(["--embedding", embedding])
+        finally:
+            with ZvecMemoryProvider._building_lock:
+                ZvecMemoryProvider._building_vaults.discard(str(self._vault))
 
     def _maybe_reindex(self, force: bool = False) -> None:
         try:
