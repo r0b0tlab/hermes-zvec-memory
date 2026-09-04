@@ -333,6 +333,17 @@ class ZvecMemoryProvider(MemoryProvider):
         category = "user_pref" if target == "user" else "general"
         self._run_in_background(self._write_fact, content, category, "mirror")
 
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        self._session_id = new_session_id
+
+    def on_pre_compress(self, messages) -> str:
+        # Best-effort v1 contract: never raise; compression proceeds regardless.
+        try:
+            self._maybe_reindex(force=True)
+        except Exception as exc:
+            logger.debug("zvec-memory pre-compress reindex failed: %s", exc)
+        return ""
+
     def backup_paths(self) -> List[str]:
         if not self._vault:
             return []
