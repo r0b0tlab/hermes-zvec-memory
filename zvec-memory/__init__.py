@@ -351,6 +351,23 @@ class ZvecMemoryProvider(MemoryProvider):
              "choices": ["true", "false"]},
         ]
 
+    def save_config(self, values, hermes_home):
+        """Write config to config.yaml under plugins.zvec-memory."""
+        from pathlib import Path
+        config_path = Path(hermes_home) / "config.yaml"
+        try:
+            import yaml
+            # Write-back round-trip: raw read is correct (merged defaults
+            # must not be persisted back into the user's file).
+            from hermes_cli.config import read_user_config_raw
+            existing = read_user_config_raw(config_path)
+            existing.setdefault("plugins", {})
+            existing["plugins"]["zvec-memory"] = values
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(existing, f, default_flow_style=False)
+        except Exception:
+            pass
+
     # -- config helpers -----------------------------------------------------
 
     def _recall_limit(self) -> int:
