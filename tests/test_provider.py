@@ -683,6 +683,69 @@ def test_invalid_store_tags_are_not_stringified(tmp_path, tags):
         p.shutdown()
 
 
+def test_shutdown_uses_one_deadline_and_retains_live_handles(tmp_path, monkeypatch, caplog):
+    p = make_provider(tmp_path)
+    disk, index = p._disk_worker, p._index_worker
+    budgets = []
+    class Blocked:
+        def close(self, timeout):
+            budgets.append(timeout)
+            return False
+    blocked_disk, blocked_index = Blocked(), Blocked()
+    try:
+        p._disk_worker, p._index_worker = blocked_disk, blocked_index
+        with monkeypatch.context() as m:
+            times = iter([10.0, 10.0, 14.0])
+            m.setattr(_mod.time, "monotonic", lambda: next(times))
+            p.shutdown()
+        assert budgets == [5.0, 1.0]
+        assert p._disk_worker is blocked_disk and p._index_worker is blocked_index
+        assert "still running" in caplog.text
+    finally:
+        p._disk_worker, p._index_worker = disk, index
+        p.shutdown()
+
+
+def test_mirror_matching_is_targeted_unambiguous_and_idempotent(tmp_path):
+    p = make_provider(tmp_path)
+    try:
+        p._apply_mirror("add", "user", "shared preference first", {})
+        p._apply_mirror("add", "user", "shared preference second", {})
+        p._apply_mirror("add", "user", "shared preference first", {})
+        before = set((p._vault / "facts").glob("*.md"))
+        assert len(before) == 2
+        p._apply_mirror("remove", "memory", "", {"old_text": "shared preference first"})
+        p._apply_mirror("remove", "user", "", {"old_text": "shared preference"})
+        assert set((p._vault / "facts").glob("*.md")) == before
+    finally:
+        p.shutdown()
+
+
+def test_rejected_prefetch_submission_can_retry(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    monkeypatch.setattr(p, "is_available", lambda: True)
+    query = "deployment procedure details"
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(p, "_run_in_background", lambda *a: False)
+            p.queue_prefetch(query)
+        assert query not in p._prefetch_inflight
+        p.queue_prefetch(query)
+        assert p._disk_worker.drain(2)
+        assert p._cached_prefetch(query) == ""
+    finally:
+        p.shutdown()
+
+
+def test_native_empty_object_is_authoritative(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("plugins:\n  zvec-memory:\n    recall_limit: 11\n")
+    directory = tmp_path / "zvec-memory"
+    directory.mkdir()
+    (directory / "config.json").write_text("{}")
+    assert ZvecMemoryProvider()._config == {}
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
