@@ -296,6 +296,18 @@ def test_comparisons_require_matched_conditions_and_pool_retries():
     assert tool().aggregate([baseline, fixed], tags=[tags[0], tags[2]])["comparisons"] == []
 
 
+def test_cgroup_resource_metrics_are_preserved_without_private_fields():
+    raw = report([0.1])
+    raw["metrics"] = {"cgroup_peak_bytes": [123456], "cgroup_cpu_seconds": [2.5],
+                      "cgroup_oom_kills": [0], "cgroup_pids_peak": [7],
+                      "cgroup_path": "/private/user/cgroup"}
+    result = tool().aggregate([raw])
+    assert result["custom_metrics"]["cgroup_peak_bytes"]["max"] == 123456
+    assert result["custom_metrics"]["cgroup_cpu_seconds"]["mean"] == 2.5
+    assert result["custom_metrics"]["cgroup_oom_kills"]["max"] == 0
+    assert "/private" not in str(result)
+
+
 def test_custom_metrics_only_registered_numeric_fields():
     raw = report([])
     raw["metrics"] = {"daemon_rss_kib": [100, 120], "daemon_threads": [4, 5],

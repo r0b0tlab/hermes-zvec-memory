@@ -79,7 +79,9 @@ import zipfile
 CUSTOM_METRICS = {"daemon_rss_kib", "daemon_threads", "daemon_fds",
                   "provider_rss_kib", "provider_threads", "provider_fds",
                   "query_seconds", "shutdown_seconds", "pending_inbox",
-                  "pending_creates", "pending_deletes"}
+                  "pending_creates", "pending_deletes", "cgroup_peak_bytes",
+                  "cgroup_swap_peak_bytes", "cgroup_cpu_seconds", "cgroup_throttled_seconds",
+                  "cgroup_oom_kills", "cgroup_pids_peak"}
 ARGUMENTS = {"workers", "records", "seed_facts", "timeout", "iterations",
              "duration_seconds", "sample_interval_seconds", "context_chars",
              "duration", "sample_interval", "convergence_timeout", "engine_restart_at"}
