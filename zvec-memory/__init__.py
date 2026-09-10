@@ -463,9 +463,10 @@ class ZvecMemoryProvider(MemoryProvider):
                 extra = self._index_extra_args
                 self._index_extra_args = []
             try:
-                rc, _out, err = self._run_zg(
-                    ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
-                )
+                with self._vault_lock:
+                    rc, _out, err = self._run_zg(
+                        ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
+                    )
             except Exception as exc:
                 rc, err = 1, str(exc)
             if rc != 0:

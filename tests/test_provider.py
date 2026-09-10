@@ -249,6 +249,35 @@ def test_index_failure_retains_dirty_state_and_embedding(tmp_path, monkeypatch, 
         p.shutdown()
 
 
+def test_index_serialized_between_vault_handles(tmp_path, monkeypatch):
+    from threading import Event
+    p, q = make_provider(tmp_path), make_provider(tmp_path)
+    entered, release, collision = Event(), Event(), Event()
+    active = []
+    def run(cmd, timeout):
+        active.append(1)
+        if len(active) > 1:
+            collision.set()
+        entered.set()
+        assert release.wait(2)
+        active.pop()
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    monkeypatch.setattr(q, "_run_zg", run)
+    try:
+        p._maybe_reindex(force=True)
+        assert entered.wait(2)
+        q._maybe_reindex(force=True)
+        assert not collision.wait(0.2)
+        release.set()
+        assert p._index_worker.drain(2)
+        assert q._index_worker.drain(2)
+    finally:
+        release.set()
+        p.shutdown()
+        q.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
