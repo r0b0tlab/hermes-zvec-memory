@@ -673,6 +673,16 @@ def test_legacy_mirror_ownership_requires_explicit_migration(tmp_path):
         p.shutdown()
 
 
+@pytest.mark.parametrize("tags", [None, [], {}, True])
+def test_invalid_store_tags_are_not_stringified(tmp_path, tags):
+    p = make_provider(tmp_path)
+    try:
+        assert json.loads(p.handle_tool_call("memory_store", {"content": "valid fact", "tags": tags})).get("error")
+        assert not list((p._vault / "facts").glob("*.md"))
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
