@@ -175,9 +175,10 @@ class ZvecMemoryProvider(MemoryProvider):
             except Exception:
                 hermes_home = str(Path.home() / ".hermes")
         if not raw:
-            return Path(hermes_home) / "zvec-memory"
+            return (Path(hermes_home) / "zvec-memory").resolve()
         raw = raw.replace("$HERMES_HOME", hermes_home).replace("${HERMES_HOME}", hermes_home)
-        return Path(raw).expanduser()
+        path = Path(raw).expanduser()
+        return (path if path.is_absolute() else Path(hermes_home) / path).resolve()
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
@@ -350,9 +351,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return ""
 
     def backup_paths(self) -> List[str]:
-        if not self._vault:
-            return []
-        return [str(self._vault)]
+        vault = self._vault if self._vault is not None else self._resolve_vault(None)
+        return [str(vault.resolve())]
 
     def get_config_schema(self):
         from hermes_constants import display_hermes_home
