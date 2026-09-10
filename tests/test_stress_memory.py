@@ -100,6 +100,34 @@ def test_invalid_junit_is_not_success(tmp_path, xml):
         s.read_junit(path)
 
 
+@pytest.mark.parametrize("missing_junit", [False, True])
+def test_regression_error_retains_private_traceback(tmp_path, monkeypatch, missing_junit):
+    from types import SimpleNamespace
+    s = module()
+    def command(*args):
+        if not missing_junit:
+            raise FileNotFoundError(2, "disappeared", "/proc/private-sentinel/task")
+        return 0  # Successful child without required diagnostics is still failure.
+    monkeypatch.setattr(s, "run_command", command)
+    report = {"errors": []}
+    s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=2, timeout=1), report)
+    receipt = json.loads((tmp_path / "iteration-0/receipt.json").read_text())
+    assert report["completed_iterations"] == 0
+    assert len(report["iterations"]) == 1
+    assert receipt["errors"]
+    assert "Traceback (most recent call last)" in receipt["traceback"]
+    assert "FileNotFoundError" in receipt["traceback"]
+    assert ("junit.xml" if missing_junit else "/proc/private-sentinel/task") in receipt["traceback"]
+    spec = importlib.util.spec_from_file_location("report_stress", ROOT / "scripts/report_stress.py")
+    assert spec is not None and spec.loader is not None
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+    public = json.dumps(exporter.summarize(report, 0))
+    assert "traceback" not in public.lower()
+    assert "private-sentinel" not in public
+    assert "junit.xml" not in public
+
+
 def test_native_regression_selects_real_tests(tmp_path, monkeypatch, capsys):
     s = module()
     monkeypatch.setattr(s, "RUNS", tmp_path)
@@ -155,6 +183,87 @@ def test_rejects_unsafe_arguments_before_workspace(tmp_path, monkeypatch, args):
         s.main(args)
     assert exc.value.code == 2
     assert not s.RUNS.exists()
+
+
+def test_descendant_task_directory_disappears_during_glob(tmp_path, monkeypatch):
+    """Real pathlib enumeration loses a reaped descendant after is_dir()."""
+    import os
+    import shutil
+    from types import SimpleNamespace
+    s = module()
+    proc = tmp_path / "proc"
+    # Visit 902 first; still discover 903 through the other pending parent.
+    children = {os.getpid(): "901 902", 900: "", 901: "903", 902: "", 903: ""}
+    for pid, descendants in children.items():
+        task = proc / str(pid) / "task" / str(pid)
+        task.mkdir(parents=True)
+        (task / "children").write_text(descendants)
+        fields = ["S", "1", "900", "900"] + ["0"] * 15 + ["100"]
+        (proc / str(pid) / "stat").write_text(f"{pid} (fixture) " + " ".join(fields))
+    def mapped_path(path):
+        path = Path(path)
+        return proc / path.relative_to("/proc") if path.is_relative_to("/proc") else path
+    monkeypatch.setattr(s, "Path", mapped_path)
+    real_scandir = os.scandir
+    disappeared = []
+    def scandir(path):
+        if not isinstance(path, int) and Path(path) == proc / "902/task":
+            shutil.rmtree(proc / "902")
+            disappeared.append(902)
+        return real_scandir(path)
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(s, "pin_identity", lambda pid, identity: pid + 1000)
+    child = SimpleNamespace(pid=900, returncode=None, _stress_identity=(100, 900, 900),
+                            _stress_handles={900: 1900})
+    s.observe_descendants(child)
+    assert disappeared == [902]
+    assert child._stress_handles == {900: 1900, 901: 1901, 902: 1902, 903: 1903}
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, PermissionError, RuntimeError])
+def test_live_process_scan_error_fails_with_owned_cleanup(tmp_path, monkeypatch, error):
+    s = module()
+    real_glob = Path.glob
+    children = []
+    real_track = s.track_child
+    def track(child):
+        children.append(child)
+        return real_track(child)
+    monkeypatch.setattr(s, "track_child", track)
+    def glob(path, pattern):
+        if str(path).startswith("/proc/"):
+            # Failure while advancing the iterator, not while constructing it.
+            raise error("unreadable live task directory")
+        yield from real_glob(path, pattern)
+    monkeypatch.setattr(Path, "glob", glob)
+    with pytest.raises(error, match="unreadable live task directory"):
+        s.run_command([sys.executable, "-c", "import time; time.sleep(20)"],
+                      s.environment(tmp_path, ROOT), tmp_path / "child.log", 1)
+    assert len(children) == 1
+    assert children[0].returncode is not None
+    assert not Path(f"/proc/{children[0].pid}").exists()
+    for fd in children[0]._stress_handles.values():
+        with pytest.raises(OSError):
+            s.os.fstat(fd)
+
+
+def test_pin_identity_closes_fd_if_process_disappears(monkeypatch):
+    s = module()
+    opened = []
+    real_open = s.os.pidfd_open
+    def open_fd(pid):
+        fd = real_open(pid)
+        opened.append(fd)
+        return fd
+    def vanished(pid):
+        raise FileNotFoundError("process disappeared after pidfd_open")
+    monkeypatch.setattr(s.os, "pidfd_open", open_fd)
+    monkeypatch.setattr(s, "process_identity", vanished)
+    with pytest.raises(FileNotFoundError):
+        s.pin_identity(s.os.getpid(), (0, 0, 0))
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        s.os.fstat(opened[0])
 
 
 def test_final_descendant_scan_happens_before_reaping(monkeypatch):
