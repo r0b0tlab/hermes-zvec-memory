@@ -256,7 +256,7 @@ class ZvecMemoryProvider(MemoryProvider):
         out = out.strip()
         if rc != 0 or not out:
             return ""
-        return "## Zvec Memory\n" + self._cap(out)
+        return self._cap("## Zvec Memory\n" + out)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._vault or not query or is_trivial_prompt(query):
@@ -386,12 +386,18 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _cap(self, text: str) -> str:
         try:
-            budget = int(self._config.get("context_chars", 2000))
-        except (TypeError, ValueError):
+            budget = max(0, int(self._config.get("context_chars", 2000)))
+        except (TypeError, ValueError, OverflowError):
             budget = 2000
         if len(text) <= budget:
             return text
-        return text[:budget].rsplit(" ", 1)[0] + " […]"
+        marker = " […]"
+        if budget < len(marker):
+            return text[:budget]
+        prefix = text[:budget - len(marker)]
+        if " " in prefix:
+            prefix = prefix.rsplit(" ", 1)[0]
+        return prefix + marker
 
     # -- zg subprocess layer --------------------------------------------------
 
