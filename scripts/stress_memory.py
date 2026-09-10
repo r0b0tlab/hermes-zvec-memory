@@ -283,7 +283,7 @@ def native_queries(obj, wanted, result, forbidden=()):
             "query": key, "mode": "fts", "limit": 5, "globs": ["facts/**"]}))
         text = out.get("results", "")
         body = hit_body(text)
-        hit = bool(re.match(r"facts/[^\n]+:\d+", body)) and content in body
+        hit = bool(re.match(r"(?:matchedBy=fts )?facts/[^\n]+:\d+", body)) and content in body
         result["queries"].append({"key": key, "hit": hit, "chars": len(text),
                                   "seconds": time.perf_counter()-start, "response": out})
         if out.get("error") or not hit or len(text) > 2000:
@@ -310,13 +310,10 @@ def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate
     start = time.monotonic()
     try:
         obj = provider(run, mode, "stress-recovery")
-        while time.monotonic()-start < timeout:
-            obj.queue_prefetch("Inspect synthetic stress recovery status")
-            if obj._recall_token() is not None and obj._index_ready():
-                break
-            time.sleep(.1)
-        else:
-            raise RuntimeError("automatic convergence deadline exceeded")
+        # Readiness alone does not mean a queued warm query has finished.
+        # Drain both workers before opening native status/query subprocesses;
+        # otherwise the harness itself can exhaust the cgroup's task budget.
+        drain_provider(obj, start + timeout)
         result["convergence_seconds"] = time.monotonic()-start
         state = obj._mirror_state()
         wanted = expected(run.name, workers, records)
