@@ -47,6 +47,8 @@ from hermes_cli.config import cfg_get
 from tools.registry import tool_error
 from utils import is_truthy_value
 from .workers import Worker
+from .transactions import VaultLock
+from .inbox import MirrorInbox
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +163,10 @@ class ZvecMemoryProvider(MemoryProvider):
         self._observed_mirror_token = None
         self._disk_worker = None
         self._index_worker = None
+        self._mirror_inbox = None
         self._last_reindex = 0.0
+        self._next_index_retry = 0.0
+        self._shutdown = False
 
 
     # -- lifecycle ------------------------------------------------------
@@ -203,10 +208,12 @@ class ZvecMemoryProvider(MemoryProvider):
                 raise ValueError(f"Refusing symlinked {directory} directory")
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
         (self._vault / "sessions").mkdir(parents=True, exist_ok=True)
+        with self._building_lock:
+            self._vault_lock = self._vault_locks.setdefault(
+                (os.getpid(), str(self._vault)), VaultLock(self._vault / ".mirror.lock"))
+        self._mirror_inbox = MirrorInbox(self._vault)
         self._disk_worker = Worker("zvec-memory-disk")
         self._index_worker = Worker("zvec-memory-index")
-        with self._building_lock:
-            self._vault_lock = self._vault_locks.setdefault(str(self._vault), threading.RLock())
         try:
             self._recover_mirrors()
         except Exception:
@@ -280,6 +287,7 @@ class ZvecMemoryProvider(MemoryProvider):
         return self._cap("## Zvec Memory\n" + out)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        self._retry_pending_index()
         token = self._recall_token()
         if token is None:
             return ""
@@ -304,6 +312,7 @@ class ZvecMemoryProvider(MemoryProvider):
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        self._retry_pending_index()
         token = self._recall_token()
         if token is None:
             return
@@ -360,6 +369,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
+        with self._index_state_lock:
+            self._shutdown = True
         deadline = time.monotonic() + 5
         for worker in (self._disk_worker, self._index_worker):
             if worker is not None and not worker.close(timeout=max(0, deadline - time.monotonic())):
@@ -378,7 +389,24 @@ class ZvecMemoryProvider(MemoryProvider):
         """Mirror only targeted built-in records, never explicit facts/history."""
         if not self._automatic_writes or not self._vault or action not in {"add", "replace", "remove"}:
             return
-        self._run_in_background(self._apply_mirror, action, target, content, dict(metadata or {}))
+        try:
+            self._mirror_inbox.append([action, target, content, dict(metadata or {})])
+        except Exception:
+            from utils import atomic_json_write
+            atomic_json_write(self._vault / ".mirror-delivery-failed.json",
+                              {"error": "Notification persistence failed; reconcile built-in memory before removing this marker"}, mode=0o600)
+            self._mirror_ready = False
+            raise
+        self._invalidate_prefetch()
+        if not self._run_in_background(self._drain_mirror_inbox):
+            self._maybe_reindex(force=True)
+
+    def _drain_mirror_inbox(self):
+        with self._vault_lock:
+            while (item := self._mirror_inbox.first()) is not None:
+                number, payload = item
+                self._apply_mirror(*payload, notification_id=number)
+                self._mirror_inbox.acknowledge(number)
 
     def _mirror_state(self):
         path = self._vault / ".mirror-map.json"
@@ -409,6 +437,8 @@ class ZvecMemoryProvider(MemoryProvider):
         if self._vault is None or not self._mirror_ready:
             return None
         try:
+            if (self._vault / ".mirror-delivery-failed.json").exists() or self._mirror_inbox.first():
+                return None
             state = self._mirror_state()
             token = json.dumps(state, sort_keys=True)
             with self._lock:
@@ -441,11 +471,15 @@ class ZvecMemoryProvider(MemoryProvider):
             raise ValueError("Mirror staging path escapes staging directory")
         return path
 
-    def _apply_mirror(self, action, target, content, metadata):
+    def _apply_mirror(self, action, target, content, metadata, notification_id=None):
         import hashlib
         with self._vault_lock:
             state = self._mirror_state()
             self._finish_mirror_deletes(state)
+            if notification_id is not None:
+                if notification_id <= state.get("last_notification", 0):
+                    return
+                state["last_notification"] = notification_id
             records = state["records"]
             old_key = None
             if action in {"replace", "remove"}:
@@ -455,6 +489,7 @@ class ZvecMemoryProvider(MemoryProvider):
                            and old_text and old_text in record["content"]]
                 if len(matches) != 1:
                     logger.warning("Mirror %s needs one match; found %d", action, len(matches))
+                    self._save_mirror_state(state)
                     return
                 old_key = matches[0]
             if action != "remove":
@@ -462,6 +497,7 @@ class ZvecMemoryProvider(MemoryProvider):
                     raise ValueError("Empty mirrored content")
                 key = hashlib.sha256((target + "\0" + content).encode()).hexdigest()
                 if key == old_key or (key in records and old_key is None):
+                    self._save_mirror_state(state)
                     return
                 if key not in records:
                     staged = self._write_fact(content, "user_pref" if target == "user" else "general", "mirror",
@@ -539,6 +575,7 @@ class ZvecMemoryProvider(MemoryProvider):
     def _recover_mirrors(self):
         with self._vault_lock:
             self._mirror_ready = False
+            self._drain_mirror_inbox()
             state = self._mirror_state()
             self._finish_mirror_deletes(state)
             self._mirror_refresh_required = state.get("refresh_required", False)
@@ -641,12 +678,23 @@ class ZvecMemoryProvider(MemoryProvider):
         embedding = str(self._config.get("embedding", DEFAULT_EMBEDDING))
         self._maybe_reindex(force=True, extra_args=["--embedding", embedding])
 
+    def _retry_pending_index(self):
+        # Demand-driven, coalesced retries: no timer threads or inline native work.
+        with self._index_state_lock:
+            if (self._shutdown or not self._index_requested or self._index_running
+                    or time.monotonic() < self._next_index_retry):
+                return
+            self._next_index_retry = time.monotonic() + 1.0
+        self._maybe_reindex(force=True)
+
     def _maybe_reindex(self, force=False, extra_args=None):
         try:
             interval = max(0.0, float(self._config.get("reindex_min_seconds", 600)))
         except (TypeError, ValueError):
             interval = 600.0
         with self._index_state_lock:
+            if self._shutdown:
+                return
             self._index_requested = True
             if extra_args:
                 self._index_extra_args = list(extra_args)
@@ -670,6 +718,7 @@ class ZvecMemoryProvider(MemoryProvider):
                 self._index_extra_args = []
             try:
                 with self._vault_lock:
+                    self._drain_mirror_inbox()
                     state = self._mirror_state()
                     self._finish_mirror_deletes(state)
                     for attempt in range(4):
@@ -685,9 +734,10 @@ class ZvecMemoryProvider(MemoryProvider):
                         if rc == 0 or not transient or attempt == 3:
                             break
                         time.sleep(0.1 * 2 ** attempt)
-                    if rc == 0 and state.get("refresh_required", False):
-                        state["refresh_required"] = False
-                        self._save_mirror_state(state)
+                    if rc == 0:
+                        if state.get("refresh_required", False):
+                            state["refresh_required"] = False
+                            self._save_mirror_state(state)
                         self._mirror_refresh_required = False
                         self._mirror_ready = True
             except Exception as exc:
@@ -697,6 +747,7 @@ class ZvecMemoryProvider(MemoryProvider):
                 with self._index_state_lock:
                     self._index_requested = True
                     self._index_running = False
+                    self._next_index_retry = time.monotonic() + 1.0
                     if not self._index_extra_args:
                         self._index_extra_args = extra
                 return
@@ -709,10 +760,7 @@ class ZvecMemoryProvider(MemoryProvider):
         try:
             if not isinstance(args, dict) or not isinstance(args.get("query"), str):
                 return tool_error("Required 'query' must be a string")
-            with self._index_state_lock:
-                dirty = self._index_requested and not self._index_running
-            if dirty:
-                self._maybe_reindex(force=True)
+            self._retry_pending_index()
             token = self._recall_token()
             if token is None:
                 return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")

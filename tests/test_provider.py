@@ -864,3 +864,21 @@ def test_store_then_search_roundtrip(tmp_path):
         assert "blue moons" in hit
     finally:
         p.shutdown()
+
+
+def test_successful_retry_reopens_handle_after_peer_ack(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    try:
+        p._apply_mirror("add", "user", "current preference", {})
+        assert p._index_worker.drain(3)
+        # A peer already acknowledged the shared refresh, but this handle
+        # still carries the failed attempt's local fail-closed flag.
+        p._mirror_ready = False
+        p._index_requested = True
+        monkeypatch.setattr(p, "is_available", lambda: True)
+        monkeypatch.setattr(p, "_run_zg", lambda cmd, timeout: (0, "current preference", ""))
+        p.prefetch("What are my preferences?")
+        assert p._index_worker.drain(3)
+        assert "current preference" in p.prefetch("What are my preferences?")
+    finally:
+        p.shutdown()
