@@ -137,6 +137,22 @@ def test_reject_symlinked_source_directories(tmp_path, directory):
     assert list(outside.iterdir()) == []
 
 
+def test_queued_turn_keeps_call_session(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    work = []
+    monkeypatch.setattr(p, "_run_in_background", lambda fn, *args: work.append((fn, args)))
+    try:
+        p.sync_turn("old user", "old reply", session_id="old-id")
+        p.on_session_switch("new-id")
+        fn, args = work.pop(0)
+        fn(*args)
+        text = next((tmp_path / "vault/sessions").glob("*.md")).read_text()
+        assert "session old-id" in text
+        assert "session new-id" not in text
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
