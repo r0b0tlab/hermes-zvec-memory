@@ -172,13 +172,47 @@ def validate_acceptance(receipt, number, records):
     return [] if receipt["worker"] == number and actual == planned else ["accepted operations differ from exact workload"]
 
 
-def worker(run, number, records, mode):
+def pipeline_pending(obj):
+    """Non-atomic diagnostic snapshot; no manual refresh or native vault lock."""
+    state = obj._mirror_state()
+    pending = {"inbox_pending": obj._mirror_inbox is None or obj._mirror_inbox.pending(),
+               "pending_creates": len(state["pending_creates"]),
+               "pending_deletes": len(state["pending_deletes"]),
+               "refresh_required": bool(state["refresh_required"]),
+               "index_requested": obj._index_requested, "index_running": obj._index_running,
+               "recall_blocked": obj._recall_token() is None,
+               "index_not_ready": not obj._index_ready()}
+    for name in ("disk", "index"):
+        worker_obj = getattr(obj, f"_{name}_worker")
+        if worker_obj is None:
+            pending[f"{name}_unfinished_tasks"] = 0
+        else:
+            with worker_obj._queue.mutex:
+                pending[f"{name}_unfinished_tasks"] = worker_obj._queue.unfinished_tasks
+    return pending
+
+
+def drain_provider(obj, deadline):
+    """Exercise demand-driven automatic convergence, not a manual refresh."""
+    while time.monotonic() < deadline:
+        if not any(pipeline_pending(obj).values()):
+            return
+        obj.queue_prefetch("Inspect synthetic stress drain status")
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+    raise RuntimeError("automatic convergence deadline exceeded before shutdown")
+
+
+def worker(run, number, records, mode, shutdown_policy="immediate", timeout=180):
     result = {"worker": number, "samples": [], "errors": [],
+              "shutdown_policy": shutdown_policy, "admission_seconds": None,
+              "drain_seconds": 0.0, "pending_at_shutdown": None,
               "planned_callbacks": 2 * records + (records + 1)//2}
     obj = None
+    admission_start = None
     start = time.monotonic()
     try:
         obj = provider(run, mode, f"stress-worker-{number}")
+        admission_start = time.monotonic()
         for phase in ("add", "replace", "remove"):
             for n in range(records):
                 if phase == "remove" and n % 2:
@@ -192,19 +226,42 @@ def worker(run, number, records, mode):
                 with (run / f"worker-{number}-callbacks.jsonl").open("a") as progress:
                     progress.write(json.dumps(sample) + "\n")
                     progress.flush()
+        result["admission_seconds"] = time.monotonic() - admission_start
         content = f"Explicit control fact for worker {number} in {run.name}."
         out = json.loads(obj.handle_tool_call("memory_store", {"content": content}))
         if out.get("status") != "stored":
             raise RuntimeError(str(out))
         result["control"] = {"path": out["path"], "content": content}
+        if shutdown_policy == "drain":
+            drain_start = time.monotonic()
+            try:
+                # The existing writer phase cap includes initialization/admission
+                # and reserves the provider's unchanged five-second shutdown grace.
+                drain_provider(obj, start + max(0, timeout - 5))
+            finally:
+                result["drain_seconds"] = time.monotonic() - drain_start
     except Exception as exc:
         result["errors"].append(repr(exc))
         result["traceback"] = traceback.format_exc()
         print(result["traceback"], file=sys.stderr)
     finally:
+        if admission_start is not None and result["admission_seconds"] is None:
+            result["admission_seconds"] = time.monotonic() - admission_start
+        if obj is not None:
+            try:
+                result["pending_at_shutdown"] = pipeline_pending(obj)
+                if shutdown_policy == "drain" and any(result["pending_at_shutdown"].values()):
+                    result["errors"].append("pipeline pending at drain-policy shutdown")
+            except Exception as exc:
+                # Diagnostics must never prevent the original immediate shutdown.
+                result["pending_at_shutdown_error"] = repr(exc)
+                if shutdown_policy == "drain":
+                    result["errors"].append(f"shutdown snapshot: {exc!r}")
         close_provider(obj, result)
         result["elapsed_seconds"] = time.monotonic()-start
         result["successful_callbacks"] = len(result["samples"])
+        seconds = result["admission_seconds"]
+        result["callbacks_per_second_admission"] = len(result["samples"])/seconds if seconds else None
         result["acceptance_count_complete"] = True
         result["latency_by_phase"] = {p: latency([s["seconds"] for s in result["samples"] if s["phase"] == p])
                                        for p in ("add", "replace", "remove")}
@@ -242,8 +299,8 @@ def native_queries(obj, wanted, result, forbidden=()):
             result["errors"].append(f"stale/failed negative native query: {key}")
 
 
-def recover(run, workers, records, mode, timeout=120):
-    result = {"errors": [], "queries": []}
+def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate"):
+    result = {"errors": [], "queries": [], "shutdown_policy": shutdown_policy}
     obj = None
     start = time.monotonic()
     try:
@@ -413,7 +470,9 @@ def load_campaign(run, args, report):
             log = (run / f"worker-{n}.log").open("w")
             handles.append(log)
             cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", str(n), "--run", str(run),
-                   "--records", str(args.records), "--workers", str(args.workers), "--mode", args.mode]
+                   "--records", str(args.records), "--workers", str(args.workers), "--mode", args.mode,
+                   "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
+                   "--timeout", str(args.timeout)]
             children.append(track_child(subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
                                              stderr=subprocess.STDOUT, start_new_session=True)))
         while any(poll_owned(child) is None for child in children):
@@ -441,6 +500,9 @@ def load_campaign(run, args, report):
         except Exception as exc:
             receipt = {"worker": n, "samples": [], "errors": [f"missing/invalid worker receipt: {exc!r}"],
                        "receipt_origin": "coordinator", "successful_callbacks": 0,
+                       "shutdown_policy": getattr(args, "shutdown_policy", "immediate"),
+                       "admission_seconds": None, "drain_seconds": None,
+                       "pending_at_shutdown": None, "callbacks_per_second_admission": None,
                        "acceptance_count_complete": False,
                        "planned_callbacks": 2*args.records+(args.records+1)//2,
                        "elapsed_seconds": report["writers_seconds"], "exit": rc}
@@ -463,6 +525,7 @@ def load_campaign(run, args, report):
     try:
         rc = run_command([sys.executable, str(Path(__file__).resolve()), "--recover", "--run", str(run),
                           "--workers", str(args.workers), "--records", str(args.records), "--mode", args.mode,
+                          "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                           "--recovery-timeout", str(args.recovery_timeout)],
                          env, run / "recovery.log", args.recovery_timeout + 10)
     except Exception as exc:
@@ -480,7 +543,7 @@ def load_campaign(run, args, report):
 
 
 FAULT_FILES = ["tests/test_process_safety.py", "tests/test_mirror_queue.py",
-               "tests/test_durable_recovery.py", "tests/test_workers.py"]
+               "tests/test_durable_recovery.py", "tests/test_workers.py", "tests/test_inbox_contention.py"]
 
 
 def read_junit(path):
@@ -536,6 +599,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--lane", choices=["regression", "native-regression", "load"], default="regression")
     ap.add_argument("--mode", choices=["offline", "native"], default="offline")
+    ap.add_argument("--shutdown-policy", choices=["immediate", "drain"], default="immediate",
+                    help="load shutdown policy; drain waits for automatic convergence before the unchanged shutdown grace")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--records", type=int, default=20)
@@ -569,8 +634,8 @@ def main(argv=None):
         os.environ.clear()
         os.environ.update(environment(args.run, ROOT))
         if args.worker is not None:
-            return worker(args.run, args.worker, args.records, args.mode)
-        return recover(args.run, args.workers, args.records, args.mode, args.recovery_timeout)
+            return worker(args.run, args.worker, args.records, args.mode, args.shutdown_policy, args.timeout)
+        return recover(args.run, args.workers, args.records, args.mode, args.recovery_timeout, args.shutdown_policy)
     if args.lane == "regression" and args.mode == "native":
         ap.error("regression is offline; choose native-regression for native evidence")
     if args.lane == "native-regression":
@@ -580,6 +645,7 @@ def main(argv=None):
     prepare_home(run)
     write_json(run / "OWNER.json", {"kind": "zvec-stress", "repo": str(ROOT)})
     report = {"lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
+              "shutdown_policy": args.shutdown_policy,
               "arguments": vars(args), "python": sys.version,
               "evidence": "offline engine mock; NOT native evidence" if args.mode == "offline" else "native direct engine"}
     report.update(status="running", passed=False)

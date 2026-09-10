@@ -33,9 +33,10 @@ def test_environment_is_constructed_not_inherited(tmp_path, monkeypatch):
     assert "zg-default" not in str(env)
 
 
-def test_offline_load_smoke():
+@pytest.mark.parametrize("policy", ["immediate", "drain"])
+def test_offline_load_smoke(policy):
     child = subprocess.run([sys.executable, str(SCRIPT), "--lane", "load", "--mode", "offline",
-                            "--records", "2", "--timeout", "20"],
+                            "--records", "2", "--timeout", "20", "--shutdown-policy", policy],
                            cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert child.stdout.strip(), child.stderr
     pointer = json.loads(child.stdout)
@@ -49,6 +50,19 @@ def test_offline_load_smoke():
     assert report["elapsed_seconds"] > 0
     assert report["callback_latency_by_phase"]["add"]["count"] == 2
     assert report["artifact_inventory"]["file_count"] > 0
+    assert report["arguments"]["shutdown_policy"] == policy
+    assert report["shutdown_policy"] == policy
+    assert report["recovery"]["shutdown_policy"] == policy
+    receipt = report["workers"][0]
+    assert receipt["shutdown_policy"] == policy
+    assert receipt["admission_seconds"] > 0
+    assert receipt["callbacks_per_second_admission"] > 0
+    assert receipt["drain_seconds"] >= 0
+    assert receipt["pending_at_shutdown"] is not None
+    if policy == "drain":
+        assert not any(receipt["pending_at_shutdown"].values())
+    else:
+        assert receipt["drain_seconds"] == 0
 
 
 def test_regression_lane_receipts(tmp_path, monkeypatch, capsys):
@@ -69,6 +83,8 @@ def test_regression_lane_receipts(tmp_path, monkeypatch, capsys):
     assert report["planned_iterations"] == report["completed_iterations"] == 2
     assert len(calls) == 2
     assert "tests/test_durable_recovery.py" in calls[0][0]
+    assert "tests/test_inbox_contention.py" in calls[0][0]
+    assert report["shutdown_policy"] == "immediate"
     assert "ZVEC_RUN_NATIVE" not in calls[0][1]
 
 
@@ -152,6 +168,9 @@ def test_phase_deadline_preserves_worker_receipts(tmp_path, monkeypatch):
     assert report["errors"]
     assert len(report["workers"]) == 2
     assert all(w["errors"] for w in report["workers"])
+    assert all(w["shutdown_policy"] == "immediate" for w in report["workers"])
+    assert all(w["admission_seconds"] is None and w["drain_seconds"] is None
+               and w["pending_at_shutdown"] is None for w in report["workers"])
     assert not recoveries
 
 
@@ -362,6 +381,106 @@ def test_pin_identity_closes_fd_on_mismatch(monkeypatch):
     with pytest.raises(RuntimeError, match="identity"):
         s.pin_identity(s.os.getpid(), (-1, -1, -1))
     assert len(closed) == 1
+
+
+@pytest.mark.parametrize("policy,complete", [("immediate", True), ("drain", True), ("drain", False)])
+def test_shutdown_policy_waits_for_slow_pipeline(tmp_path, monkeypatch, policy, complete):
+    from queue import Queue
+    from types import SimpleNamespace
+    s = module()
+    clock = [0.0]
+    monkeypatch.setattr(s.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(s.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    class Provider:
+        def __init__(self):
+            self._disk_worker = SimpleNamespace(_queue=Queue(), _thread=SimpleNamespace(
+                name="slow-disk", is_alive=lambda: not self.done))
+            self._index_worker = None
+            self._index_requested = False
+            self._index_running = False
+            self._mirror_inbox = SimpleNamespace(pending=lambda: not self.done)
+            self.demands = 0
+            self.closed_at = None
+        @property
+        def done(self):
+            return complete and clock[0] >= 6
+        def on_memory_write(self, *a):
+            pass
+        def handle_tool_call(self, *a):
+            return json.dumps({"status": "stored", "path": "facts/control.md"})
+        def _mirror_state(self):
+            return {"pending_creates": [] if self.done else ["pending"],
+                    "pending_deletes": [], "refresh_required": not self.done}
+        def _recall_token(self):
+            return "ready" if self.done else None
+        def _index_ready(self):
+            return self.done
+        def queue_prefetch(self, *a):
+            self.demands += 1
+        def shutdown(self):
+            self.closed_at = clock[0]
+            # Model the provider's existing five-second shutdown, not a longer grace.
+            clock[0] += 5 if not self.done else 0
+
+    obj = Provider()
+    monkeypatch.setattr(s, "provider", lambda *a: obj)
+    rc = s.worker(tmp_path, 0, 2, "native", shutdown_policy=policy, timeout=12)
+    receipt = json.loads((tmp_path / "worker-0.json").read_text())
+    assert rc == (0 if policy == "drain" and complete else 1)
+    assert receipt["shutdown_policy"] == policy
+    assert receipt["admission_seconds"] == 0
+    assert receipt["successful_callbacks"] == 5
+    assert obj.closed_at is not None
+    if policy == "immediate":
+        assert obj.closed_at == 0
+        assert obj.demands == 0
+        assert receipt["drain_seconds"] == 0
+        assert receipt["pending_at_shutdown"]["inbox_pending"]
+    elif complete:
+        assert obj.closed_at >= 6
+        assert receipt["drain_seconds"] >= 6
+        assert obj.demands > 0
+        assert not receipt["pending_at_shutdown"]["inbox_pending"]
+        assert receipt["live_threads_after_shutdown"] == []
+    else:
+        assert 7 <= obj.closed_at < 7.2
+        assert any("convergence deadline" in e for e in receipt["errors"])
+
+
+@pytest.mark.parametrize("missing", ["pending_creates", "pending_deletes", "refresh_required"])
+def test_drain_snapshot_rejects_missing_journal_fields(missing):
+    from types import SimpleNamespace
+    s = module()
+    state = {"pending_creates": [], "pending_deletes": [], "refresh_required": False}
+    del state[missing]
+    obj = SimpleNamespace(_mirror_state=lambda: state,
+                          _mirror_inbox=SimpleNamespace(pending=lambda: False),
+                          _index_requested=False, _index_running=False,
+                          _recall_token=lambda: "ready", _index_ready=lambda: True,
+                          _disk_worker=None, _index_worker=None)
+    with pytest.raises(KeyError, match=missing):
+        s.pipeline_pending(obj)
+
+
+@pytest.mark.parametrize("snapshot", [None, {"inbox_pending": True}])
+def test_drain_shutdown_snapshot_error_is_failure(tmp_path, monkeypatch, snapshot):
+    from types import SimpleNamespace
+    s = module()
+    obj = SimpleNamespace(on_memory_write=lambda *a: None,
+                          handle_tool_call=lambda *a: '{"status":"stored","path":"facts/control.md"}',
+                          shutdown=lambda: None, _disk_worker=None, _index_worker=None)
+    monkeypatch.setattr(s, "provider", lambda *a: obj)
+    monkeypatch.setattr(s, "drain_provider", lambda *a: None)
+    def unreadable(*a):
+        if snapshot is not None:
+            return snapshot
+        raise RuntimeError("unreadable shutdown snapshot")
+    monkeypatch.setattr(s, "pipeline_pending", unreadable)
+    assert s.worker(tmp_path, 0, 2, "offline", "drain") == 1
+    receipt = json.loads((tmp_path / "worker-0.json").read_text())
+    assert receipt["errors"]
+    assert receipt["live_threads_after_shutdown"] == []
 
 
 def test_exact_oracle():
