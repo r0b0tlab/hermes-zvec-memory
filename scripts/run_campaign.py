@@ -20,15 +20,80 @@ import subprocess
 import time
 import uuid
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / ".test-tools/campaign"
 MAX_TASKS = 4096
 MIN_TASKS = 64
 SCRIPTS = {"stress_memory.py", "soak_memory.py"}
+BASELINE = HERE / "production-before.json"
+# The Hermes CLI rewrites unrelated keys (onboarding, _config_version) in this
+# file on its own; memory-relevant state is compared section-wise instead.
+CONFIG_PATH = Path.home() / ".hermes/config.yaml"
+WATCHED_CONFIG_SECTIONS = ("memory", "plugins")
 
 
 def output(argv):
     return subprocess.check_output(argv, text=True, timeout=30).strip()
+
+
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def watched_files():
+    """Production files whose bytes must not change during a campaign."""
+    plugin_dir = Path.home() / ".hermes/plugins/zvec-memory"
+    paths = [CONFIG_PATH,
+             Path.home() / ".hermes/zvec-memory/config.json",
+             Path.home() / ".local/share/hermes-zvec-memory/zg-default",
+             Path.home() / ".config/systemd/user/hermes-zvec-memory.service"]
+    if plugin_dir.is_dir():
+        paths.extend(sorted(plugin_dir.glob("*.py")))
+    return paths
+
+
+def production_snapshot(revision=None, reason=None):
+    parsed = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    snapshot = {
+        "files": {str(path): sha256(path) for path in watched_files() if Path(path).exists()},
+        "service": output(["systemctl", "--user", "show", "hermes-zvec-memory.service",
+                           "-p", "MainPID", "-p", "ActiveState"]),
+        "provider": output(["hermes", "config", "get", "memory.provider"]),
+        "memory_config": {key: parsed.get(key) for key in WATCHED_CONFIG_SECTIONS},
+        "config_sha256": sha256(CONFIG_PATH),
+    }
+    if revision is not None:
+        snapshot["baseline_revision"] = revision
+    if reason:
+        snapshot["revision_reason"] = reason
+    return snapshot
+
+
+def production_differences(baseline, current):
+    """Return the memory-relevant differences between two production snapshots."""
+    differences = []
+    if baseline.get("provider") != current.get("provider"):
+        differences.append(f"memory.provider {baseline.get('provider')!r} -> "
+                           f"{current.get('provider')!r}")
+    if baseline.get("service") != current.get("service"):
+        differences.append(f"service state {baseline.get('service')!r} -> "
+                           f"{current.get('service')!r}")
+    if baseline.get("memory_config") != current.get("memory_config"):
+        differences.append("watched config sections (memory/plugins) changed")
+    old, new = baseline.get("files", {}), current.get("files", {})
+    for path in sorted(set(old) | set(new)):
+        if path == str(CONFIG_PATH):
+            continue  # gated section-wise above; Hermes rewrites unrelated keys itself
+        if old.get(path) != new.get(path):
+            differences.append(f"watched file changed: {path}")
+    return differences
+
+
+def unchanged():
+    baseline = json.loads(BASELINE.read_text())
+    return production_differences(baseline, production_snapshot())
 
 
 def atomic(path, data):
@@ -42,16 +107,6 @@ def group_empty(group):
         return not (group / "cgroup.procs").read_text().strip()
     except FileNotFoundError:
         return True
-
-
-def unchanged():
-    baseline = json.loads((HERE / "production-before.json").read_text())
-    hashes = all(hashlib.sha256(Path(p).read_bytes()).hexdigest() == digest
-                 for p, digest in baseline["files"].items())
-    state = output(["systemctl", "--user", "show", "hermes-zvec-memory.service",
-                    "-p", "MainPID", "-p", "ActiveState"])
-    provider = output(["hermes", "config", "get", "memory.provider"])
-    return hashes and state == baseline["service"] and provider == baseline["provider"]
 
 
 def build_command(case, unit, tasks):
@@ -109,8 +164,10 @@ def manifest_entry(case, tasks, cgroup, report=None, exit_code=None, source_sha=
 
 
 def execute(case, variant, tasks):
-    if not unchanged():
-        raise RuntimeError("Production baseline changed; refusing more load")
+    differences = unchanged()
+    if differences:
+        raise RuntimeError("Production baseline changed; refusing more load: "
+                           + "; ".join(differences))
     unit = "hermes-zvec-stress-" + uuid.uuid4().hex[:12] + ".service"
     user_group = output(["systemctl", "--user", "show", "-p", "ControlGroup", "--value"])
     assert user_group.startswith("/")
@@ -139,7 +196,10 @@ def execute(case, variant, tasks):
         receipt["elapsed_seconds"] = time.monotonic() - start
         receipt["cleanup_verified"] = group_empty(group)
         try:
-            receipt["production_unchanged"] = unchanged()
+            after = unchanged()
+            receipt["production_unchanged"] = not after
+            if after:
+                receipt["production_differences"] = after
         except Exception as exc:
             receipt["production_unchanged"] = False
             receipt["production_check_error"] = type(exc).__name__
@@ -181,6 +241,23 @@ def load_cases():
     return {x["label"]: x for x in json.loads((HERE / "planned.json").read_text())["cases"]}
 
 
+def rebaseline(reason):
+    """Write a new production baseline, preserving the previous revision."""
+    previous = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+    revision = int(previous.get("baseline_revision", 0)) + 1
+    if previous:
+        (HERE / f"production-before-rev{previous.get('baseline_revision', 0)}.json").write_text(
+            json.dumps(previous, indent=2), encoding="utf-8")
+    snapshot = production_snapshot(revision=revision, reason=reason)
+    atomic(BASELINE, snapshot)
+    differences = production_differences(previous, snapshot) if previous else []
+    print(json.dumps({"baseline_revision": revision, "reason": reason,
+                      "differences_from_previous": differences,
+                      "config_sha256": snapshot["config_sha256"],
+                      "watched_files": len(snapshot["files"])}, indent=2))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", default=[])
@@ -188,7 +265,14 @@ def main():
     parser.add_argument("--tasks", type=int, choices=range(MIN_TASKS, MAX_TASKS + 1),
                         default=128, help="cgroup task ceiling (64..4096)")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--snapshot-production", action="store_true",
+                        help="re-record the production baseline (requires --reason)")
+    parser.add_argument("--reason", help="why the production baseline is being re-recorded")
     args = parser.parse_args()
+    if args.snapshot_production:
+        if not args.reason:
+            parser.error("--snapshot-production requires --reason")
+        return rebaseline(args.reason)
     cases = load_cases()
     if args.list:
         print("\n".join(cases))
