@@ -298,7 +298,8 @@ class ZvecMemoryProvider(MemoryProvider):
     ) -> None:
         if not self._vault or (not user_content and not assistant_content):
             return
-        self._run_in_background(self._append_turn, user_content, assistant_content)
+        self._run_in_background(self._append_turn, user_content, assistant_content,
+                                session_id or self._session_id)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [MEMORY_SEARCH_SCHEMA, MEMORY_STORE_SCHEMA]
@@ -524,16 +525,17 @@ class ZvecMemoryProvider(MemoryProvider):
             raise
         return path
 
-    def _append_turn(self, user_content: str, assistant_content: str) -> None:
+    def _append_turn(self, user_content: str, assistant_content: str, session_id: str) -> None:
         sessions = self._vault / "sessions"
         sessions.mkdir(parents=True, exist_ok=True)
         path = sessions / f"{_today()}.md"
+        record = f"\n## {_utc_stamp()} session {session_id}\n\n"
+        if user_content:
+            record += f"**user:** {user_content[:MAX_TURN_CHARS]}\n\n"
+        if assistant_content:
+            record += f"**assistant:** {assistant_content[:MAX_TURN_CHARS]}\n\n"
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"\n## {_utc_stamp()} session {self._session_id}\n\n")
-            if user_content:
-                f.write(f"**user:** {user_content[:MAX_TURN_CHARS]}\n\n")
-            if assistant_content:
-                f.write(f"**assistant:** {assistant_content[:MAX_TURN_CHARS]}\n\n")
+            f.write(record)
         self._maybe_reindex()
 
     def _auto_extract(self, messages: list) -> None:
