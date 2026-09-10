@@ -45,6 +45,64 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
 ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
 HOST = Path(os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent"))).resolve()
+RUNTIME_FILE = "zg-runtime.json"
+
+
+def runtime_command(manifest_path=None, allowed_root=ROOT / ".test-tools"):
+    """Return (argv prefix, metadata) for the engine, optionally from a prepared runtime.
+
+    A manifest-selected runtime is an experiment artifact: it must live inside
+    the harness-owned tree, be executable, and never be the production wrapper.
+    Requested native pool sizes are NOT an observed process thread cap.
+    """
+    if manifest_path is None:
+        return [str(ZG)], {"runtime": "raw_test_package"}
+    path = Path(manifest_path)
+    if not path.is_file():
+        raise ValueError("runtime manifest is missing")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError("runtime manifest is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("runtime manifest must be an object")
+    entrypoint = data.get("entrypoint")
+    if not isinstance(entrypoint, str) or not entrypoint:
+        raise ValueError("runtime manifest has no entrypoint")
+    resolved = Path(entrypoint).resolve()
+    if not resolved.is_relative_to(Path(allowed_root).resolve()):
+        raise ValueError("runtime entrypoint escapes the harness tree")
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ValueError("runtime entrypoint is not an executable file")
+    return [str(resolved)], {
+        "runtime": "patched_thread_runtime",
+        "requested_native_threads": data.get("requested_native_threads"),
+        "observed_total_threads": data.get("observed_total_threads"),
+        "source_sha256": data.get("source_sha256"),
+        "patched_sha256": data.get("patched_sha256"),
+    }
+
+
+def write_runtime(run, command, metadata):
+    """Record the selected engine for the worker and the run-local launcher."""
+    write_json(Path(run) / RUNTIME_FILE, {"entrypoint": command[0], **metadata})
+
+
+def selected_entrypoint(run, allowed_root=ROOT / ".test-tools"):
+    """Resolve the engine for a run: the recorded runtime, else the raw test package."""
+    record = Path(run) / RUNTIME_FILE
+    if not record.is_file():
+        return ZG
+    data = json.loads(record.read_text(encoding="utf-8"))
+    entrypoint = data.get("entrypoint")
+    if not isinstance(entrypoint, str) or not entrypoint:
+        raise ValueError("recorded runtime has no entrypoint")
+    resolved = Path(entrypoint).resolve()
+    if not resolved.is_relative_to(Path(allowed_root).resolve()):
+        raise ValueError("recorded runtime escapes the harness tree")
+    if not resolved.is_file():
+        raise ValueError("recorded runtime is missing")
+    return resolved
 
 
 def environment(run, port):
@@ -228,8 +286,8 @@ class Daemon:
         url = self.env["ZVEC_GREP_SERVER_URL"]
         listen = url.removeprefix("http://").removesuffix("/mcp")
         self.log = (self.run / f"daemon-{self.generation}.private.log").open("w")
-        self.process = subprocess.Popen([str(ZG), "server", "run", "--listen", listen,
-            "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
+        self.process = subprocess.Popen([str(selected_entrypoint(self.run)), "server", "run",
+            "--listen", listen, "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
             cwd=self.run, env=self.env, stdout=self.log, stderr=subprocess.STDOUT,
             start_new_session=True)
         self.tree = ProcessTree(self.process.pid)
@@ -504,7 +562,7 @@ def transport_main(run):
     args = server_args(sys.argv[1:])
     code = 127
     try:
-        code = subprocess.call([str(ZG), *args])
+        code = subprocess.call([str(selected_entrypoint(run)), *args])
         return code
     finally:
         phase, generation = phase_at(run)
@@ -616,12 +674,18 @@ def main(argv=None):
     parser.add_argument("--sample-interval", type=float, default=10, help="/proc sample seconds, .1..30")
     parser.add_argument("--convergence-timeout", type=float, default=120, help="automatic recovery seconds, 1..120")
     parser.add_argument("--engine-restart-at", type=float, help="restart owned daemon after this many active seconds")
+    parser.add_argument("--runtime-manifest", type=Path,
+                        help="prepared private runtime manifest; default raw test package")
     parser.add_argument("--worker-run", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not (1 <= args.duration <= 1800 and 0 <= args.seed_facts <= 1000
             and .1 <= args.sample_interval <= 30 and 1 <= args.convergence_timeout <= 120
             and (args.engine_restart_at is None or 0 <= args.engine_restart_at < args.duration)):
         parser.error("workload outside explicit safety bounds")
+    try:
+        runtime, runtime_metadata = runtime_command(args.runtime_manifest)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.worker_run:
         run = args.worker_run.resolve()
         if (run.parent != RUNS.resolve() or not (run / "OWNER.json").is_file()
@@ -635,10 +699,10 @@ def main(argv=None):
     run = Path(tempfile.mkdtemp(prefix="soak-", dir=RUNS)).resolve()
     run.chmod(0o700)
     report = {"schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
-              "passed": False, "errors": []}
+              "passed": False, "errors": [], "runtime": runtime_metadata}
     try:
         write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 1})
-        if not ZG.is_file() or not (HOST / "agent/memory_provider.py").is_file():
+        if not Path(runtime[0]).is_file() or not (HOST / "agent/memory_provider.py").is_file():
             raise FileNotFoundError("test engine or host checkout missing")
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise RuntimeError("Linux pidfd support required")
@@ -648,6 +712,7 @@ def main(argv=None):
         with (run / "token").open("x") as token:
             token.write(secrets.token_hex(32) + "\n")
         (run / "token").chmod(0o600)
+        write_runtime(run, runtime, runtime_metadata)
         launcher = run / "zg-server-only"
         launcher.write_text(f"#!{sys.executable}\nimport runpy\nfrom pathlib import Path\nm = runpy.run_path({str(Path(__file__).resolve())!r})\nraise SystemExit(m['transport_main'](Path({str(run)!r})))\n")
         launcher.chmod(0o700)
@@ -662,7 +727,7 @@ def main(argv=None):
         report["python"] = sys.version.split()[0]
         for name, path in (("plugin_sha", ROOT), ("host_sha", HOST)):
             report[name] = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, timeout=5).strip()
-        report["zg_version"] = json.loads((ZG.parents[2] / "package.json").read_text())["version"]
+        report["zg_version"] = json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]
     except BaseException as exc:
         report["passed"] = False
         report["errors"].append("preflight_exception:" + type(exc).__name__)

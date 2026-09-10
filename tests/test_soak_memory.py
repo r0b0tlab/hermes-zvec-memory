@@ -1,5 +1,6 @@
 """Offline tests: no native engine, production daemon, or model execution."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -259,3 +260,64 @@ def test_daemon_constructor_failure_still_has_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(soak, "Daemon", BrokenDaemon)
     assert soak.worker(tmp_path, SimpleNamespace(), {}) == 1
     assert (tmp_path / "worker.json").exists()
+
+
+def prepared_runtime(root, name="package/dist/cli/index.js", mode=0o755):
+    entry = root / name
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("#!/usr/bin/env node\n")
+    entry.chmod(mode)
+    return entry
+
+
+def test_runtime_command_defaults_and_reads_a_prepared_manifest(tmp_path):
+    command, metadata = soak.runtime_command(None)
+    assert command == [str(soak.ZG)]
+    assert metadata["runtime"] == "raw_test_package"
+    entry = prepared_runtime(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "entrypoint": str(entry),
+        "requested_native_threads": {"queryThreads": 1, "optimizeThreads": 1},
+        "source_sha256": "pin"}))
+    command, metadata = soak.runtime_command(manifest, allowed_root=tmp_path)
+    assert command == [str(entry)]
+    assert metadata["runtime"] == "patched_thread_runtime"
+    assert metadata["requested_native_threads"] == {"queryThreads": 1, "optimizeThreads": 1}
+    assert metadata["source_sha256"] == "pin"
+
+
+def test_runtime_command_rejects_unsafe_manifests(tmp_path):
+    non_executable = prepared_runtime(tmp_path, "bad/index.js", mode=0o644)
+    outside = prepared_runtime(tmp_path.parent, "outside/index.js")
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not json")
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({}))
+    candidates = [tmp_path / "missing.json", malformed, empty,
+                  tmp_path / "non-exec.json", tmp_path / "outside.json"]
+    (tmp_path / "non-exec.json").write_text(json.dumps({"entrypoint": str(non_executable)}))
+    (tmp_path / "outside.json").write_text(json.dumps({"entrypoint": str(outside)}))
+    for path in candidates:
+        with pytest.raises(ValueError):
+            soak.runtime_command(path, allowed_root=tmp_path)
+
+
+def test_selected_entrypoint_honours_the_recorded_runtime(tmp_path):
+    entry = prepared_runtime(tmp_path)
+    soak.write_runtime(tmp_path, [str(entry)], {"runtime": "patched_thread_runtime"})
+    assert soak.selected_entrypoint(tmp_path, allowed_root=tmp_path) == entry
+    assert soak.selected_entrypoint(tmp_path / "unrelated", allowed_root=tmp_path) == soak.ZG
+
+
+def test_selected_entrypoint_rejects_an_escaped_record(tmp_path):
+    record = tmp_path / "zg-runtime.json"
+    record.write_text(json.dumps({"entrypoint": str(tmp_path.parent / "outside.js")}))
+    with pytest.raises(ValueError):
+        soak.selected_entrypoint(tmp_path, allowed_root=tmp_path)
+
+
+def test_cli_rejects_a_missing_runtime_manifest(tmp_path):
+    with pytest.raises(SystemExit) as excinfo:
+        soak.main(["--duration", "1", "--runtime-manifest", str(tmp_path / "missing.json")])
+    assert excinfo.value.code == 2
