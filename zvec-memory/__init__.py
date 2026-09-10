@@ -280,7 +280,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return self._cap("## Zvec Memory\n" + out)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if self._recall_token() is None:
+        token = self._recall_token()
+        if token is None:
             return ""
         if not self._vault or not query or is_trivial_prompt(query):
             return ""
@@ -293,6 +294,8 @@ class ZvecMemoryProvider(MemoryProvider):
             with self._lock:
                 generation = self._cache_generation
             text = self._run_prefetch_query(query)
+            if self._recall_token() != token:
+                return ""
             if text is not None:
                 self._store_prefetch(query, text, generation)
             return text or ""
@@ -301,7 +304,8 @@ class ZvecMemoryProvider(MemoryProvider):
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if self._recall_token() is None:
+        token = self._recall_token()
+        if token is None:
             return
         # Warm the cache for the next turn off the critical path, so the
         # inline prefetch is usually a dict lookup, not a subprocess spawn.
@@ -320,7 +324,7 @@ class ZvecMemoryProvider(MemoryProvider):
         def _warm() -> None:
             try:
                 text = self._run_prefetch_query(query)
-                if text is not None:
+                if text is not None and self._recall_token() == token:
                     self._store_prefetch(query, text, generation)
             except Exception as exc:
                 logger.debug("zvec-memory background prefetch failed: %s", exc)
@@ -682,7 +686,8 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _handle_search(self, args: dict) -> str:
         try:
-            if self._recall_token() is None:
+            token = self._recall_token()
+            if token is None:
                 return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")
             query = str(args.get("query", "")).strip()
             if not query:
@@ -698,6 +703,8 @@ class ZvecMemoryProvider(MemoryProvider):
             for glob in args.get("globs", []) or []:
                 cmd += ["-g", str(glob)]
             rc, out, err = self._run_zg(cmd, timeout=QUERY_TIMEOUT_S)
+            if self._recall_token() != token:
+                return tool_error("Mirror state changed during search; retry after index cleanup")
             if rc != 0:
                 return tool_error(f"zg query failed: {err.strip()[-300:] or 'unknown error'}")
             return json.dumps({"results": self._cap(out.strip()), "mode": mode})
