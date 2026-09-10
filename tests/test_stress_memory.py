@@ -118,6 +118,19 @@ def test_native_regression_selects_real_tests(tmp_path, monkeypatch, capsys):
     assert "NODE_OPTIONS" in calls[0][1]
 
 
+@pytest.mark.parametrize("citation", ["facts/a.md:7", "matchedBy=fts facts/a.md:1-8"])
+def test_native_queries_accept_real_citation_formats(citation):
+    s = module()
+    wanted = s.expected("run", 1, 2)
+    class Reader:
+        def handle_tool_call(self, name, args):
+            return json.dumps({"results": "query\n#1 " + citation + "\n" + wanted[0]})
+    result = {"errors": [], "queries": []}
+    s.native_queries(Reader(), wanted, result)
+    assert result["errors"] == []
+    assert result["hit_at_5"] == 1
+
+
 def test_native_queries_require_cited_bodies(tmp_path):
     s = module()
     class Reader:
@@ -620,6 +633,52 @@ def test_drain_empty_probe_still_requires_every_pipeline_gate(drain_probe, gate)
     assert reads == [0]
     assert demands == [0]
     assert clock[0] == .05
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_recovery_waits_for_warm_query_before_native_gate(tmp_path, monkeypatch, complete):
+    from queue import Queue
+    from types import SimpleNamespace
+    s = module()
+    clock = [0.0]
+    queue = Queue()
+    queue.put("in-flight warm query")
+    state = {"records": {}, "pending_creates": [], "pending_deletes": [], "refresh_required": False}
+    def sleep(seconds):
+        clock[0] += seconds
+        if complete and clock[0] >= .2 and queue.unfinished_tasks:
+            queue.get_nowait()
+            queue.task_done()
+    monkeypatch.setattr(s.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(s.time, "sleep", sleep)
+    obj = SimpleNamespace(
+        _mirror_inbox=SimpleNamespace(pending=lambda: False, first=lambda: None),
+        _mirror_state=lambda: state, _recall_token=lambda: "ready", _index_ready=lambda: True,
+        _index_requested=False, _index_running=False, _index_worker=None,
+        _disk_worker=SimpleNamespace(_queue=queue, _thread=SimpleNamespace(name="disk", is_alive=lambda: False)),
+        queue_prefetch=lambda *a: None, shutdown=lambda: None)
+    monkeypatch.setattr(s, "provider", lambda *a: obj)
+    monkeypatch.setattr(s, "validate_sources", lambda *a: [])
+    calls = []
+    def status(argv, **kwargs):
+        calls.append("status")
+        assert queue.unfinished_tasks == 0, "native status overlapped warm query"
+        assert argv[-1] == "--check-ready"
+        return SimpleNamespace(returncode=0, stdout="ready", stderr="")
+    monkeypatch.setattr(s.subprocess, "run", status)
+    def queries(*a):
+        assert queue.unfinished_tasks == 0
+        calls.append("queries")
+    monkeypatch.setattr(s, "native_queries", queries)
+    assert s.recover(tmp_path, 0, 2, "native", timeout=.3) == (0 if complete else 1)
+    receipt = json.loads((tmp_path / "recovery.json").read_text())
+    if complete:
+        assert calls == ["status", "queries"]
+        assert receipt["convergence_seconds"] == .2
+    else:
+        assert calls == []
+        assert clock[0] == .3
+        assert "convergence deadline" in receipt["errors"][0]
 
 
 def test_exact_oracle():
