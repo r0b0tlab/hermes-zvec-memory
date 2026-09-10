@@ -364,6 +364,40 @@ def test_duplicate_queued_prefetch_is_coalesced(tmp_path, monkeypatch):
         p.shutdown()
 
 
+@pytest.mark.parametrize("write", ["fact", "turn", "index"])
+def test_writes_invalidate_inflight_prefetch(tmp_path, monkeypatch, write):
+    from threading import Event, Thread
+    p = make_provider(tmp_path)
+    entered, release = Event(), Event()
+    monkeypatch.setattr(p, "is_available", lambda: True)
+    def run(cmd, timeout):
+        if cmd[0] == "query":
+            entered.set()
+            assert release.wait(2)
+            return 0, "stale recalled fact", ""
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    query = "deployment procedure details"
+    thread = Thread(target=p.prefetch, args=(query,))
+    try:
+        thread.start()
+        assert entered.wait(2)
+        if write == "fact":
+            p._write_fact("new fact", "general", "")
+        elif write == "turn":
+            p._append_turn("user", "reply", "session")
+        else:
+            p._maybe_reindex(force=True)
+            assert p._index_worker.drain(2)
+        release.set()
+        thread.join(2)
+        assert p._cached_prefetch(query) is None
+    finally:
+        release.set()
+        thread.join(2)
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
