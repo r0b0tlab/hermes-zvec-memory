@@ -297,6 +297,20 @@ def test_index_retries_native_lock_contention(tmp_path, monkeypatch, code):
         p.shutdown()
 
 
+def test_index_scopes_markdown_only(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    calls = []
+    monkeypatch.setattr(p, "_run_zg", lambda cmd, timeout: (calls.append(cmd) or (0, "", "")))
+    try:
+        p._maybe_reindex(force=True)
+        assert p._index_worker.drain(2)
+        assert "--reset-paths" in calls[0]
+        assert calls[0].count("-g") == 2
+        assert "facts/**/*.md" in calls[0] and "sessions/**/*.md" in calls[0]
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
