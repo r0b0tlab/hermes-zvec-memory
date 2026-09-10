@@ -1,31 +1,29 @@
 #!/usr/bin/env python3
-"""Measure zvec-memory recall quality, latency, and context cost.
+"""Measure synthetic recall in an isolated HOME, Hermes profile and zg state.
 
-Seeds an isolated vault with 20 known facts, rebuilds the index from scratch,
-then runs two query sets through ``memory_search`` in hybrid vs fts-only mode:
+Seeds 20 facts before native rebuild/readiness and provider initialization.
+Reports top-5 hybrid/FTS retrieval, capped visibility, raw latency samples and
+p50/p95. The repeated-identical-query cache microbenchmark is separate from
+distinct next-turn queries; it does not establish predictive prefetch benefits.
 
-* ``paraphrase`` — semantic wording with no shared keywords (worst case for a
-  small static embedding model);
-* ``near`` — the user's own vocabulary (the realistic memory-recall case).
+Gates: near hybrid retrieved_hit@5 >= 0.8, visible_hit@5 >= 0.8,
+context <= 2000 characters, and no execution errors. No latency threshold.
+The default local model is unchanged. Native indexing may download that model.
 
-Reports retrieved_hit@5 (was the fact in the top-5?), visible_hit@5 (did it
-survive the 2000-char injection cap?), p50/p95 latency, and injected context
-size — plus cold vs warmed-cache prefetch latency, which is what
-``queue_prefetch`` buys.
+Example (from repository root):
+    HERMES_AGENT_DIR=/path/to/hermes-agent .venv/bin/python scripts/measure_recall.py \
+        --zg-bin .test-tools/node_modules/.bin/zg --output benchmark.json
 
-Run with the Hermes gateway venv::
-
-    ~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py
-    ~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py \\
-        --embedding local/embeddinggemma-300m
-
-Needs ``zg`` on PATH. Exits nonzero if near-vocabulary hybrid hit@5 < 0.8.
+Use --model-cache /explicit/cache to reuse local model downloads; otherwise
+cache and synthetic data are temporary. Shutdown and thread completion precede
+cleanup. Run as a standalone process, not inside a multithreaded application.
+The JSON file retains exact observations, command output, errors and SHAs;
+stdout prints the same record followed by PASS/FAIL. Exit status is 0/1.
 """
 
 import argparse
 import json
 import os
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -36,13 +34,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
 sys.path.insert(0, str(HERMES_AGENT_DIR))
-
-import importlib.util  # noqa: E402
-
-_spec = importlib.util.spec_from_file_location(
-    "zvec_memory_provider", str(REPO_ROOT / "zvec-memory" / "__init__.py"))
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
 
 FACTS = [
     ("project", "Production deploys require the canary gate to pass before any rollout proceeds", "deploy"),
@@ -94,129 +85,270 @@ NEAR_QUERIES = [
 ]
 
 
+def evaluate_metrics(sets, errors, cap=2000):
+    """Pure correctness gates; latency is evidence, not a guessed threshold."""
+    near = sets.get("near", {})
+    n = near.get("count", 0)
+    failures = []
+    if not n or near.get("hits", {}).get("hybrid", 0) / n < 0.8:
+        failures.append("near retrieved_hit@5 < 0.8")
+    if not n or near.get("visible_hits", 0) / n < 0.8:
+        failures.append("near visible_hit@5 < 0.8")
+    if any(size > cap for result in sets.values() for size in result.get("chars", [])):
+        failures.append(f"context exceeds cap={cap}")
+    if errors:
+        failures.append("execution errors invalidate benchmark")
+    return {"passed": not failures, "failures": failures}
+
+
 def pct(xs, q):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 
 def run_set(p, p_full, queries):
-    """Return (hits, visible_hits, lat, chars, misses) for one query set."""
-    lat = {"hybrid": [], "fts": []}
-    hits = {"hybrid": 0, "fts": 0}
-    visible_hits = 0
-    chars = []
-    misses = []
-    for q, expected in queries:
-        for mode in ("hybrid", "fts"):
-            t0 = time.time()
-            out = json.loads(p_full.handle_tool_call(
-                "memory_search", {"query": q, "mode": mode, "limit": 5}))
-            dt = time.time() - t0
-            lat[mode].append(dt)
-            body = out.get("results", "")
-            if expected in body:
-                hits[mode] += 1
-            elif mode == "hybrid":
-                misses.append((q, expected, body[:200].replace("\n", " | ")))
-        capped_body = json.loads(p.handle_tool_call(
-            "memory_search", {"query": q, "mode": "hybrid", "limit": 5})).get("results", "")
-        chars.append(len(capped_body))
-        if expected in capped_body:
-            visible_hits += 1
-    return hits, visible_hits, lat, chars, misses
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--embedding", default="local/potion-retrieval-32m")
-    args = ap.parse_args()
-
-    tmp = Path(tempfile.mkdtemp(prefix="zvec-measure-"))
-    vault = tmp / "vault"
-    cfg = {"vault": str(vault), "recall_limit": 5, "context_chars": 2000,
-           "reindex_min_seconds": 3600}
-    p = _mod.ZvecMemoryProvider(config=cfg)
-    # Second handle on the same vault with no context cap: separates
-    # retrieval quality (was the fact in the top-5?) from visibility
-    # (did it survive the 2000-char injection cap?). Created after the
-    # rebuild below, when the manifest exists, so it spawns no build.
-    p_full = None
-    try:
-        p.initialize("measure", hermes_home=str(tmp))
-        for cat, text, tags in FACTS:
-            p._write_fact(text, cat, tags)
-
-        # Let the background first-build finish before the clean rebuild:
-        # two concurrent index runs on one vault conflict.
-        for _ in range(24):
-            s = subprocess.run(["zg", "status", str(vault), "--check-ready"],
-                               capture_output=True, text=True, timeout=60)
-            if s.returncode == 0:
-                break
-            time.sleep(5)
-
-        t0 = time.time()
-        r = subprocess.run(
-            ["zg", "index", "--rebuild", "--embedding", args.embedding, str(vault)],
-            capture_output=True, text=True, timeout=900)
-        build_s = time.time() - t0
-        assert r.returncode == 0, r.stderr[-1000:]
-
-        # Wait for a ready index.
-        ready = False
-        for _ in range(24):
-            s = subprocess.run(["zg", "status", str(vault), "--check-ready"],
-                               capture_output=True, text=True, timeout=60)
-            if s.returncode == 0:
-                ready = True
-                break
-            time.sleep(5)
-        assert ready, "index never became ready"
-
-        p_full = _mod.ZvecMemoryProvider(config={**cfg, "context_chars": 100000})
-        p_full.initialize("measure-full", hermes_home=str(tmp))
-
-        print(f"model={args.embedding} facts={len(FACTS)} rebuild_index_s={build_s:.1f}")
-        ok = True
-        for set_name, queries in (("paraphrase", PARAPHRASE_QUERIES), ("near", NEAR_QUERIES)):
-            n = len(queries)
-            hits, visible, lat, chars, misses = run_set(p, p_full, queries)
-            print(f"[{set_name}] hybrid retrieved_hit@5={hits['hybrid']}/{n} "
-                  f"visible_hit@5={visible}/{n} "
-                  f"p50={pct(lat['hybrid'], .5):.2f}s p95={pct(lat['hybrid'], .95):.2f}s")
-            print(f"[{set_name}] fts retrieved_hit@5={hits['fts']}/{n} "
-                  f"p50={pct(lat['fts'], .5):.2f}s p95={pct(lat['fts'], .95):.2f}s")
-            if set_name == "paraphrase":
-                for q, expected, snippet in misses:
-                    print(f"  miss: q={q!r} expected={expected!r} top={snippet!r}")
+    """Retain per-query evidence; failed queries are errors, never misses."""
+    result = {"count": len(queries), "hits": {"hybrid": 0, "fts": 0},
+              "visible_hits": 0, "chars": [], "misses": [], "errors": [],
+              "latency_s": {"hybrid": [], "fts": [], "visible": []}, "samples": []}
+    for query, expected in queries:
+        for mode, provider in (("hybrid", p_full), ("fts", p_full), ("visible", p)):
+            raw = None
+            start = time.perf_counter()
+            try:
+                raw = provider.handle_tool_call("memory_search", {
+                    "query": query, "mode": "fts" if mode == "fts" else "hybrid", "limit": 5})
+                out = json.loads(raw)
+                if (not isinstance(out, dict) or "error" in out
+                        or out.get("success") is False or not isinstance(out.get("results"), str)):
+                    raise ValueError("invalid or failed memory_search response")
+                body = out["results"]
+            except Exception as exc:
+                result["errors"].append({"query": query, "mode": mode,
+                                         "raw": raw, "error": str(exc)})
+                continue
+            elapsed = time.perf_counter() - start
+            hit = expected in body
+            result["latency_s"][mode].append(elapsed)
+            result["samples"].append({"query": query, "expected": expected, "mode": mode,
+                                      "elapsed_s": elapsed, "body": body, "hit": hit})
+            if mode == "visible":
+                result["chars"].append(len(body))
+                result["visible_hits"] += int(hit)
             else:
-                if hits["hybrid"] < 0.8 * n:
-                    print(f"FAIL: [{set_name}] hybrid retrieved_hit@5 below 0.8")
-                    ok = False
-        print(f"hybrid context chars (near set): mean={statistics.mean(chars):.0f} "
-              f"max={max(chars)} (cap=2000)")
+                result["hits"][mode] += int(hit)
+                if not hit and mode == "hybrid":
+                    result["misses"].append({"query": query, "expected": expected, "body": body})
+    n = result["count"]
+    result["retrieved_hit_at_5"] = {mode: hits / n if n else None
+                                    for mode, hits in result["hits"].items()}
+    result["visible_hit_at_5"] = result["visible_hits"] / n if n else None
+    chars = result["chars"]
+    result["context_chars"] = {"mean": sum(chars) / len(chars) if chars else None,
+                               "max": max(chars) if chars else None}
+    return result
 
-        # Cold (subprocess) vs warmed-cache prefetch latency.
-        q0 = PARAPHRASE_QUERIES[0][0]
-        t0 = time.time()
-        p._run_prefetch_query(q0)
-        cold_s = time.time() - t0
-        p.queue_prefetch(q0)
-        deadline = time.time() + 60
-        while time.time() < deadline and not p._cached_prefetch(q0):
-            time.sleep(1)
-        t0 = time.time()
-        p.prefetch(q0)
-        warm_s = time.time() - t0
-        print(f"prefetch latency: cold={cold_s:.2f}s warmed_cache={warm_s:.3f}s "
-              f"speedup={cold_s / max(warm_s, 1e-3):.0f}x")
 
-        print("PASS" if ok else "FAIL")
-        return 0 if ok else 1
-    finally:
-        p.shutdown()
-        if p_full is not None:
-            p_full.shutdown()
+def load_provider():
+    """Import only after HOME/HERMES_HOME have been isolated."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "zvec_benchmark_provider", REPO_ROOT / "zvec-memory" / "__init__.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.ZvecMemoryProvider
+
+
+def latency_summary(samples):
+    return {"p50_s": pct(samples, .5), "p95_s": pct(samples, .95)} if samples else {
+        "p50_s": None, "p95_s": None}
+
+
+def measure_prefetch(provider, errors, timeout=60):
+    """Identical-query microbenchmark is not a next-turn prediction benchmark."""
+    query = PARAPHRASE_QUERIES[0][0]
+    start = time.perf_counter()
+    cold_body = provider.prefetch(query)
+    cold = time.perf_counter() - start
+    provider.queue_prefetch(query)
+    deadline = time.monotonic() + timeout
+    while provider._cached_prefetch(query) is None and time.monotonic() < deadline:
+        time.sleep(.05)
+    ready = provider._cached_prefetch(query) is not None
+    repeat = {"query": query, "uncached_s": cold, "cache_ready": ready,
+              "uncached_chars": len(cold_body), "cached_chars": None, "cached_s": None}
+    if ready:
+        start = time.perf_counter()
+        cached_body = provider.prefetch(query)
+        repeat["cached_s"] = time.perf_counter() - start
+        repeat["cached_chars"] = len(cached_body)
+    else:
+        errors.append({"stage": "prefetch", "query": query, "error": "cache readiness timeout"})
+    if max(repeat["uncached_chars"], repeat["cached_chars"] or 0) > 2000:
+        errors.append({"stage": "repeated_prefetch", "error": "context exceeds cap"})
+    samples = []
+    for query, expected in NEAR_QUERIES:
+        hit = provider._cached_prefetch(query) is not None
+        start = time.perf_counter()
+        body = provider.prefetch(query)
+        samples.append({"query": query, "cache_hit_before": hit,
+                        "elapsed_s": time.perf_counter() - start,
+                        "chars": len(body), "visible_hit": expected in body})
+        # Mirrors the host's SAME completed-turn query, not prediction of the next.
+        provider.queue_prefetch(query)
+    return {"repeated_identical_query": repeat,
+            "distinct_next_turn_queries": {"samples": samples,
+                **latency_summary([s["elapsed_s"] for s in samples])}}
+
+
+def main(argv=None):
+    import threading
+    import platform
+    import hashlib
+    from contextlib import contextmanager
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--embedding", default="local/potion-retrieval-32m")
+    ap.add_argument("--zg-bin", default="zg")
+    ap.add_argument("--output", type=Path, help="write full JSON evidence, including failures")
+    ap.add_argument("--model-cache", type=Path,
+                    help="explicit reusable zg model cache (default: isolated temporary cache)")
+    args = ap.parse_args(argv)
+    # Resolve supplied paths BEFORE replacing HOME.
+    args.zg_bin = str(Path(args.zg_bin).expanduser().resolve()) if "/" in args.zg_bin else args.zg_bin
+    cache = args.model_cache.expanduser().resolve() if args.model_cache else None
+    errors = []
+    record = {"schema_version": 1, "embedding": args.embedding, "facts": len(FACTS),
+              "cap": 2000, "errors": errors, "sets": {}, "commands": [],
+              "provenance": {"python": sys.version, "platform": platform.platform(),
+                  "hermes_agent_dir": str(HERMES_AGENT_DIR), "zg_bin": args.zg_bin,
+                  "model_cache": str(cache) if cache else None,
+                  "facts_sha256": hashlib.sha256(json.dumps(FACTS).encode()).hexdigest()}}
+
+    def command(argv, timeout=60, required=True):
+        start = time.perf_counter()
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            def decoded(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+            evidence = {"argv": argv, "error": "timeout", "timeout_s": timeout,
+                        "stdout": decoded(exc.stdout), "stderr": decoded(exc.stderr),
+                        "elapsed_s": time.perf_counter() - start}
+            record["commands"].append(evidence)
+            errors.append(evidence)
+            raise
+        evidence = {"argv": argv, "returncode": result.returncode,
+                    "stdout": result.stdout, "stderr": result.stderr,
+                    "elapsed_s": time.perf_counter() - start}
+        record["commands"].append(evidence)
+        if required and result.returncode:
+            errors.append(evidence)
+            raise RuntimeError(f"command failed: {argv!r}")
+        return result
+
+    @contextmanager
+    def environment(home):
+        values = {"HOME": str(home), "HERMES_HOME": str(home / "hermes"),
+                  "XDG_CONFIG_HOME": str(home / "config"),
+                  "XDG_DATA_HOME": str(home / "data"),
+                  "ZVEC_GREP_HOME": str(home / "zvec-state"),
+                  "ZVEC_GREP_MODE": "direct",
+                  "ZVEC_GREP_MODEL_CACHE": str(cache or home / "cache" / "zvec-models"),
+                  "XDG_CACHE_HOME": str(home / "cache"),
+                  "HF_HOME": str((cache or home / "cache") / "huggingface"),
+                  "HUGGINGFACE_HUB_CACHE": str((cache or home / "cache") / "huggingface" / "hub"),
+                  "TRANSFORMERS_CACHE": str((cache or home / "cache") / "transformers")}
+        previous = {key: os.environ.get(key) for key in values}
+        os.environ.update(values)
+        try:
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="zvec-measure-") as directory:
+            with environment(Path(directory)):
+                for key, argv in (
+                    ("plugin_sha", ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]),
+                    ("plugin_status", ["git", "-C", str(REPO_ROOT), "status", "--porcelain"]),
+                    ("hermes_sha", ["git", "-C", str(HERMES_AGENT_DIR), "rev-parse", "HEAD"]),
+                    ("node_version", ["node", "--version"]),
+                    ("zg_version", [args.zg_bin, "--version"]),
+                ):
+                    record["provenance"][key] = command(argv).stdout.strip()
+                provider_class = load_provider()
+                vault = Path(directory) / "vault"
+                facts = vault / "facts"
+                facts.mkdir(parents=True)
+                for i, (category, text, tags) in enumerate(FACTS):
+                    (facts / f"fact-{i:02d}.md").write_text(
+                        f"---\ncategory: {category}\ntags: {tags}\n---\n\n{text}\n", encoding="utf-8")
+                start = time.perf_counter()
+                command([args.zg_bin, "index", "--rebuild", "--embedding", args.embedding, str(vault)], 900)
+                record["rebuild_index_s"] = time.perf_counter() - start
+                command([args.zg_bin, "status", str(vault), "--check-ready"])
+                cfg = {"vault": str(vault), "recall_limit": 5, "context_chars": 2000,
+                       "reindex_min_seconds": 3600, "zg_bin": args.zg_bin, "embedding": args.embedding}
+                providers = []
+                existing_threads = set(threading.enumerate())
+                try:
+                    for label, budget in (("measure", 2000), ("measure-full", 100000)):
+                        provider = provider_class(config={**cfg, "context_chars": budget})
+                        providers.append(provider)
+                        # Observe actual native failures, including best-effort prefetch
+                        # which intentionally returns empty context to the host on failure.
+                        original = provider._run_zg
+                        def observed(argv, _original=original, **kwargs):
+                            rc, out, err = _original(argv, **kwargs)
+                            if rc:
+                                errors.append({"stage": "provider_native", "argv": argv,
+                                               "returncode": rc, "stdout": out, "stderr": err})
+                            return rc, out, err
+                        provider._run_zg = observed
+                        provider.initialize(label, hermes_home=os.environ["HERMES_HOME"])
+                    p, p_full = providers
+                    for name, queries in (("paraphrase", PARAPHRASE_QUERIES), ("near", NEAR_QUERIES)):
+                        result = run_set(p, p_full, queries)
+                        result["latency_summary"] = {mode: latency_summary(values)
+                            for mode, values in result["latency_s"].items()}
+                        record["sets"][name] = result
+                        errors.extend(result["errors"])
+                    record["prefetch"] = measure_prefetch(p, errors)
+                    prefetch_chars = [s["chars"] for s in record["prefetch"]["distinct_next_turn_queries"]["samples"]]
+                    if any(size > record["cap"] for size in prefetch_chars):
+                        errors.append({"stage": "prefetch", "error": "context exceeds cap"})
+                finally:
+                    for provider in providers:
+                        try:
+                            provider.shutdown()
+                        except Exception as exc:
+                            errors.append({"stage": "shutdown", "error": repr(exc)})
+                    # Standalone benchmark owns threads created during this runtime.
+                    # Do not inspect evolving provider worker internals or use shutdown
+                    # as a mid-run drain. Wait even after provider's bounded shutdown
+                    # expires: deleting a vault while a worker uses it is unsafe.
+                    while True:
+                        remaining = [t for t in threading.enumerate() if t not in existing_threads]
+                        if not remaining:
+                            break
+                        for thread in remaining:
+                            thread.join()
+    except Exception as exc:
+        errors.append({"stage": "benchmark", "error": repr(exc)})
+    record["gates"] = evaluate_metrics(record["sets"], errors, record["cap"])
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(record, indent=2))
+    print("PASS" if record["gates"]["passed"] else "FAIL")
+    return 0 if record["gates"]["passed"] else 1
 
 
 if __name__ == "__main__":
