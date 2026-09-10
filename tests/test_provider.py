@@ -111,6 +111,16 @@ def test_fact_prefix_collision_preserves_both(tmp_path, monkeypatch):
         p.shutdown()
 
 
+def test_prompt_is_static_after_write(tmp_path):
+    p = make_provider(tmp_path)
+    try:
+        before = p.system_prompt_block()
+        p._write_fact("A new fact", "general", "")
+        assert p.system_prompt_block() == before
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
@@ -118,7 +128,7 @@ def test_name_and_schemas(tmp_path):
         names = {s["name"] for s in p.get_tool_schemas()}
         assert names == {"memory_search", "memory_store"}
         block = p.system_prompt_block()
-        assert "Zvec Memory" in block and "empty" in block
+        assert "Zvec Memory" in block and "memory_store" in block
     finally:
         p.shutdown()
 
