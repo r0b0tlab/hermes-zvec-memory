@@ -592,6 +592,17 @@ def test_invalid_search_options(tmp_path, extra):
         p.shutdown()
 
 
+@pytest.mark.parametrize("mode", ["hybrid", "fts", "vector"])
+def test_dash_prefixed_queries_are_bound_as_values(tmp_path, mode):
+    p = make_provider(tmp_path)
+    try:
+        cmd = p._search_cmd("--allow-remote", mode, 5)
+        assert f"--{mode}=--allow-remote" in cmd
+        assert "--allow-remote" not in cmd
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

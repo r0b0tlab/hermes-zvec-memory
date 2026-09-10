@@ -602,12 +602,8 @@ class ZvecMemoryProvider(MemoryProvider):
             preview = "short"
         cmd = ["query", "--mode", "auto", "--refresh", "background",
                "--preview", preview, "--limit", str(limit)]
-        if mode == "fts":
-            cmd += ["--fts", query]
-        elif mode == "vector":
-            cmd += ["--vector", query]
-        else:
-            cmd += [query]
+        # Verified zg 0.2.2 parser: equals binding prevents option injection.
+        cmd += [f"--{mode}={query}"]
         return cmd
 
     def _run_in_background(self, fn, *args) -> bool:
