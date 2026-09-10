@@ -770,9 +770,8 @@ class ZvecMemoryProvider(MemoryProvider):
                 is_compaction_summary_message,
             )
         except Exception:
-            is_compaction_summary_message = None
-            _MERGED_SUMMARY_DELIMITER = None
-            _MERGED_PRIOR_CONTEXT_HEADER = None
+            logger.warning("zvec-memory extraction skipped: compaction safety filter unavailable")
+            return
 
         import re
 

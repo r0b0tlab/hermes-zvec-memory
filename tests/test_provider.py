@@ -562,6 +562,16 @@ def test_inflight_recall_drops_results_after_mirror_change(tmp_path, monkeypatch
         p.shutdown()
 
 
+def test_auto_extract_fails_closed_when_filter_unavailable(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    monkeypatch.setitem(sys.modules, "agent.context_compressor", None)
+    try:
+        p._auto_extract([{"role": "user", "content": "I prefer generated summaries", "_compressed_summary": True}])
+        assert list((p._vault / "facts").glob("*.md")) == []
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
