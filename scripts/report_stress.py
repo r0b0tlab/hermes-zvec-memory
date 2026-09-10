@@ -37,6 +37,21 @@ Standard raw samples: workers[].samples[{phase, seconds}], recovery.queries[]
 percentiles are ignored. Optional metrics maps names in CUSTOM_METRICS to raw
 numeric sample lists (e.g. {"daemon_rss_kib": [100, 120]}). Unknown names are
 ignored; extend the explicit registry with tests for future schemas, not passthrough.
+The explicit soak adapter supports soak_memory.py receipt v1 (long_lived_soak,
+native_server_only transport). It exports worker callbacks/queries, convergence,
+prefetch, restart timings, resources and per-command/phase native summaries at
+runs[].soak. Native quantiles are NOT raw samples and are never pooled. Nonzero
+native commands remain diagnostic counts, not automatic gate failures. Soak has
+no planned callback count. Query hit rates include intentional absence probes;
+query_gate_failures separately checks required hits and required absences.
+Only known complete metric schemas may claim success; unsupported/incomplete
+successful receipts raise ValueError (CLI exit 2), never pass with empty metrics.
+Partial failed receipts retain failure/status metadata without inferred metrics.
+Parent service/cgroup unit envelopes are NOT supported: point manifest paths at
+inner receipts and propagate outer failures with passed=false/failure_category.
+Cgroup cleanup verification and cgroup peak memory are not exported by this
+adapter; concurrent sampled RSS is a distinct measurement, not cgroup peak.
+No resource JSONL, production snapshot, native command log or private file is read.
 Errors are lists of arbitrary objects (counted as other) or {category: known_enum};
 error_counts maps categories to nonnegative integer occurrence counts. Supply one
 representation per occurrence to avoid double counting. All totals cover observed
@@ -66,7 +81,8 @@ CUSTOM_METRICS = {"daemon_rss_kib", "daemon_threads", "daemon_fds",
                   "query_seconds", "shutdown_seconds", "pending_inbox",
                   "pending_creates", "pending_deletes"}
 ARGUMENTS = {"workers", "records", "seed_facts", "timeout", "iterations",
-             "duration_seconds", "sample_interval_seconds", "context_chars"}
+             "duration_seconds", "sample_interval_seconds", "context_chars",
+             "duration", "sample_interval", "convergence_timeout", "engine_restart_at"}
 
 LANES = {"load", "regression", "native-regression", "soak", "daemon-soak", "corpus", "fault"}
 MODES = {"offline", "native", "direct", "daemon"}
@@ -160,7 +176,10 @@ def summarize(report, index):
     row["query_hit_rate"] = row["query_hits"] / len(queries) if queries else None
     if "convergence_seconds" in report.get("recovery", {}):
         row["convergence_seconds"] = number(report["recovery"]["convergence_seconds"])
-    row["arguments"] = {k: number(v) for k, v in report.get("arguments", {}).items() if k in ARGUMENTS}
+    row["arguments"] = {k: number(v) for k, v in report.get("arguments", {}).items() if k in ARGUMENTS and v is not None}
+    if report.get("lane") == "long_lived_soak":
+        row["lane"], row["mode"] = "long_lived_soak", "native_server_only"
+        row["soak"] = report["soak"]
     return row
 
 
@@ -206,8 +225,109 @@ def comparisons(reports, rows, tags):
     return result
 
 
+SOAK_PHASES = {"cold_start", "warm", "corpus_removal", "warm_after_removal"}
+
+
+def soak_metrics(raw):
+    """Receipt-v1 summaries stay per attempt; never pool their quantiles."""
+    worker, resources = raw["worker"], raw["resources"]
+    native = {}
+    for key, value in raw["native_latency"].items():
+        if key not in {f"{kind}:{phase}" for kind in ("index", "query", "status", "probe")
+                       for phase in SOAK_PHASES}:
+            continue
+        native[key] = {k: (count(value[k]) if k in {"count", "over_prefetch_2s_budget"}
+                           else number(value[k])) for k in (
+            "count", "over_prefetch_2s_budget", "p50_seconds", "p95_seconds", "p99_seconds", "max_seconds")}
+    trends = {}
+    for key, value in resources["trends"].items():
+        match = re.fullmatch(r"(cold_start|warm|corpus_removal|warm_after_removal):generation([0-9]+)", key)
+        if not match:
+            continue
+        slope = value["rss_bytes_per_second"]
+        if slope is not None:
+            if type(slope) not in (int, float) or not math.isfinite(slope):
+                raise ValueError("invalid numeric metric")
+        trends[key] = {"samples": count(value["samples"]), "rss_bytes_per_second": slope,
+                       "classification": "diagnostic_not_leak_proof"}
+    prefetch = {}
+    for kind in ("repeated_query", "distinct_query"):
+        values = [v for v in worker.get("prefetch", []) if v.get("kind") == kind]
+        prefetch[kind] = {"seconds": stats([v["seconds"] for v in values]),
+                          "chars": stats([v["chars"] for v in values]),
+                          "hits": sum(v.get("hit") is True for v in values)}
+    result = {"native_latency": native,
+        "native_nonzero_commands": count(raw["native_nonzero_commands"]),
+        "prefetch_budget_seconds": number(raw["prefetch_budget_seconds"]),
+        "convergence_seconds": stats([v["seconds"] for v in worker["convergence"]]),
+        "prefetch_by_kind": prefetch,
+        "restart_seconds": stats([v["restart_seconds"] for v in worker["restarts"]]),
+        "resources": {"sample_count": count(resources["sample_count"]),
+            "peak_sampled_rss_sum_bytes": count(resources["peak_sampled_rss_sum_bytes"]),
+            "rss_semantics": "concurrent_tree_sum_shared_pages_overcounted",
+            "cpu_semantics": "observed_lifetime_sum_short_lived_children_may_be_missed",
+            "trends": trends}}
+    for key in ("cycles", "final_mirror_records", "active_seconds"):
+        if key in worker:
+            result[key] = number(worker[key]) if key == "active_seconds" else count(worker[key])
+    result["corpus_removed"] = worker.get("corpus_removed") is True
+    result["query_gate_failures"] = sum(
+        (q.get("required") is True and q.get("hit") is not True)
+        or (q.get("absent") is True and q.get("hit") is True)
+        for q in worker["queries"])
+    return result
+
+
+def adapt_report(raw):
+    """Only known schemas can claim success; incomplete failures stay attempts."""
+    soak = raw.get("lane") == "long_lived_soak"
+    version = raw.get("schema_version", 1)
+    supported = type(version) is int and version == 1
+    if soak:
+        worker = raw.get("worker", {})
+        resources = raw.get("resources", {})
+        supported = (supported and raw.get("transport") == "native_server_only"
+            and {"elapsed_seconds", "worker_exit", "leftover_owned_pids", "native_latency",
+                 "native_nonzero_commands", "prefetch_budget_seconds"} <= raw.keys()
+            and {"passed", "callbacks", "queries", "convergence", "prefetch", "restarts"} <= worker.keys()
+            and {"sample_count", "peak_sampled_rss_sum_bytes", "trends", "rss_semantics"} <= resources.keys()
+            and (raw.get("passed") is not True or all(worker[k] for k in ("callbacks", "queries", "convergence"))))
+    else:
+        supported = (supported and enum(raw.get("lane"), LANES) != "unknown"
+            and (enum(raw.get("mode"), MODES) != "unknown" or bool(error_counts(raw)))
+            and {"planned_callbacks", "successful_callbacks", "elapsed_seconds", "workers"} <= raw.keys()
+            and isinstance(raw["workers"], list)
+            and all(isinstance(w, dict) and isinstance(w.get("samples"), list) for w in raw["workers"]))
+    if not supported:
+        if raw.get("passed", raw.get("pass")) is True:
+            raise ValueError("unsupported or incomplete receipt schema")
+        # Failure-only envelope: do not interpret unknown metrics or parent units.
+        result = {k: raw[k] for k in ("lane", "mode", "source_sha", "plugin_sha", "host_sha",
+                                      "errors", "error_counts") if k in raw}
+        result["passed"] = False
+        if soak:
+            result["lane"] = "soak"
+        return result
+    if not soak:
+        return raw
+    worker = raw["worker"]
+    result = dict(raw)
+    result["passed"] = (raw.get("passed") is True and worker.get("passed") is True
+                        and type(raw["worker_exit"]) is int and raw["worker_exit"] == 0
+                        and raw["leftover_owned_pids"] == [])
+    result["mode"] = "native_server_only"
+    result["workers"] = [{**worker, "samples": [
+        {"phase": v["action"], "seconds": v["seconds"]} for v in worker["callbacks"]]}]
+    result["successful_callbacks"] = len(worker["callbacks"])
+    # Duration-driven soak has no planned callback count; do not invent one.
+    result["recovery"] = {"queries": worker["queries"]}
+    result["soak"] = soak_metrics(raw)
+    result["passed"] = result["passed"] and not result["soak"]["query_gate_failures"]
+    return result
+
+
 def aggregate(reports, tags=None, machine=None):
-    reports = list(reports)
+    reports = [adapt_report(r) for r in reports]
     rows = [summarize(r, i) for i, r in enumerate(reports, 1)]
     tags = [{} for _ in reports] if tags is None else tags
     if len(tags) != len(reports):
@@ -233,6 +353,8 @@ def aggregate(reports, tags=None, machine=None):
             "callback_by_phase": phase_stats([s for r in reports for s in samples(r)]),
             "query_seconds": stats([q["seconds"] for q in queries if "seconds" in q]),
             "query_hit_rate": sum(q.get("hit") is True for q in queries) / len(queries) if queries else None,
+            "query_count": len(queries),
+            "query_hits": sum(q.get("hit") is True for q in queries),
             "schema_version": 1, "attempts": len(rows), "failed_attempts": failures,
             "machine": sanitize_machine(machine or {}),
             "custom_metrics": custom_metrics(reports),
@@ -330,7 +452,11 @@ def render(data):
              "Every listed attempt is retained, including retries and missing receipts.",
              "Percentiles: nearest rank over pooled raw samples; means are sample-weighted.",
              "Throughput divides total callbacks by summed run elapsed time, including recovery.",
-             "RSS is peak SINGLE reaped child, not aggregate process-tree memory.",
+             "Legacy RSS is peak SINGLE reaped child, not aggregate process-tree memory.",
+             "Soak RSS is concurrent sampled tree sum: shared pages are overcounted; not PSS.",
+             "Soak CPU sampling may miss short-lived children; trends are diagnostic, not leak proof.",
+             "Soak native latency quantiles remain per-attempt command/phase summaries, never pooled.",
+             "Complete soak metrics are in aggregate.json runs[].soak; CSV is a compact overview.",
              "Error counts are receipt occurrences; coordinator/worker duplicates are not deduplicated.",
              "Scenario labels are anonymous IDs. Unknown fields and identifying text are omitted.",
              "Pooled campaign latency may mix conditions; use per-attempt rows for capacity claims.", "",

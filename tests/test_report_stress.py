@@ -25,6 +25,155 @@ def report(values, passed=True):
                 {"phase": "add", "seconds": v} for v in values]}]}
 
 
+def soak_report():
+    # Shape emitted by soak_memory.supervise + main, not the load schema.
+    return {"schema_version": 1, "lane": "long_lived_soak",
+        "transport": "native_server_only", "passed": True, "errors": [],
+        "elapsed_seconds": 10, "worker_exit": 0, "leftover_owned_pids": [],
+        "worker": {"passed": True, "errors": [], "callbacks": [
+            {"action": "add", "phase": "warm", "seconds": .1},
+            {"action": "remove", "phase": "warm", "seconds": .3}],
+            "queries": [{"phase": "warm", "kind": "fts", "generation": 1,
+                         "seconds": .5, "hit": True, "required": True, "absent": False, "chars": 20}],
+            "convergence": [{"phase": "warm", "seconds": 2}],
+            "prefetch": [{"kind": "repeated_query", "phase": "warm", "generation": 1,
+                          "seconds": .2, "chars": 10, "hit": True}],
+            "restarts": [{"generation": 2, "restart_seconds": 3}],
+            "cycles": 1, "active_seconds": 5, "final_mirror_records": 0, "corpus_removed": True},
+        "resources": {"sample_count": 2, "peak_sampled_rss_sum_bytes": 4096,
+            "rss_semantics": "concurrent_tree_sum_shared_pages_overcounted",
+            "trends": {"warm:generation1": {"samples": 2, "rss_bytes_per_second": -10,
+                                           "classification": "diagnostic_not_leak_proof"}}},
+        # Selected real smoke summary values (no identities or local paths).
+        "native_latency": {"query:warm": {"count": 41, "over_prefetch_2s_budget": 0,
+            "p50_seconds": .9643653579987586, "p95_seconds": 1.6928382410042104,
+            "p99_seconds": 1.7835073890018975, "max_seconds": 1.7835073890018975}},
+        "native_nonzero_commands": 1, "prefetch_budget_seconds": 2,
+        "arguments": {"duration": 5, "seed_facts": 20, "sample_interval": 1,
+                      "convergence_timeout": 120, "engine_restart_at": None}}
+
+
+def test_actual_soak_schema_exports_metrics_without_pooling_native_percentiles():
+    data = tool().aggregate([soak_report(), soak_report()])
+    assert data["passed"] is True
+    assert data["successful_callbacks"] == 4
+    assert data["callback_seconds"]["mean"] == .2
+    assert data["query_seconds"]["count"] == 2
+    row = data["runs"][0]
+    assert (row["lane"], row["mode"]) == ("long_lived_soak", "native_server_only")
+    assert "planned_callbacks" not in row  # duration-driven; no invented plan
+    assert row["callback_by_phase"]["add"]["count"] == 1
+    assert row["soak"]["convergence_seconds"]["max"] == 2
+    assert row["soak"]["prefetch_by_kind"]["repeated_query"]["seconds"]["mean"] == .2
+    assert row["soak"]["restart_seconds"]["max"] == 3
+    assert row["soak"]["native_latency"]["query:warm"]["count"] == 41
+    assert row["soak"]["native_nonzero_commands"] == 1  # transient restart failure, still passes
+    assert "native_latency" not in data  # summary quantiles cannot be pooled
+    resources = row["soak"]["resources"]
+    assert resources["peak_sampled_rss_sum_bytes"] == 4096
+    assert resources["trends"]["warm:generation1"]["rss_bytes_per_second"] == -10
+    assert resources["rss_semantics"] == "concurrent_tree_sum_shared_pages_overcounted"
+    assert "short_lived_children_may_be_missed" in resources["cpu_semantics"]
+    assert row["arguments"]["duration"] == 5
+
+
+@pytest.mark.parametrize("raw", [
+    {"passed": True}, {"passed": True, "lane": "future", "mode": "new"},
+    {**report([1]), "schema_version": 99},
+    {k: v for k, v in report([1]).items() if k != "workers"},
+    {**soak_report(), "schema_version": 2},
+    {**soak_report(), "transport": "private-token"},
+    {k: v for k, v in soak_report().items() if k != "resources"},
+    {**soak_report(), "worker": {"passed": True}},
+])
+def test_unsupported_or_incomplete_schema_rejected(raw):
+    with pytest.raises(ValueError, match="unsupported or incomplete receipt schema"):
+        tool().aggregate([raw])
+
+
+@pytest.mark.parametrize("section,key,value", [
+    (None, "worker_exit", 1), (None, "leftover_owned_pids", [123]),
+    ("worker", "passed", False), ("worker", "errors", ["private exception"]),
+])
+def test_soak_nested_failure_cannot_become_green(section, key, value):
+    raw = soak_report()
+    (raw[section] if section else raw)[key] = value
+    assert tool().aggregate([raw])["passed"] is False
+
+
+def test_soak_partial_failed_receipt_remains_failed():
+    data = tool().aggregate([{"schema_version": 1, "lane": "long_lived_soak",
+        "transport": "native_server_only", "passed": False, "errors": ["private preflight"]}])
+    assert data["failed_attempts"] == 1
+    assert data["error_counts"] == {"other": 1}
+    assert data["callbacks_per_second_including_recovery"] is None
+
+
+def test_soak_share_zip_uses_only_allowlisted_metrics(tmp_path, capsys):
+    import json
+    import zipfile
+    raw = soak_report()
+    secret = "private-host-user-token /home/private/query-body"
+    raw.update(hostname=secret, exception=secret, cgroup_cleanup={"verified": True, "path": secret})
+    raw["worker"]["queries"][0].update(query=secret, body=secret)
+    raw["worker"]["same_handle_ids"] = [123456789]
+    raw["resources"].update(notes=secret, samples_file=secret, rss_semantics=secret)
+    raw["resources"]["trends"][secret] = {"samples": 99}
+    raw["native_latency"][secret] = {"count": 99}
+    raw["native_latency"]["query:warm"]["exception"] = secret
+    raw["worker"]["restarts"][0].update(pid=123456789, instanceToken=secret)
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps(raw))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([str(receipt)]))
+    out = tmp_path / "share"
+    assert tool().main(["--manifest", str(manifest), "--output-dir", str(out), "--zip"]) == 0
+    assert json.loads(capsys.readouterr().out)["passed"] is True
+    with zipfile.ZipFile(out / "share.zip") as bundle:
+        for name in bundle.namelist():
+            text = bundle.read(name).decode()
+            assert secret not in text and "123456789" not in text
+            assert "cgroup_cleanup" not in text
+        exported = json.loads(bundle.read("aggregate.json"))
+        assert exported["runs"][0]["soak"]["native_latency"]["query:warm"]["count"] == 41
+        assert "shared pages" in bundle.read("aggregate.md").decode()
+
+
+def test_unsupported_cli_rejects_without_creating_share(tmp_path, capsys):
+    import json
+    receipt = tmp_path / "private-receipt.json"
+    receipt.write_text(json.dumps({"passed": True, "lane": "private-future-schema"}))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([str(receipt)]))
+    with pytest.raises(SystemExit) as exc:
+        tool().main(["--manifest", str(manifest), "--output-dir", str(tmp_path / "out")])
+    assert exc.value.code == 2
+    assert "private" not in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("field", ["callbacks", "queries", "convergence"])
+def test_successful_soak_requires_observed_metrics(field):
+    raw = soak_report()
+    raw["worker"][field] = []
+    with pytest.raises(ValueError, match="unsupported or incomplete receipt schema"):
+        tool().aggregate([raw])
+
+
+def test_soak_query_counts_and_gate_failures():
+    raw = soak_report()
+    raw["worker"]["queries"].append({"phase": "warm", "kind": "fts", "generation": 1,
+        "seconds": .7, "chars": 0, "hit": False, "required": False, "absent": True})
+    data = tool().aggregate([raw, raw])
+    assert data["query_count"] == 4
+    assert data["query_hits"] == 2
+    assert data["runs"][0]["soak"]["query_gate_failures"] == 0
+    raw["worker"]["queries"][0]["hit"] = False
+    data = tool().aggregate([raw])
+    assert data["passed"] is False
+    assert data["runs"][0]["soak"]["query_gate_failures"] == 1
+
+
 def test_pool_raw_samples_and_keep_every_attempt():
     result = tool().aggregate([report([1], False), report([3, 3, 3])])
     assert result["attempts"] == 2
