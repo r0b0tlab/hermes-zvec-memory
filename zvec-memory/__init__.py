@@ -211,13 +211,20 @@ class ZvecMemoryProvider(MemoryProvider):
         with self._building_lock:
             self._vault_lock = self._vault_locks.setdefault(
                 (os.getpid(), str(self._vault)), VaultLock(self._vault / ".mirror.lock"))
-        self._mirror_inbox = MirrorInbox(self._vault)
         self._disk_worker = Worker("zvec-memory-disk")
         self._index_worker = Worker("zvec-memory-index")
+        self._mirror_ready = False
         try:
-            self._recover_mirrors()
+            self._mirror_inbox = MirrorInbox(self._vault)
+            # Never wait on a peer's long native index transaction at startup.
+            # A closed local gate is a demand-driven recovery obligation too.
+            if self._vault_lock.acquire(blocking=False):
+                try:
+                    self._recover_mirrors()
+                finally:
+                    self._vault_lock.__exit__()
         except Exception:
-            logger.exception("zvec-memory mirror recovery failed; recall disabled")
+            logger.exception("zvec-memory mirror recovery deferred; recall disabled")
         # First-run index build in the background: never block agent startup
         # on an embedding-model download. Claimed per-vault so two handles on
         # the same vault never run concurrent builds against each other.
@@ -403,6 +410,8 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _drain_mirror_inbox(self):
         with self._vault_lock:
+            if self._mirror_inbox is None:
+                self._mirror_inbox = MirrorInbox(self._vault)
             while (item := self._mirror_inbox.first()) is not None:
                 number, payload = item
                 self._apply_mirror(*payload, notification_id=number)
@@ -437,7 +446,7 @@ class ZvecMemoryProvider(MemoryProvider):
         if self._vault is None or not self._mirror_ready:
             return None
         try:
-            if (self._vault / ".mirror-delivery-failed.json").exists() or self._mirror_inbox.first():
+            if (self._vault / ".mirror-delivery-failed.json").exists() or self._mirror_inbox.pending():
                 return None
             state = self._mirror_state()
             token = json.dumps(state, sort_keys=True)
@@ -681,9 +690,21 @@ class ZvecMemoryProvider(MemoryProvider):
     def _retry_pending_index(self):
         # Demand-driven, coalesced retries: no timer threads or inline native work.
         with self._index_state_lock:
-            if (self._shutdown or not self._index_requested or self._index_running
+            if (self._shutdown or self._index_running
                     or time.monotonic() < self._next_index_retry):
                 return
+            if not self._index_requested:
+                if self._vault is None:
+                    return
+                try:
+                    state = self._mirror_state()
+                    pending = (not self._mirror_ready or state.get("refresh_required")
+                               or state["pending_deletes"] or state["pending_creates"]
+                               or self._mirror_inbox is None or self._mirror_inbox.pending())
+                except Exception:
+                    pending = True  # Worker validates/repairs; recall stays closed.
+                if not pending:
+                    return
             self._next_index_retry = time.monotonic() + 1.0
         self._maybe_reindex(force=True)
 

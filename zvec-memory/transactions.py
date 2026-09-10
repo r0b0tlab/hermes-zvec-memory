@@ -13,13 +13,22 @@ class VaultLock:
         self._fd = None
 
     def __enter__(self):
+        self.acquire()
+        return self
+
+    def acquire(self, blocking=True):
         import fcntl
-        self._thread_lock.acquire()
+        if not self._thread_lock.acquire(blocking=blocking):
+            return False
         try:
             if self._depth == 0:
                 fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                except BlockingIOError:
+                    os.close(fd)
+                    self._thread_lock.release()
+                    return False
                 except BaseException:
                     os.close(fd)
                     raise
