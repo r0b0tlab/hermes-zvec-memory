@@ -464,9 +464,17 @@ class ZvecMemoryProvider(MemoryProvider):
                 self._index_extra_args = []
             try:
                 with self._vault_lock:
-                    rc, _out, err = self._run_zg(
-                        ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
-                    )
+                    for attempt in range(4):
+                        rc, _out, err = self._run_zg(
+                            ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
+                        )
+                        transient = any(code in err for code in (
+                            "ZVEC_GREP.ENGINE.LOCK.BUSY",
+                            "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE",
+                        ))
+                        if rc == 0 or not transient or attempt == 3:
+                            break
+                        time.sleep(0.1 * 2 ** attempt)
             except Exception as exc:
                 rc, err = 1, str(exc)
             if rc != 0:

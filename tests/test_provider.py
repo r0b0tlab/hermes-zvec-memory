@@ -278,6 +278,25 @@ def test_index_serialized_between_vault_handles(tmp_path, monkeypatch):
         q.shutdown()
 
 
+@pytest.mark.parametrize("code", ["ZVEC_GREP.ENGINE.LOCK.BUSY", "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE"])
+def test_index_retries_native_lock_contention(tmp_path, monkeypatch, code):
+    p = make_provider(tmp_path)
+    calls, delays = [], []
+    def run(cmd, timeout):
+        calls.append(cmd)
+        return (1, "", code) if len(calls) == 1 else (0, "", "")
+    monkeypatch.setattr(p, "_run_zg", run)
+    monkeypatch.setattr(_mod.time, "sleep", delays.append)
+    try:
+        p._maybe_reindex(force=True)
+        assert p._index_worker.drain(2)
+        assert len(calls) == 2
+        assert delays and 0 < delays[0] <= 1
+        assert p._last_reindex > 0
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
