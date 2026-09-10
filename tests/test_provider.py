@@ -48,6 +48,25 @@ def make_provider(tmp_path, start_index=False, **overrides):
     return p
 
 
+def test_native_config_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    p = ZvecMemoryProvider(config={})
+    p.save_config({"recall_limit": 11, "preview": "full"}, str(tmp_path))
+    p.save_config({"context_chars": 321}, str(tmp_path))
+    q = ZvecMemoryProvider()
+    assert q._recall_limit() == 11
+    assert q._config["preview"] == "full"
+    assert q._config["context_chars"] == 321
+    assert not (tmp_path / "config.yaml").exists()
+
+
+def test_explicit_empty_config_ignores_ambient(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    p = ZvecMemoryProvider(config={})
+    p.save_config({"recall_limit": 11}, str(tmp_path))
+    assert ZvecMemoryProvider(config={})._config == {}
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
