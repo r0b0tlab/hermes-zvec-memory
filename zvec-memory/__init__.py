@@ -139,7 +139,7 @@ class ZvecMemoryProvider(MemoryProvider):
     # Vaults with a first-build already in flight in this process. Prevents
     # two handles on the same vault (e.g. measure + prod) from racing
     # concurrent `zg index` builds against each other.
-    _building_vaults: set = set()
+    _vault_locks: dict = {}
     _building_lock = threading.Lock()
 
     def __init__(self, config: dict | None = None):
@@ -148,9 +148,13 @@ class ZvecMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._automatic_writes = False
         self._lock = threading.Lock()
-        self._index_lock = threading.Lock()
+        self._index_state_lock = threading.Lock()
+        self._index_requested = False
+        self._index_running = False
+        self._index_extra_args = []
         self._prefetch_cache: Dict[str, tuple] = {}
         self._disk_worker = None
+        self._index_worker = None
         self._last_reindex = 0.0
 
 
@@ -194,15 +198,14 @@ class ZvecMemoryProvider(MemoryProvider):
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
         (self._vault / "sessions").mkdir(parents=True, exist_ok=True)
         self._disk_worker = Worker("zvec-memory-disk")
+        self._index_worker = Worker("zvec-memory-index")
+        with self._building_lock:
+            self._vault_lock = self._vault_locks.setdefault(str(self._vault), threading.RLock())
         # First-run index build in the background: never block agent startup
         # on an embedding-model download. Claimed per-vault so two handles on
         # the same vault never run concurrent builds against each other.
         if not (self._vault / ".zvec-grep" / "manifest.json").exists():
-            with ZvecMemoryProvider._building_lock:
-                if str(self._vault) in ZvecMemoryProvider._building_vaults:
-                    return
-                ZvecMemoryProvider._building_vaults.add(str(self._vault))
-            self._run_in_background(self._build_index)
+            self._build_index()
 
     def system_prompt_block(self) -> str:
         if not self._vault:
@@ -316,8 +319,10 @@ class ZvecMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
-        if self._disk_worker is not None and not self._disk_worker.close(timeout=5):
-            logger.warning("zvec-memory disk worker still running after shutdown deadline")
+        deadline = time.monotonic() + 5
+        for worker in (self._disk_worker, self._index_worker):
+            if worker is not None and not worker.close(timeout=max(0, deadline - time.monotonic())):
+                logger.warning("zvec-memory worker still running after shutdown deadline")
 
     # -- optional hooks ---------------------------------------------------
 
@@ -427,38 +432,48 @@ class ZvecMemoryProvider(MemoryProvider):
         return accepted
 
     def _build_index(self) -> None:
-        try:
-            embedding = str(self._config.get("embedding", DEFAULT_EMBEDDING))
-            self._reindex_guarded(["--embedding", embedding])
-        finally:
-            with ZvecMemoryProvider._building_lock:
-                ZvecMemoryProvider._building_vaults.discard(str(self._vault))
+        embedding = str(self._config.get("embedding", DEFAULT_EMBEDDING))
+        self._maybe_reindex(force=True, extra_args=["--embedding", embedding])
 
-    def _maybe_reindex(self, force: bool = False) -> None:
+    def _maybe_reindex(self, force=False, extra_args=None):
         try:
-            min_interval = float(self._config.get("reindex_min_seconds", 600))
+            interval = max(0.0, float(self._config.get("reindex_min_seconds", 600)))
         except (TypeError, ValueError):
-            min_interval = 600
-        with self._lock:
-            if not force and (time.time() - self._last_reindex) < min_interval:
+            interval = 600.0
+        with self._index_state_lock:
+            self._index_requested = True
+            if extra_args:
+                self._index_extra_args = list(extra_args)
+            if self._index_running:
                 return
-            self._last_reindex = time.time()
-        # Always in the background: tool calls return without waiting, and
-        # concurrent index runs serialize on _index_lock instead of failing.
-        self._run_in_background(self._reindex_guarded)
+            if not force and time.monotonic() - self._last_reindex < interval:
+                return
+            self._index_running = True
+            if self._index_worker is None or not self._index_worker.submit(self._index_job):
+                self._index_running = False
+                logger.warning("zvec-memory index request deferred: worker unavailable")
 
-    def _reindex_guarded(self, extra_args: List[str] | None = None) -> None:
-        if not self._index_lock.acquire(blocking=False):
-            return  # another index run already in flight
-        try:
+    def _index_job(self):
+        while True:
+            with self._index_state_lock:
+                if not self._index_requested:
+                    self._index_running = False
+                    return
+                self._index_requested = False
+                extra = self._index_extra_args
+                self._index_extra_args = []
             rc, _out, err = self._run_zg(
-                ["index", str(self._vault), *(extra_args or [])],
-                timeout=INDEX_TIMEOUT_S,
+                ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
             )
             if rc != 0:
-                logger.debug("zvec-memory index run failed: %s", err[-500:])
-        finally:
-            self._index_lock.release()
+                logger.warning("zvec-memory index failed: %s", err[-300:])
+                with self._index_state_lock:
+                    self._index_requested = True
+                    self._index_running = False
+                return
+            self._last_reindex = time.monotonic()
+            with self._lock:
+                self._prefetch_cache.clear()
 
     # -- tool handlers --------------------------------------------------------
 
