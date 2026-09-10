@@ -322,6 +322,24 @@ def test_context_budget_is_hard_limit(tmp_path, budget):
         p.shutdown()
 
 
+def test_empty_prefetch_success_is_cached_but_errors_retry(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    calls = []
+    responses = [(1, "", "error"), (0, "", "")]
+    monkeypatch.setattr(p, "is_available", lambda: True)
+    def run(cmd, timeout):
+        calls.append(timeout)
+        return responses[min(len(calls) - 1, 1)]
+    monkeypatch.setattr(p, "_run_zg", run)
+    try:
+        for _ in range(3):
+            assert p.prefetch("deployment procedure details") == ""
+        assert len(calls) == 2
+        assert calls == [2, 2]
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

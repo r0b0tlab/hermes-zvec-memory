@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
 QUERY_TIMEOUT_S = 60
+PREFETCH_TIMEOUT_S = 2
 INDEX_TIMEOUT_S = 900
 MAX_QUERY_CHARS = 500
 MAX_STORED_CHARS = 2000
@@ -232,29 +233,31 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _store_prefetch(self, query: str, text: str) -> None:
         with self._lock:
-            self._prefetch_cache[query] = (time.time(), text)
+            self._prefetch_cache[query] = (time.monotonic(), text)
             while len(self._prefetch_cache) > 32:
                 oldest = min(self._prefetch_cache,
                              key=lambda k: self._prefetch_cache[k][0])
                 del self._prefetch_cache[oldest]
 
-    def _cached_prefetch(self, query: str) -> str:
+    def _cached_prefetch(self, query: str) -> str | None:
         with self._lock:
             hit = self._prefetch_cache.get(query)
             if not hit:
-                return ""
+                return None
             ts, text = hit
-            if time.time() - ts > self._prefetch_cache_ttl():
-                return ""
+            if time.monotonic() - ts > self._prefetch_cache_ttl():
+                return None
             return text
 
-    def _run_prefetch_query(self, query: str) -> str:
+    def _run_prefetch_query(self, query: str) -> str | None:
         rc, out, _err = self._run_zg(
             self._search_cmd(query[:MAX_QUERY_CHARS], "hybrid", self._recall_limit()),
-            timeout=QUERY_TIMEOUT_S,
+            timeout=PREFETCH_TIMEOUT_S,
         )
         out = out.strip()
-        if rc != 0 or not out:
+        if rc != 0:
+            return None
+        if not out:
             return ""
         return self._cap("## Zvec Memory\n" + out)
 
@@ -265,12 +268,12 @@ class ZvecMemoryProvider(MemoryProvider):
             return ""
         try:
             cached = self._cached_prefetch(query)
-            if cached:
+            if cached is not None:
                 return cached
             text = self._run_prefetch_query(query)
-            if text:
+            if text is not None:
                 self._store_prefetch(query, text)
-            return text
+            return text or ""
         except Exception as exc:
             logger.debug("zvec-memory prefetch failed: %s", exc)
             return ""
@@ -282,13 +285,13 @@ class ZvecMemoryProvider(MemoryProvider):
             return
         if not self.is_available() or not self._index_ready():
             return
-        if self._cached_prefetch(query):
+        if self._cached_prefetch(query) is not None:
             return
 
         def _warm() -> None:
             try:
                 text = self._run_prefetch_query(query)
-                if text:
+                if text is not None:
                     self._store_prefetch(query, text)
             except Exception as exc:
                 logger.debug("zvec-memory background prefetch failed: %s", exc)
