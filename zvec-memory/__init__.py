@@ -154,6 +154,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._index_running = False
         self._index_extra_args = []
         self._prefetch_cache: Dict[str, tuple] = {}
+        self._prefetch_inflight = set()
         self._disk_worker = None
         self._index_worker = None
         self._last_reindex = 0.0
@@ -287,6 +288,10 @@ class ZvecMemoryProvider(MemoryProvider):
             return
         if self._cached_prefetch(query) is not None:
             return
+        with self._lock:
+            if query in self._prefetch_inflight:
+                return
+            self._prefetch_inflight.add(query)
 
         def _warm() -> None:
             try:
@@ -295,8 +300,13 @@ class ZvecMemoryProvider(MemoryProvider):
                     self._store_prefetch(query, text)
             except Exception as exc:
                 logger.debug("zvec-memory background prefetch failed: %s", exc)
+            finally:
+                with self._lock:
+                    self._prefetch_inflight.discard(query)
 
-        self._run_in_background(_warm)
+        if not self._run_in_background(_warm):
+            with self._lock:
+                self._prefetch_inflight.discard(query)
 
     def sync_turn(
         self,
