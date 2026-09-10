@@ -185,6 +185,9 @@ class ZvecMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
         self._vault = self._resolve_vault(kwargs.get("hermes_home"))
+        for directory in ("facts", "sessions"):
+            if (self._vault / directory).is_symlink():
+                raise ValueError(f"Refusing symlinked {directory} directory")
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
         (self._vault / "sessions").mkdir(parents=True, exist_ok=True)
         # First-run index build in the background: never block agent startup

@@ -121,6 +121,22 @@ def test_prompt_is_static_after_write(tmp_path):
         p.shutdown()
 
 
+@pytest.mark.parametrize("directory", ["facts", "sessions"])
+def test_reject_symlinked_source_directories(tmp_path, directory):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / directory).symlink_to(outside, target_is_directory=True)
+    p = ZvecMemoryProvider(config={"vault": str(vault)})
+    try:
+        with pytest.raises(ValueError, match="symlink"):
+            p.initialize("test", hermes_home=str(tmp_path))
+    finally:
+        p.shutdown()
+    assert list(outside.iterdir()) == []
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
