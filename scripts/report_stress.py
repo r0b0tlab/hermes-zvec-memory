@@ -179,6 +179,8 @@ def summarize(report, index):
     if "convergence_seconds" in report.get("recovery", {}):
         row["convergence_seconds"] = number(report["recovery"]["convergence_seconds"])
     row["arguments"] = {k: number(v) for k, v in report.get("arguments", {}).items() if k in ARGUMENTS and v is not None}
+    if "shutdown_policy" in report.get("arguments", {}):
+        row["arguments"]["shutdown_policy"] = enum(report["arguments"]["shutdown_policy"], {"immediate", "drain"})
     if report.get("lane") == "long_lived_soak":
         row["lane"], row["mode"] = "long_lived_soak", "native_server_only"
         row["soak"] = report["soak"]

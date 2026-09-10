@@ -296,6 +296,19 @@ def test_comparisons_require_matched_conditions_and_pool_retries():
     assert tool().aggregate([baseline, fixed], tags=[tags[0], tags[2]])["comparisons"] == []
 
 
+def test_shutdown_policy_is_visible_and_not_compared_across_policies():
+    original, drained = report([0.1]), report([0.01])
+    original["arguments"]["shutdown_policy"] = "immediate"
+    drained["arguments"]["shutdown_policy"] = "drain"
+    original["host_sha"] = drained["host_sha"] = "a" * 40
+    data = tool().aggregate([original, drained], tags=[
+        {"scenario": "same", "variant": "baseline"},
+        {"scenario": "same", "variant": "fix"}])
+    assert data["runs"][0]["arguments"]["shutdown_policy"] == "immediate"
+    assert data["runs"][1]["arguments"]["shutdown_policy"] == "drain"
+    assert data["comparisons"] == []
+
+
 def test_cgroup_resource_metrics_are_preserved_without_private_fields():
     raw = report([0.1])
     raw["metrics"] = {"cgroup_peak_bytes": [123456], "cgroup_cpu_seconds": [2.5],
