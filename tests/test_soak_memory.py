@@ -321,3 +321,32 @@ def test_cli_rejects_a_missing_runtime_manifest(tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         soak.main(["--duration", "1", "--runtime-manifest", str(tmp_path / "missing.json")])
     assert excinfo.value.code == 2
+
+
+def test_soak_receipt_records_the_selected_runtime(tmp_path, monkeypatch):
+    """The coordinator receipt must name the engine that actually ran."""
+    runs = tmp_path / "runs"
+    engine = tmp_path / "engine/dist/cli/index.js"
+    engine.parent.mkdir(parents=True)
+    engine.write_text("#!/usr/bin/env node\n")
+    engine.chmod(0o755)
+    (tmp_path / "engine/package.json").write_text(json.dumps({"version": "0.2.2"}))
+    host = tmp_path / "repo/agent"
+    host.mkdir(parents=True)
+    (host / "memory_provider.py").write_text("")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.setattr(soak, "RUNS", runs)
+    monkeypatch.setattr(soak, "ZG", engine)
+    monkeypatch.setattr(soak, "HOST", repo)
+    monkeypatch.setattr(soak, "ROOT", repo)
+    monkeypatch.setattr(soak, "supervise",
+                        lambda run, command, env, budget, interval: {"passed": True, "errors": []})
+    assert soak.main(["--duration", "1", "--seed-facts", "0"]) == 0
+    run = next(runs.iterdir())
+    report = json.loads((run / "report.json").read_text())
+    assert report["runtime"]["runtime"] == "raw_test_package"
+    assert report["zg_version"] == "0.2.2"
+    assert json.loads((run / "zg-runtime.json").read_text())["entrypoint"] == str(engine)

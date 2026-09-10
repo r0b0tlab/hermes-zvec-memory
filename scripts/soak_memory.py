@@ -723,6 +723,7 @@ def main(argv=None):
         if args.engine_restart_at is not None:
             command += ["--engine-restart-at", str(args.engine_restart_at)]
         report = supervise(run, command, env, args.duration + 240, args.sample_interval)
+        report["runtime"] = runtime_metadata
         report["arguments"] = {k: v for k, v in vars(args).items() if k != "worker_run"}
         report["python"] = sys.version.split()[0]
         for name, path in (("plugin_sha", ROOT), ("host_sha", HOST)):
