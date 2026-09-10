@@ -684,6 +684,10 @@ class ZvecMemoryProvider(MemoryProvider):
         try:
             if not isinstance(args, dict) or not isinstance(args.get("query"), str):
                 return tool_error("Required 'query' must be a string")
+            with self._index_state_lock:
+                dirty = self._index_requested and not self._index_running
+            if dirty:
+                self._maybe_reindex(force=True)
             token = self._recall_token()
             if token is None:
                 return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")
