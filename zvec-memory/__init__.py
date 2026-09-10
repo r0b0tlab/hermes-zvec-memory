@@ -155,6 +155,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._index_extra_args = []
         self._prefetch_cache: Dict[str, tuple] = {}
         self._prefetch_inflight = set()
+        self._cache_generation = 0
         self._disk_worker = None
         self._index_worker = None
         self._last_reindex = 0.0
@@ -232,8 +233,15 @@ class ZvecMemoryProvider(MemoryProvider):
         except (TypeError, ValueError):
             return 120.0
 
-    def _store_prefetch(self, query: str, text: str) -> None:
+    def _invalidate_prefetch(self):
         with self._lock:
+            self._cache_generation += 1
+            self._prefetch_cache.clear()
+
+    def _store_prefetch(self, query: str, text: str, generation=None) -> None:
+        with self._lock:
+            if generation is not None and generation != self._cache_generation:
+                return
             self._prefetch_cache[query] = (time.monotonic(), text)
             while len(self._prefetch_cache) > 32:
                 oldest = min(self._prefetch_cache,
@@ -271,9 +279,11 @@ class ZvecMemoryProvider(MemoryProvider):
             cached = self._cached_prefetch(query)
             if cached is not None:
                 return cached
+            with self._lock:
+                generation = self._cache_generation
             text = self._run_prefetch_query(query)
             if text is not None:
-                self._store_prefetch(query, text)
+                self._store_prefetch(query, text, generation)
             return text or ""
         except Exception as exc:
             logger.debug("zvec-memory prefetch failed: %s", exc)
@@ -292,12 +302,13 @@ class ZvecMemoryProvider(MemoryProvider):
             if query in self._prefetch_inflight:
                 return
             self._prefetch_inflight.add(query)
+            generation = self._cache_generation
 
         def _warm() -> None:
             try:
                 text = self._run_prefetch_query(query)
                 if text is not None:
-                    self._store_prefetch(query, text)
+                    self._store_prefetch(query, text, generation)
             except Exception as exc:
                 logger.debug("zvec-memory background prefetch failed: %s", exc)
             finally:
@@ -507,8 +518,7 @@ class ZvecMemoryProvider(MemoryProvider):
                         self._index_extra_args = extra
                 return
             self._last_reindex = time.monotonic()
-            with self._lock:
-                self._prefetch_cache.clear()
+            self._invalidate_prefetch()
 
     # -- tool handlers --------------------------------------------------------
 
@@ -568,6 +578,7 @@ class ZvecMemoryProvider(MemoryProvider):
         except Exception:
             path.unlink(missing_ok=True)
             raise
+        self._invalidate_prefetch()
         return path
 
     def _append_turn(self, user_content: str, assistant_content: str, session_id: str) -> None:
@@ -581,6 +592,7 @@ class ZvecMemoryProvider(MemoryProvider):
             record += f"**assistant:** {assistant_content[:MAX_TURN_CHARS]}\n\n"
         with open(path, "a", encoding="utf-8") as f:
             f.write(record)
+        self._invalidate_prefetch()
         self._maybe_reindex()
 
     def _auto_extract(self, messages: list) -> None:
