@@ -350,3 +350,38 @@ def test_soak_receipt_records_the_selected_runtime(tmp_path, monkeypatch):
     assert report["runtime"]["runtime"] == "raw_test_package"
     assert report["zg_version"] == "0.2.2"
     assert json.loads((run / "zg-runtime.json").read_text())["entrypoint"] == str(engine)
+
+
+def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch):
+    """A prepared runtime must survive the CLI round trip and stay JSON-safe."""
+    repo = tmp_path / "repo"
+    engine = repo / ".test-tools/engine/dist/cli/index.js"
+    engine.parent.mkdir(parents=True)
+    engine.write_text("#!/usr/bin/env node\n")
+    engine.chmod(0o755)
+    (repo / ".test-tools/engine/package.json").write_text(json.dumps({"version": "0.2.2"}))
+    manifest = repo / ".test-tools/engine/manifest.json"
+    manifest.write_text(json.dumps({
+        "entrypoint": str(engine),
+        "requested_native_threads": {"queryThreads": 1, "optimizeThreads": 1},
+        "observed_total_threads": 61, "source_sha256": "pin", "patched_sha256": "patched"}))
+    (repo / "agent").mkdir(parents=True)
+    (repo / "agent/memory_provider.py").write_text("")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    runs = tmp_path / "runs"
+    monkeypatch.setattr(soak, "RUNS", runs)
+    monkeypatch.setattr(soak, "ZG", engine)
+    monkeypatch.setattr(soak, "HOST", repo)
+    monkeypatch.setattr(soak, "ROOT", repo)
+    monkeypatch.setattr(soak, "supervise",
+                        lambda run, command, env, budget, interval: {"passed": True, "errors": []})
+    assert soak.main(["--duration", "1", "--seed-facts", "0",
+                      "--runtime-manifest", str(manifest)]) == 0
+    run = next(runs.iterdir())
+    report = json.loads((run / "report.json").read_text())
+    assert report["runtime"]["runtime"] == "patched_thread_runtime"
+    assert report["runtime"]["observed_total_threads"] == 61
+    assert report["arguments"]["runtime_manifest"] == str(manifest)
+    assert json.loads((run / "zg-runtime.json").read_text())["entrypoint"] == str(engine)
