@@ -521,6 +521,47 @@ def test_other_handle_cannot_recall_pending_mirror_deletion(tmp_path, monkeypatc
         q.shutdown()
 
 
+@pytest.mark.parametrize("route", ["prefetch", "search", "queued"])
+def test_inflight_recall_drops_results_after_mirror_change(tmp_path, monkeypatch, route):
+    from threading import Event, Thread
+    p = make_provider(tmp_path)
+    p._apply_mirror("add", "user", "old preference", {})
+    assert p._index_worker.drain(2)
+    entered, release = Event(), Event()
+    monkeypatch.setattr(p, "is_available", lambda: True)
+    def run(cmd, timeout):
+        if cmd[0] == "index":
+            return 1, "", "index fault"
+        entered.set()
+        assert release.wait(2)
+        return 0, "old preference", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    result = []
+    query = "old preference details"
+    def recall():
+        result.append(p.prefetch(query) if route == "prefetch" else p.handle_tool_call("memory_search", {"query": query}))
+    thread = Thread(target=recall)
+    try:
+        if route == "queued":
+            p.queue_prefetch(query)
+        else:
+            thread.start()
+        assert entered.wait(2)
+        p._apply_mirror("remove", "user", "", {"old_text": "old preference"})
+        release.set()
+        if route == "queued":
+            assert p._disk_worker.drain(2)
+            assert p._cached_prefetch(query) is None
+        else:
+            thread.join(2)
+            assert result and "old preference" not in result[0]
+    finally:
+        release.set()
+        if thread.ident:
+            thread.join(2)
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
