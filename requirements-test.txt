@@ -1,0 +1,22 @@
+# Isolated test environment validated on Python 3.11.16.
+# Hermes itself is supplied via HERMES_AGENT_DIR, not installed by this file.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+fastapi==0.141.1
+idna==3.19
+iniconfig==2.3.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+packaging==26.3
+pluggy==1.6.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+pygments==2.21.0
+pytest==8.4.2
+python-dotenv==1.1.1
+PyYAML==6.0.2
+rich==14.1.0
+starlette==1.6.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
