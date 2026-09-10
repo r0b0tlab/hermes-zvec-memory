@@ -223,6 +223,32 @@ def test_index_coalesces_requests_without_blocking_disk(tmp_path, monkeypatch):
         p.shutdown()
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_index_failure_retains_dirty_state_and_embedding(tmp_path, monkeypatch, raises):
+    p = make_provider(tmp_path)
+    calls = []
+    def run(cmd, timeout):
+        calls.append(cmd)
+        if len(calls) == 1:
+            if raises:
+                raise OSError("fault")
+            return 1, "", "fault"
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    try:
+        p._build_index()
+        assert p._index_worker.drain(2)
+        assert p._last_reindex == 0
+        assert p._index_requested and not p._index_running
+        p._maybe_reindex(force=True)
+        assert p._index_worker.drain(2)
+        assert len(calls) == 2
+        assert "--embedding" in calls[1]
+        assert p._last_reindex > 0
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

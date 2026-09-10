@@ -462,14 +462,19 @@ class ZvecMemoryProvider(MemoryProvider):
                 self._index_requested = False
                 extra = self._index_extra_args
                 self._index_extra_args = []
-            rc, _out, err = self._run_zg(
-                ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
-            )
+            try:
+                rc, _out, err = self._run_zg(
+                    ["index", str(self._vault), *extra], timeout=INDEX_TIMEOUT_S,
+                )
+            except Exception as exc:
+                rc, err = 1, str(exc)
             if rc != 0:
                 logger.warning("zvec-memory index failed: %s", err[-300:])
                 with self._index_state_lock:
                     self._index_requested = True
                     self._index_running = False
+                    if not self._index_extra_args:
+                        self._index_extra_args = extra
                 return
             self._last_reindex = time.monotonic()
             with self._lock:
