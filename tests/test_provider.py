@@ -503,6 +503,24 @@ def test_mirror_recovery_validates_entire_journal_before_deleting(tmp_path):
         p.shutdown()
 
 
+def test_other_handle_cannot_recall_pending_mirror_deletion(tmp_path, monkeypatch):
+    p, q = make_provider(tmp_path), make_provider(tmp_path)
+    p._apply_mirror("add", "user", "old preference", {})
+    assert p._index_worker.drain(2)
+    monkeypatch.setattr(p, "_run_zg", lambda *a, **k: (1, "", "index fault"))
+    monkeypatch.setattr(q, "is_available", lambda: True)
+    monkeypatch.setattr(q, "_run_zg", lambda *a, **k: (0, "old preference", ""))
+    try:
+        assert "old preference" in q.prefetch("old preference details")
+        p._apply_mirror("remove", "user", "", {"old_text": "old preference"})
+        assert p._index_worker.drain(2)
+        assert q.prefetch("old preference details") == ""
+        assert json.loads(q.handle_tool_call("memory_search", {"query": "old preference"})).get("error")
+    finally:
+        p.shutdown()
+        q.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
