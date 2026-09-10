@@ -225,3 +225,51 @@ def test_peer_transaction_preserves_admission_and_busy_bound(tmp_path, writer):
         assert db.execute("PRAGMA synchronous").fetchone()[0] == 2
         assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 200
     assert not reopened.pending()
+
+
+def test_wal_conversion_waits_for_a_concurrent_holder(tmp_path, monkeypatch):
+    """A peer holding the journal-conversion lock must not kill a second opener.
+
+    Reproduces the native two-process failure: process A converts a fresh inbox
+    to WAL while process B runs ``PRAGMA journal_mode=WAL`` against the same
+    file, which needs a short exclusive lock. B must wait for it, not fail.
+    """
+    import threading
+    monkeypatch.setattr(MirrorInbox, "WAL_CONVERSION_SECONDS", 3.0)
+    path = tmp_path / ".mirror-inbox.sqlite3"
+    holder = sqlite3.connect(path, timeout=5, check_same_thread=False)
+    holder.execute("CREATE TABLE IF NOT EXISTS notifications "
+                   "(id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+    holder.commit()
+    holder.execute("BEGIN IMMEDIATE")
+
+    def release():
+        time.sleep(0.4)
+        holder.rollback()
+
+    thread = threading.Thread(target=release)
+    thread.start()
+    try:
+        inbox = MirrorInbox(tmp_path)
+        assert inbox.first() is None
+        assert inbox._anchor.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        inbox.close()
+    finally:
+        thread.join()
+        holder.close()
+
+
+def test_wal_conversion_is_bounded_when_the_holder_never_releases(tmp_path, monkeypatch):
+    path = tmp_path / ".mirror-inbox.sqlite3"
+    holder = sqlite3.connect(path, timeout=5)
+    holder.execute("CREATE TABLE IF NOT EXISTS notifications "
+                   "(id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+    holder.commit()
+    holder.execute("BEGIN IMMEDIATE")
+    monkeypatch.setattr(MirrorInbox, "WAL_CONVERSION_SECONDS", 0.3)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="WAL"):
+            MirrorInbox(tmp_path)
+    finally:
+        holder.rollback()
+        holder.close()
