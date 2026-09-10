@@ -296,6 +296,19 @@ def test_comparisons_require_matched_conditions_and_pool_retries():
     assert tool().aggregate([baseline, fixed], tags=[tags[0], tags[2]])["comparisons"] == []
 
 
+def test_worker_admission_and_drain_timings_remain_distinct():
+    raw = report([0.1])
+    raw["workers"][0].update(admission_seconds=1.25, drain_seconds=9.5,
+                             pending_at_shutdown={"inbox_pending": False, "private": "secret"})
+    data = tool().aggregate([raw])
+    row = data["runs"][0]
+    assert row["worker_admission_seconds"]["p99"] == 1.25
+    assert row["worker_drain_seconds"]["p99"] == 9.5
+    rendered = tool().render(data)["aggregate.csv"]
+    assert "worker_drain_p99_seconds" in rendered
+    assert "secret" not in str(data)
+
+
 def test_shutdown_policy_is_visible_and_not_compared_across_policies():
     original, drained = report([0.1]), report([0.01])
     original["arguments"]["shutdown_policy"] = "immediate"
