@@ -751,7 +751,10 @@ class ZvecMemoryProvider(MemoryProvider):
             category = str(args.get("category", "general"))
             if category not in ("user_pref", "project", "tool", "general"):
                 return tool_error(f"Unknown category: {category}")
-            tags = str(args.get("tags", "")).strip()
+            tags = args.get("tags", "")
+            if not isinstance(tags, str):
+                return tool_error("'tags' must be a string")
+            tags = tags.strip()
             path = self._write_fact(content[:MAX_STORED_CHARS], category, tags)
             self._maybe_reindex()
             return json.dumps({"status": "stored", "path": str(path)})
