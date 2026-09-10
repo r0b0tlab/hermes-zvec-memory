@@ -340,6 +340,30 @@ def test_empty_prefetch_success_is_cached_but_errors_retry(tmp_path, monkeypatch
         p.shutdown()
 
 
+def test_duplicate_queued_prefetch_is_coalesced(tmp_path, monkeypatch):
+    from threading import Event
+    p = make_provider(tmp_path)
+    entered, release = Event(), Event()
+    calls = []
+    monkeypatch.setattr(p, "is_available", lambda: True)
+    def run(cmd, timeout):
+        calls.append(cmd)
+        entered.set()
+        assert release.wait(2)
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    try:
+        p.queue_prefetch("deployment procedure details")
+        assert entered.wait(2)
+        p.queue_prefetch("deployment procedure details")
+        release.set()
+        assert p._disk_worker.drain(2)
+        assert len(calls) == 1
+    finally:
+        release.set()
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
