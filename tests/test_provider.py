@@ -67,6 +67,14 @@ def test_explicit_empty_config_ignores_ambient(tmp_path, monkeypatch):
     assert ZvecMemoryProvider(config={})._config == {}
 
 
+@pytest.mark.parametrize("raw", ["external", "$HERMES_HOME/external", "${HERMES_HOME}/external"])
+def test_cold_backup_resolves_profile_paths(tmp_path, raw):
+    p = ZvecMemoryProvider(config={"vault": raw})
+    home = Path(os.environ["HERMES_HOME"])
+    assert p.backup_paths() == [str(home / "external")]
+    assert not (home / "external").exists()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
