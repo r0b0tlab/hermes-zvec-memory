@@ -135,6 +135,10 @@ def test_notification_reopens_deferred_inbox_without_prefetch(tmp_path, monkeypa
 
 def _hold_sqlite(path, entered, release):
     with sqlite3.connect(path) as db:
+        # WAL's ordinary BEGIN EXCLUSIVE permits readers. Exclusive connection
+        # locking models genuine temporary inbox unavailability (including open
+        # and SELECT), rather than assuming rollback-journal lock semantics.
+        db.execute("PRAGMA locking_mode=EXCLUSIVE")
         db.execute("BEGIN EXCLUSIVE")
         entered.set()
         assert release.wait(10)
@@ -203,6 +207,9 @@ def test_demand_recovers_inbox_after_worker_sqlite_timeout(tmp_path, monkeypatch
         p._disk_worker.submit(pause)
         assert paused.wait(3)
         p.on_memory_write("remove", "user", "", {"old_text": "obsolete"})
+        # Fault injection: release the idle WAL guard so a peer can make the
+        # entire database unavailable, not merely hold WAL's writer lock.
+        p._mirror_inbox.close()
         child = ctx.Process(target=_hold_sqlite, args=(str(p._mirror_inbox.path), entered, release))
         child.start()
         assert entered.wait(5)

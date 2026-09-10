@@ -382,6 +382,8 @@ class ZvecMemoryProvider(MemoryProvider):
         for worker in (self._disk_worker, self._index_worker):
             if worker is not None and not worker.close(timeout=max(0, deadline - time.monotonic())):
                 logger.warning("zvec-memory worker still running after shutdown deadline")
+        if self._mirror_inbox is not None:
+            self._mirror_inbox.close()
 
     # -- optional hooks ---------------------------------------------------
 

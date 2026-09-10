@@ -11,12 +11,36 @@ class MirrorInbox:
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         os.close(fd)
         with self.connect() as db:
+            # Readers must not block notification commits. WAL still serializes
+            # writers; keep the bounded busy timeout and FULL commit durability.
+            if db.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() != "wal":
+                raise sqlite3.OperationalError("mirror inbox requires WAL journal mode")
             db.execute("CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+            # Keep WAL attached between short-lived operation connections. The
+            # last connection's cleanup takes an exclusive lock, otherwise even
+            # two readers can make nonwaiting discovery spuriously fail closed.
+            anchor = sqlite3.connect(self.path, timeout=0.2, check_same_thread=False)
+            try:
+                anchor.execute("SELECT 1 FROM notifications LIMIT 1").fetchone()
+            except BaseException:
+                anchor.close()
+                raise
+            self._anchor = anchor
+
+    def close(self):
+        anchor = getattr(self, "_anchor", None)
+        self._anchor = None
+        if anchor is not None:
+            anchor.close()
+
+    def __del__(self):
+        self.close()
 
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=0.2)
         try:
+            db.execute("PRAGMA synchronous=FULL")
             with db:
                 yield db
         finally:
