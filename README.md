@@ -1,155 +1,223 @@
 # hermes-zvec-memory
 
-Local-first memory provider for [Hermes Agent](https://github.com/NousResearch/hermes-agent),
-backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`): hybrid
-BM25 + vector search with RRF fusion over a Markdown vault. No cloud, no
-account, no data leaves the machine (unless you explicitly grant a remote
-embedding model).
+A local-first [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+memory provider backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep).
+Markdown facts and session notes are the source of truth; `zg` supplies hybrid
+BM25/vector retrieval with cited file locations. Built-in MEMORY.md/USER.md
+remain separate and available.
 
-## How it works
+## Requirements
 
-- Vault layout under `$HERMES_HOME/zvec-memory/` (profile-scoped):
-  `facts/` (durable facts) + `sessions/` (per-day turn logs), indexed by `zg`
-  into `<vault>/.zvec-grep/`.
-- Each turn, `prefetch` runs one `zg query --preview short --limit 5` (skipped
-  for trivial prompts) and injects compact `path:line` results.
-- Each turn, `sync_turn` appends to the daily session log in the background;
-  reindexing is debounced (default 600 s), never per-turn.
-- Tools: `memory_search` (hybrid/fts/vector + globs + limit) and
-  `memory_store` (append a fact, background reindex).
-- Built-in `memory`-tool writes are mirrored into the vault; optional
-  session-end extraction harvests preferences/decisions (compaction handoffs
-  excluded). `hermes backup` includes the vault via `backup_paths()`.
+- Hermes with the memory-provider plugin interface.
+- Node.js >=22 and `@zvec/zvec-grep@0.2.2` (the native engine version tested here).
+- A local embedding model, default `local/potion-retrieval-32m`.
+- POSIX filesystem locking (Linux tested; macOS not yet exercised). Windows is
+  explicitly unsupported by the process-safe transaction layer.
 
-## Install
+Installing a plugin is not activating it. Only one external provider can be
+active per Hermes profile. Do not modify Hermes core to install this provider.
 
-Prerequisites: Node.js 22+, then:
+## Installation
 
-```bash
-npm install -g @zvec/zvec-grep
+From this repository, install zg in a user-owned prefix, or use an existing
+validated installation. A project-local example is:
+
+```sh
+npm install --prefix .test-tools --save-exact @zvec/zvec-grep@0.2.2
 ```
 
-Install the provider (files only — does not change your active provider):
+On systems where sharp attempts an unwanted build against global libvips, use
+`SHARP_IGNORE_GLOBAL_LIBVIPS=1` for that installation command. Do not install
+Python dependencies into the operating system's Python.
 
-```bash
-cp -r zvec-memory "${HERMES_HOME:-~/.hermes}/plugins/zvec-memory"
-hermes memory status   # zvec-memory appears with availability
+For a first plugin install (refuse to overwrite an existing provider):
+
+```sh
+HERMES_TARGET="${HERMES_HOME:-$HOME/.hermes}"
+mkdir -p "$HERMES_TARGET/plugins"
+test ! -e "$HERMES_TARGET/plugins/zvec-memory" &&
+  cp -R zvec-memory "$HERMES_TARGET/plugins/zvec-memory"
+hermes memory status
 ```
 
-Activate (switches recall for all future sessions — one provider at a time):
+For an upgrade, stop/drain sessions using this provider and back up the previous
+plugin directory and provider data before replacing the directory. Never copy
+new files over old files while provider workers are still running.
 
-```bash
-hermes memory setup    # pick zvec-memory
+Configure a stable absolute `zg_bin` path if zg is not on the Hermes process's
+PATH. A test checkout is not a suitable permanent production dependency path.
+Then use `hermes memory setup`, choose zvec-memory, and start a fresh session.
+The current conversation does not hot-swap its provider or tool schemas.
+
+## Configuration
+
+Canonical file: `$HERMES_HOME/zvec-memory/config.json`.
+
+```json
+{
+  "vault": "$HERMES_HOME/zvec-memory",
+  "zg_bin": "zg",
+  "embedding": "local/potion-retrieval-32m",
+  "recall_limit": 5,
+  "context_chars": 2000,
+  "preview": "short",
+  "auto_extract": false,
+  "reindex_min_seconds": 600,
+  "prefetch_cache_seconds": 120
+}
 ```
 
-For faster repeat recall, keep the shared daemon up (shares loaded models,
-background refresh):
+Omit `vault` for the profile-local default. Relative vault paths are resolved
+against the active Hermes home; both `$HERMES_HOME` and `${HERMES_HOME}` expand.
+The declared desktop panel and provider setup use the same JSON store.
 
-```bash
-zg server on
+If JSON is absent, legacy `plugins.zvec-memory` in config.yaml is read without
+modifying it. The first provider `save_config` preserves legacy values while
+writing JSON. Once JSON exists it is authoritative, even when empty: removed
+JSON keys do not reappear from legacy YAML. Malformed configuration raises
+instead of silently resetting user choices. Partial saves preserve other keys.
+Use Hermes's config CLI for host settings such as `memory.provider`; never
+hand-edit the host YAML as part of plugin installation.
+
+`recall_limit` is bounded to 1–50. `context_chars` caps recall text including its
+heading/truncation marker. `preview` is `none`, `short`, or `full`.
+Changing embedding requires an explicit rebuild with the selected local model:
+
+```sh
+zg index --rebuild --embedding local/potion-retrieval-32m /absolute/vault
+```
+
+Do not use a remote model, credential, endpoint, or remote authorization grant
+unless the user explicitly agrees to send vault/query text off-machine.
+Model downloads require network; local retrieval itself needs no cloud account.
+
+## Persistence and privacy
+
+- `facts/`: explicitly stored facts and tracked built-in memory mirrors.
+- `sessions/`: daily text logs; each record captures its originating session ID
+  before asynchronous work. User/assistant portions are truncated to 1500
+  characters each. This is not an archival transcript/checkpoint guarantee.
+- `.mirror-map.json` and `.mirror-staging/`: mirror ownership/recovery state;
+  these are not recall documents. Indexing is restricted to Markdown in facts
+  and sessions, not the provider's JSON configuration.
+- `.mirror-inbox.sqlite3`: durable FIFO for critical built-in notifications,
+  using Python's stdlib SQLite. This is a delivery queue, not a replacement
+  retrieval database. Pending notifications are replayed after restart.
+- `.mirror.lock`: POSIX transaction lock shared by separate Hermes processes.
+- `.mirror-delivery-failed.json`: fail-closed marker if notification persistence
+  fails. Restore storage health and reconcile the built-in memories with their
+  owned mirror records before removing this marker; do not blindly delete it
+  to silence an error. Snapshot the inbox/map/facts together before repair.
+- `.zvec-grep/`: rebuildable native index.
+
+Facts use exclusive private file creation instead of content-derived colliding
+names. Symlinked writer directories are rejected. Explicit memory_store returns
+`stored` only after the file write succeeds; index visibility is asynchronous.
+Automatic persistence uses a bounded FIFO and logs rejected work or incomplete
+shutdown rather than claiming it was flushed.
+
+Built-in add/replace/remove notifications affect only mapped mirror-owned facts.
+A recovery journal protects interrupted mirror publication/deletion; recall is
+withheld while required native index cleanup remains incomplete. Ambiguous
+legacy ownership is not guessed. Existing add-only legacy mirror files require
+an explicit operator-approved adoption through `migrate_legacy_mirrors(entries)`
+with exact path, target, and original content, followed by validation.
+
+Removing a mirrored fact is NOT full erasure. Old text may remain in session
+history, backups, or snapshots. Do not promise a privacy deletion across those
+stores. Automatic preference extraction is off by default, uses only user
+messages, and refuses extraction if its compaction-safety filters are missing.
+Pre-compress behavior remains best-effort API v1, not a durable API v2 checkpoint.
+
+## Recall and indexing
+
+The provider offers `memory_search` (hybrid, fts, vector, globs, limit) and
+`memory_store` (content, category, tags). Queries are passed as explicit argv
+values, including strings beginning with a dash; no shell evaluation is used.
+Prefetch has a short timeout and fails open to no context; explicit tool errors
+remain visible. Empty successful results are cached, errors are retried, and
+writes/index changes invalidate stale prefetch results.
+
+Index refresh is coalesced and debounced; failed runs retain dirty state.
+After bounded immediate contention retries, later automatic prefetch or explicit
+search reschedules dirty work with a one-second cooldown. Retry is demand-driven,
+not a persistent periodic timer, and is suppressed during shutdown. The first
+search following a
+write may not see it yet: wait for a successful refresh before asserting that
+new/deleted data is visible/absent. Native lock/lease contention is not success.
+
+For lower warm-query latency, a local zg daemon keeps models loaded:
+
+```sh
+zg server on --listen 127.0.0.1:7999 --token-file /absolute/private/server.token
 zg server status --check-ready
 ```
 
-First run builds the vault index in the background
-(`local/potion-retrieval-32m` downloads on first use and stays cached under
-`~/.zvec-grep/models`). Check it with:
+Create a private random token first and configure clients with the matching
+`ZVEC_GREP_SERVER_TOKEN_FILE`. Use a dedicated `ZVEC_GREP_HOME` and loopback
+address for isolation. An unauthenticated daemon is not the recommended default.
+Supervise it with the OS user service manager for restart/login persistence.
+Never start a second daemon on an occupied port or stop someone else's daemon.
+Without a daemon, `--refresh background` falls back to no refresh in direct zg;
+the provider's own index scheduling remains necessary.
 
-```bash
-zg status "${HERMES_HOME:-~/.hermes}/zvec-memory" --check-ready
-```
+## Validation
 
-## Configure
-
-In `$HERMES_HOME/config.yaml`:
-
-```yaml
-plugins:
-  zvec-memory:
-    vault: $HERMES_HOME/zvec-memory
-    embedding: local/potion-retrieval-32m   # code-heavy vaults: local/potion-code-16m-v2
-    recall_limit: 5
-    context_chars: 2000
-    preview: short                          # none | short | full
-    auto_extract: false
-    reindex_min_seconds: 600
-```
-
-Changing `embedding` (or a remote endpoint) requires an explicit rebuild:
-
-```bash
-zg index --rebuild --embedding local/jina-embeddings-v2-base-code <vault>
-```
-
-Remote embeddings (Qwen) send vault/query text off-machine and need both a
-credential and an explicit grant — never automatic:
-
-```bash
-zg config provider set qwen --api-key "$DASHSCOPE_API_KEY"
-zg auth grant --capability embedding --scope workspace <vault>
-```
-
-## Verify
-
-```bash
+```sh
 hermes memory status
-zg status <vault> --check-ready
+zg status /absolute/vault --check-ready
 ```
 
-Then in a fresh session ask something stored in the vault and confirm
-`memory_search` returns it with a `path:line` citation.
+In a fresh Hermes session, store a harmless fact and retrieve it by paraphrase,
+checking the cited file content. `backup_paths()` resolves custom vaults without
+initialization; Hermes itself decides which external locations are eligible for
+backup. A backup is not proven until its contents are inspected.
 
-## Measure recall
+Offline tests require a Hermes checkout on `HERMES_AGENT_DIR` and a separate
+Python environment with the pinned test dependencies:
 
-`scripts/measure_recall.py` seeds an isolated vault with 20 known facts,
-rebuilds the index, and runs two query sets (10 paraphrased worst-case
-queries + 10 same-vocabulary realistic queries) through `memory_search`:
-
-```bash
-~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py
-~/.hermes/hermes-agent/venv/bin/python scripts/measure_recall.py \
-  --embedding local/embeddinggemma-300m
+```sh
+uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -r requirements-test.txt
+HERMES_AGENT_DIR=/absolute/hermes-agent .venv/bin/python -m pytest tests/ -m 'not integration' -q
 ```
 
-Reference numbers (20 facts, `local/potion-retrieval-32m`, 2026-09-04):
+Native tests require explicit opt-in and a reusable local model cache:
 
-| set | hybrid hit@5 | fts hit@5 | p50 |
-| --- | --- | --- | --- |
-| same-vocabulary (realistic) | 10/10, all visible under the 2000-char cap | 10/10 | 0.25 s |
-| paraphrased (adversarial) | 6/10 | 4/10 | 0.28 s |
-| paraphrased, `embeddinggemma-300m` | 6/10 (different misses, same count) | 4/10 | 0.29 s, p95 4.3 s |
-
-The bigger model did not move paraphrase recall but cost 125 s to build vs
-3 s — so `potion-retrieval-32m` stays the default; paraphrase-heavy recall
-is a retrieval-tuning limit, not a model-size limit, at this vault scale.
-
-Plus: warmed-cache prefetch is ~0.000 s vs ~0.27 s cold (~265x) — that is
-what `queue_prefetch` buys every turn. If your vault needs better
-paraphrase-heavy recall, the levers are query-side (hybrid groups, `--fuse`,
-globs) and content-side (richer fact wording), not a bigger embedding —
-see `docs/04-pipeline.md` upstream.
-
-## Run tests
-
-```bash
-~/.hermes/hermes-agent/venv/bin/python -m pytest tests/ -q
+```sh
+HERMES_AGENT_DIR=/absolute/hermes-agent \
+ZVEC_RUN_NATIVE=1 \
+ZVEC_TEST_BIN=/absolute/zg \
+ZVEC_TEST_MODEL_CACHE=/absolute/test-model-cache \
+.venv/bin/python -m pytest tests/test_zg_native.py tests/test_provider_native.py -q
 ```
 
-(Hermes source must be importable: run from the hermes-agent checkout or set
-`HERMES_AGENT_DIR`. Tests that need `zg` skip when it is absent.)
+These use synthetic data and temporary homes. Host-contract tests exercise the
+real loader, manager, declared config writer, and cold backup discovery without
+mocking the provider interface.
 
-## Layout
+## Measurement, not speed claims
 
-```text
-zvec-memory/
-  __init__.py        provider (MemoryProvider ABC + register(ctx))
-  plugin.yaml        name/version/description/hooks
-  config_schema.py   declarative desktop config panel
-tests/
-  test_provider.py
+```sh
+HERMES_AGENT_DIR=/absolute/hermes-agent .venv/bin/python scripts/measure_recall.py \
+  --zg-bin /absolute/zg --model-cache /absolute/test-model-cache \
+  --output benchmark-results/recall.json
 ```
 
-## Credits
+The script seeds before initialization, records exact versions/SHAs, fails on
+native errors, and separately reports retrieved hit@5, visible hit@5, context
+size, repeated-identical-query cache latency, and distinct-next-turn latency.
+It cleans its temporary vault after workers stop. JSON output includes full
+synthetic query evidence and failures.
 
-Recall engine: [zvec-ai/zvec-grep](https://github.com/zvec-ai/zvec-grep)
-(Apache-2.0). Provider pattern follows Hermes's bundled `holographic` memory
-provider. MIT licensed (see LICENSE).
+Hermes queues the just-completed query, not a predicted next query. A repeated
+cache hit is not evidence that all subsequent questions become faster. Initial
+same-hardware comparison retained 10/10 near-wording and 8/10 paraphrase hybrid
+recall in both baseline and hardened providers; no general speedup was shown.
+See [review evidence](docs/review-results.md) for tested versions, limitations,
+and actual deployment/benchmark results rather than extrapolating old numbers.
+
+## License
+
+MIT. Retrieval engine zvec-grep is Apache-2.0. This provider stays a standalone
+plugin and does not patch Hermes core.
