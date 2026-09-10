@@ -47,6 +47,14 @@ def test_query_errors_are_not_misses(response):
     assert result["errors"][0]["raw"] == response
 
 
+def test_query_echo_is_not_retrieval_evidence():
+    body = "query groups (1):\nQ1 [primary]: needle\nhits: 0\n"
+    p = SimpleNamespace(handle_tool_call=lambda *args: json.dumps({"results": body}))
+    result = benchmark.run_set(p, p, [("needle", "needle")])
+    assert result["hits"]["hybrid"] == 0
+    assert result["visible_hits"] == 0
+
+
 @pytest.mark.parametrize("native_rc", [0, 9])
 def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc):
     import os

@@ -106,6 +106,13 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 
+def result_evidence(body):
+    """Exclude zg's echoed input from recall-quality evidence."""
+    if "query groups (" in body:
+        return body.partition("\n#1 ")[2]
+    return body
+
+
 def run_set(p, p_full, queries):
     """Retain per-query evidence; failed queries are errors, never misses."""
     result = {"count": len(queries), "hits": {"hybrid": 0, "fts": 0},
@@ -128,7 +135,7 @@ def run_set(p, p_full, queries):
                                          "raw": raw, "error": str(exc)})
                 continue
             elapsed = time.perf_counter() - start
-            hit = expected in body
+            hit = expected in result_evidence(body)
             result["latency_s"][mode].append(elapsed)
             result["samples"].append({"query": query, "expected": expected, "mode": mode,
                                       "elapsed_s": elapsed, "body": body, "hit": hit})
@@ -195,7 +202,7 @@ def measure_prefetch(provider, errors, timeout=60):
         body = provider.prefetch(query)
         samples.append({"query": query, "cache_hit_before": hit,
                         "elapsed_s": time.perf_counter() - start,
-                        "chars": len(body), "visible_hit": expected in body})
+                        "chars": len(body), "visible_hit": expected in result_evidence(body)})
         # Mirrors the host's SAME completed-turn query, not prediction of the next.
         provider.queue_prefetch(query)
     return {"repeated_identical_query": repeat,
