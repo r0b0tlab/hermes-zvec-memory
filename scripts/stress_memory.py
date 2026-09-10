@@ -390,7 +390,17 @@ def observe_descendants(child):
         if parent in visited:
             continue
         visited.add(parent)
-        for path in Path(f"/proc/{parent}/task").glob("*/children"):
+        try:
+            paths = list(Path(f"/proc/{parent}/task").glob("*/children"))
+        except FileNotFoundError:
+            # Python 3.11 glob can lose the parent between is_dir and scandir.
+            # Only a vanished process is benign, not missing live diagnostics.
+            try:
+                process_identity(parent)
+            except FileNotFoundError:
+                continue
+            raise
+        for path in paths:
             try:
                 descendants = [int(pid) for pid in path.read_text().split()]
             except FileNotFoundError:
@@ -612,6 +622,7 @@ def regression_campaign(run, args, report):
             report["completed_iterations"] += 1
         except Exception as exc:
             receipt["errors"].append(repr(exc))
+            receipt["traceback"] = traceback.format_exc()
             report["errors"].append(f"iteration {i}: {exc!r}")
         finally:
             receipt["elapsed_seconds"] = time.monotonic()-began
