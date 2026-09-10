@@ -618,6 +618,61 @@ def test_search_schedules_debounced_dirty_index_without_daemon(tmp_path, monkeyp
         p.shutdown()
 
 
+def test_auto_extract_keeps_only_real_pre_delimiter_text(tmp_path):
+    from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER
+    p = make_provider(tmp_path)
+    try:
+        p._auto_extract([
+            {"role": "user", "content": "I prefer generated summary text", "_compressed_summary": True},
+            {"role": "user", "content": _MERGED_PRIOR_CONTEXT_HEADER + "\nI prefer green tea\n" + _MERGED_SUMMARY_DELIMITER + "\nI prefer fabricated coffee", "_compressed_summary": True},
+        ])
+        files = list((p._vault / "facts").glob("*.md"))
+        assert len(files) == 1
+        assert "green tea" in files[0].read_text()
+        assert "fabricated" not in files[0].read_text()
+    finally:
+        p.shutdown()
+
+
+@pytest.mark.parametrize("tool", ["memory_search", "memory_store"])
+@pytest.mark.parametrize("args", [None, [], "text"])
+def test_invalid_tool_envelope(tmp_path, tool, args):
+    p = make_provider(tmp_path)
+    try:
+        assert json.loads(p.handle_tool_call(tool, args)).get("error")
+    finally:
+        p.shutdown()
+
+
+@pytest.mark.parametrize("limit,expected", [(-3, 1), (0, 1), (5, 5), (100, 50)])
+def test_valid_search_limit_clamps_and_globs_pass_through(tmp_path, monkeypatch, limit, expected):
+    p = make_provider(tmp_path)
+    calls = []
+    monkeypatch.setattr(p, "_run_zg", lambda cmd, timeout: (calls.append(cmd) or (0, "", "")))
+    try:
+        result = json.loads(p.handle_tool_call("memory_search", {"query": "details", "limit": limit, "globs": ["facts/**", "!sessions/**"]}))
+        assert "error" not in result
+        cmd = calls[0]
+        assert cmd[cmd.index("--limit") + 1] == str(expected)
+        assert cmd[-4:] == ["-g", "facts/**", "-g", "!sessions/**"]
+    finally:
+        p.shutdown()
+
+
+def test_legacy_mirror_ownership_requires_explicit_migration(tmp_path):
+    p = make_provider(tmp_path)
+    legacy = p._write_fact("legacy preference", "user_pref", "mirror")
+    try:
+        p._apply_mirror("remove", "user", "", {"old_text": "legacy preference"})
+        assert legacy.exists()
+        assert hasattr(p, "migrate_legacy_mirrors"), "explicit ownership migration is missing"
+        p.migrate_legacy_mirrors([{"path": str(legacy.relative_to(p._vault)), "target": "user", "content": "legacy preference"}])
+        p._apply_mirror("remove", "user", "", {"old_text": "legacy preference"})
+        assert not legacy.exists()
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

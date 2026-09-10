@@ -485,6 +485,31 @@ class ZvecMemoryProvider(MemoryProvider):
         self._invalidate_prefetch()
         self._maybe_reindex(force=True)
 
+    def migrate_legacy_mirrors(self, entries):
+        """Explicit maintenance API: adopt only operator-specified legacy files.
+
+        Entries supply exact path, target and original content. Never invoked
+        during startup, extraction, or normal memory notifications.
+        """
+        import hashlib
+        with self._vault_lock:
+            state = self._mirror_state()
+            for entry in entries:
+                path = self._mirror_file(entry["path"])
+                target, content = entry["target"], entry["content"]
+                text = path.read_text(encoding="utf-8")
+                if target not in {"user", "memory"} or not isinstance(content, str) or not content:
+                    raise ValueError("Invalid legacy mirror entry")
+                if "\ntags: mirror\n" not in text or not text.endswith("\n\n" + content + "\n"):
+                    raise ValueError("Legacy mirror content does not match the specified file")
+                key = hashlib.sha256((target + "\0" + content).encode()).hexdigest()
+                record = {"path": str(path.relative_to(self._vault)), "target": target, "content": content}
+                if key in state["records"] and state["records"][key] != record:
+                    raise ValueError("Legacy mirror conflicts with existing ownership")
+                state["records"][key] = record
+            self._save_mirror_state(state)
+        self._invalidate_prefetch()
+
     def _finish_mirror_deletes(self, state):
         # Stage outside the indexed scope, commit the map, then publish.
         # A map-write exception can occur after replace: never discard a
