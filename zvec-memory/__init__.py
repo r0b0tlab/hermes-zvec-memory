@@ -697,13 +697,16 @@ class ZvecMemoryProvider(MemoryProvider):
             mode = str(args.get("mode", "hybrid"))
             if mode not in ("hybrid", "fts", "vector"):
                 return tool_error(f"Unknown mode: {mode}")
-            try:
-                limit = max(1, min(50, int(args.get("limit", self._recall_limit()))))
-            except (TypeError, ValueError):
-                limit = self._recall_limit()
+            limit = args.get("limit", self._recall_limit())
+            if isinstance(limit, bool) or not isinstance(limit, int):
+                return tool_error("'limit' must be an integer")
+            limit = max(1, min(50, limit))
+            globs = args.get("globs")
+            if globs is not None and (not isinstance(globs, list) or not all(isinstance(g, str) for g in globs)):
+                return tool_error("'globs' must be a list of strings or null")
             cmd = self._search_cmd(query[:MAX_QUERY_CHARS], mode, limit)
-            for glob in args.get("globs", []) or []:
-                cmd += ["-g", str(glob)]
+            for glob in globs or []:
+                cmd += ["-g", glob]
             rc, out, err = self._run_zg(cmd, timeout=QUERY_TIMEOUT_S)
             if self._recall_token() != token:
                 return tool_error("Mirror state changed during search; retry after index cleanup")

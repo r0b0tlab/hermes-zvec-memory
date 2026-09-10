@@ -583,6 +583,15 @@ def test_invalid_required_tool_values(tmp_path, tool, key, value):
         p.shutdown()
 
 
+@pytest.mark.parametrize("extra", [{"globs": "facts/**"}, {"globs": [None]}, {"globs": {}}, {"limit": True}, {"limit": "5"}, {"limit": 1.2}])
+def test_invalid_search_options(tmp_path, extra):
+    p = make_provider(tmp_path)
+    try:
+        assert json.loads(p.handle_tool_call("memory_search", {"query": "deployment details", **extra})).get("error")
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
