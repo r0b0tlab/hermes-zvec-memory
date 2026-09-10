@@ -145,6 +145,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._vault: Path | None = None
         self._session_id = ""
+        self._automatic_writes = False
         self._lock = threading.Lock()
         self._index_lock = threading.Lock()
         self._prefetch_cache: Dict[str, tuple] = {}
@@ -184,6 +185,7 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
+        self._automatic_writes = kwargs.get("agent_context", "primary") == "primary"
         self._vault = self._resolve_vault(kwargs.get("hermes_home"))
         for directory in ("facts", "sessions"):
             if (self._vault / directory).is_symlink():
@@ -296,7 +298,7 @@ class ZvecMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages=None,
     ) -> None:
-        if not self._vault or (not user_content and not assistant_content):
+        if not self._automatic_writes or not self._vault or (not user_content and not assistant_content):
             return
         self._run_in_background(self._append_turn, user_content, assistant_content,
                                 session_id or self._session_id)
@@ -320,7 +322,7 @@ class ZvecMemoryProvider(MemoryProvider):
     # -- optional hooks ---------------------------------------------------
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not is_truthy_value(self._config.get("auto_extract", False)):
+        if not self._automatic_writes or not is_truthy_value(self._config.get("auto_extract", False)):
             return
         if not self._vault or not messages:
             return
@@ -328,7 +330,7 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes into the vault."""
-        if action != "add" or not self._vault or not content:
+        if not self._automatic_writes or action != "add" or not self._vault or not content:
             return
         category = "user_pref" if target == "user" else "general"
         self._run_in_background(self._write_fact, content, category, "mirror")
