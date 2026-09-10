@@ -194,6 +194,35 @@ def test_disk_worker_preserves_fifo(tmp_path):
         p.shutdown()
 
 
+def test_index_coalesces_requests_without_blocking_disk(tmp_path, monkeypatch):
+    from threading import Event
+    p = make_provider(tmp_path)
+    entered, release, second, disk = Event(), Event(), Event(), Event()
+    calls = []
+    def run(cmd, timeout):
+        calls.append(cmd)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(2)
+        else:
+            second.set()
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", run)
+    try:
+        p._maybe_reindex(force=True)
+        assert entered.wait(2)
+        p._maybe_reindex(force=True)
+        p._run_in_background(disk.set)
+        assert disk.wait(0.5), "index must not starve disk persistence"
+        release.set()
+        assert second.wait(2)
+        assert p._index_worker.drain(2)
+        assert len(calls) == 2
+    finally:
+        release.set()
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
