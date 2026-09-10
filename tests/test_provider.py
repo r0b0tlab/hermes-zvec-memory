@@ -509,7 +509,10 @@ def test_other_handle_cannot_recall_pending_mirror_deletion(tmp_path, monkeypatc
     assert p._index_worker.drain(2)
     monkeypatch.setattr(p, "_run_zg", lambda *a, **k: (1, "", "index fault"))
     monkeypatch.setattr(q, "is_available", lambda: True)
-    monkeypatch.setattr(q, "_run_zg", lambda *a, **k: (0, "old preference", ""))
+    # Both handles must fail index refresh while we assert the deletion gate.
+    # A successful peer refresh legitimately opens recall again.
+    monkeypatch.setattr(q, "_run_zg", lambda cmd, **k: (
+        (1, "", "index fault") if cmd[0] == "index" else (0, "old preference", "")))
     try:
         assert "old preference" in q.prefetch("old preference details")
         p._apply_mirror("remove", "user", "", {"old_text": "old preference"})
