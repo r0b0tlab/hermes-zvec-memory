@@ -75,6 +75,42 @@ def test_cold_backup_resolves_profile_paths(tmp_path, raw):
     assert not (home / "external").exists()
 
 
+def test_legacy_config_migrates_only_on_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = tmp_path / "config.yaml"
+    text = "unrelated: keep\nplugins:\n  zvec-memory:\n    preview: full\n"
+    legacy.write_text(text)
+    assert ZvecMemoryProvider()._config == {"preview": "full"}
+    assert not (tmp_path / "zvec-memory/config.json").exists()
+    ZvecMemoryProvider().save_config({"recall_limit": 9}, str(tmp_path))
+    assert ZvecMemoryProvider()._config == {"preview": "full", "recall_limit": 9}
+    assert legacy.read_text() == text
+
+
+def test_corrupt_native_config_is_not_silently_replaced(tmp_path):
+    path = tmp_path / "zvec-memory/config.json"
+    path.parent.mkdir()
+    path.write_text("{broken")
+    with pytest.raises(ValueError):
+        ZvecMemoryProvider(config={}).save_config({"preview": "full"}, str(tmp_path))
+    assert path.read_text() == "{broken"
+
+
+def test_fact_prefix_collision_preserves_both(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    try:
+        monkeypatch.setattr(_mod, "_utc_stamp", lambda: "20000101-000000")
+        a = p._write_fact("shared prefix " * 8 + "first", "general", "")
+        b = p._write_fact("shared prefix " * 8 + "second", "general", "")
+        assert a != b
+        assert "first" in a.read_text()
+        assert "second" in b.read_text()
+        assert "shared" not in a.name
+        assert a.stat().st_mode & 0o777 == 0o600
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

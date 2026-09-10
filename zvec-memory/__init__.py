@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import shutil
 import subprocess
 import threading
@@ -515,15 +517,20 @@ class ZvecMemoryProvider(MemoryProvider):
     def _write_fact(self, content: str, category: str, tags: str) -> Path:
         facts = self._vault / "facts"
         facts.mkdir(parents=True, exist_ok=True)
-        slug = "".join(c if c.isalnum() else "-" for c in content[:40].lower()).strip("-") or "fact"
-        path = facts / f"{_utc_stamp()}-{category}-{slug[:30]}.md"
-        path.write_text(
+        fd, filename = tempfile.mkstemp(prefix=f"{_utc_stamp()}-{category}-", suffix=".md", dir=facts)
+        path = Path(filename)
+        body = (
             f"# {content[:80].replace(chr(10), ' ')}\n\n"
             f"category: {category}\n"
             f"tags: {tags}\n"
-            f"stored: {_utc_stamp()}\n\n{content}\n",
-            encoding="utf-8",
+            f"stored: {_utc_stamp()}\n\n{content}\n"
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(body)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
         return path
 
     def _append_turn(self, user_content: str, assistant_content: str) -> None:
