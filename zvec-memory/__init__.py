@@ -107,14 +107,19 @@ MEMORY_STORE_SCHEMA = {
 }
 
 
-def _load_plugin_config() -> dict:
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        all_config = load_config_readonly()
-        return cfg_get(all_config, "plugins", "zvec-memory", default={}) or {}
-    except Exception:
-        return {}
+def _load_plugin_config(hermes_home=None) -> dict:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import read_user_config_raw
+    home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
+    path = home / "zvec-memory" / "config.json"
+    if path.exists():
+        value = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        value = cfg_get(read_user_config_raw(home / "config.yaml"),
+                        "plugins", "zvec-memory", default={})
+    if not isinstance(value, dict):
+        raise ValueError("zvec-memory configuration must contain an object")
+    return dict(value)
 
 
 def _utc_stamp() -> str:
@@ -135,7 +140,7 @@ class ZvecMemoryProvider(MemoryProvider):
     _building_lock = threading.Lock()
 
     def __init__(self, config: dict | None = None):
-        self._config = config or _load_plugin_config()
+        self._config = dict(config) if config is not None else _load_plugin_config()
         self._vault: Path | None = None
         self._session_id = ""
         self._lock = threading.Lock()
@@ -363,21 +368,12 @@ class ZvecMemoryProvider(MemoryProvider):
         ]
 
     def save_config(self, values, hermes_home):
-        """Write config to config.yaml under plugins.zvec-memory."""
-        from pathlib import Path
-        config_path = Path(hermes_home) / "config.yaml"
-        try:
-            import yaml
-            # Write-back round-trip: raw read is correct (merged defaults
-            # must not be persisted back into the user's file).
-            from hermes_cli.config import read_user_config_raw
-            existing = read_user_config_raw(config_path)
-            existing.setdefault("plugins", {})
-            existing["plugins"]["zvec-memory"] = values
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(existing, f, default_flow_style=False)
-        except Exception:
-            pass
+        from utils import atomic_json_write
+        path = Path(hermes_home) / "zvec-memory" / "config.json"
+        current = _load_plugin_config(hermes_home)
+        current.update(values)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, current, mode=0o600)
 
     # -- config helpers -----------------------------------------------------
 
