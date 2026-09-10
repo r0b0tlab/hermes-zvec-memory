@@ -34,13 +34,17 @@ def snap(**overrides):
 
 
 def test_default_command_uses_documented_resource_profile():
-    command, limits = campaign.build_command(CASE, "hermes-zvec-stress-deadbeef0000.service", 128)
+    # 128 is proven non-viable for the native lanes (see docs/stress-results.md);
+    # the measured native profile is the default so a case cannot silently run
+    # under a ceiling that fails it.
+    command, limits = campaign.build_command(CASE, "hermes-zvec-stress-deadbeef0000.service", 256)
     assert command[0] == "systemd-run"
     assert "MemoryMax=2G" in command and "CPUQuota=200%" in command
-    assert "TasksMax=128" in command and "KillMode=control-group" in command
+    assert "TasksMax=256" in command and "KillMode=control-group" in command
     assert "--slice=app.slice" in command
     assert limits == {"memory_bytes": 2147483648, "cpu_quota_percent": 200,
-                      "tasks": 128, "runtime_seconds": 360}
+                      "tasks": 256, "runtime_seconds": 360}
+    assert campaign.DEFAULT_TASKS == 256
 
 
 def test_task_budget_is_recorded_and_passed_through():

@@ -26,6 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / ".test-tools/campaign"
 MAX_TASKS = 4096
 MIN_TASKS = 64
+# Measured native peak is 138-150 concurrent tasks; 128 provably fails the native
+# lanes (see docs/stress-results.md), so the default is the measured profile.
+DEFAULT_TASKS = 256
 SCRIPTS = {"stress_memory.py", "soak_memory.py"}
 BASELINE = HERE / "production-before.json"
 # The Hermes CLI rewrites unrelated keys (onboarding, _config_version) in this
@@ -263,7 +266,7 @@ def main():
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--variant", choices=["baseline", "fix"], default="fix")
     parser.add_argument("--tasks", type=int, choices=range(MIN_TASKS, MAX_TASKS + 1),
-                        default=128, help="cgroup task ceiling (64..4096)")
+                        default=DEFAULT_TASKS, help="cgroup task ceiling (64..4096)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--snapshot-production", action="store_true",
                         help="re-record the production baseline (requires --reason)")
