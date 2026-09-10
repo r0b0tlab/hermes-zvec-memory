@@ -433,17 +433,21 @@ class ZvecMemoryProvider(MemoryProvider):
         value.setdefault("pending_creates", [])
         if not isinstance(value["pending_creates"], list) or not isinstance(value.get("refresh_required", False), bool):
             raise ValueError("Invalid mirror journal")
+        # Share only containment roots within this full validation; each
+        # candidate still resolves against the live filesystem on every read.
+        facts_root = self._mirror_root("facts")
+        staging_root = self._mirror_root(".mirror-staging")
         for record in value["records"].values():
             if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("target", "content", "path")):
                 raise ValueError("Invalid mirror record")
-            self._mirror_file(record["path"])
+            self._mirror_file(record["path"], root=facts_root)
         for relative in value["pending_deletes"]:
-            self._mirror_file(relative)
+            self._mirror_file(relative, root=facts_root)
         for item in value["pending_creates"]:
             if not isinstance(item, dict) or not isinstance(item.get("staged"), str):
                 raise ValueError("Invalid pending mirror create")
-            self._mirror_file(item.get("path"))
-            self._mirror_staged_file(item["staged"])
+            self._mirror_file(item.get("path"), root=facts_root)
+            self._mirror_staged_file(item["staged"], root=staging_root)
         return value
 
     def _recall_token(self):
@@ -472,17 +476,32 @@ class ZvecMemoryProvider(MemoryProvider):
         from utils import atomic_json_write
         atomic_json_write(self._vault / ".mirror-map.json", state, mode=0o600)
 
-    def _mirror_file(self, relative):
+    def _mirror_root(self, directory):
+        # _vault is canonicalized at initialization: do not re-anchor trust
+        # to a replacement symlink (including one in a vault ancestor).
+        root = self._vault / directory
+        if root.is_symlink():
+            raise ValueError(f"Refusing symlinked {directory} directory")
+        resolved = root.resolve()
+        if resolved != root:
+            raise ValueError(f"Mirror {directory} root escapes canonical vault")
+        return resolved
+
+    def _mirror_file(self, relative, *, root=None):
         if not isinstance(relative, str):
             raise ValueError("Invalid mirror path")
+        if root is None:
+            root = self._mirror_root("facts")
         path = (self._vault / relative).resolve()
-        if not path.is_relative_to((self._vault / "facts").resolve()) or path.suffix != ".md":
+        if not path.is_relative_to(root) or path.suffix != ".md":
             raise ValueError("Mirror path escapes facts directory")
         return path
 
-    def _mirror_staged_file(self, relative):
+    def _mirror_staged_file(self, relative, *, root=None):
+        if root is None:
+            root = self._mirror_root(".mirror-staging")
         path = (self._vault / relative).resolve()
-        if not path.is_relative_to((self._vault / ".mirror-staging").resolve()) or path.suffix != ".md":
+        if not path.is_relative_to(root) or path.suffix != ".md":
             raise ValueError("Mirror staging path escapes staging directory")
         return path
 
