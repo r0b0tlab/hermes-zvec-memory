@@ -179,6 +179,9 @@ def summarize(report, index):
     if "convergence_seconds" in report.get("recovery", {}):
         row["convergence_seconds"] = number(report["recovery"]["convergence_seconds"])
     row["arguments"] = {k: number(v) for k, v in report.get("arguments", {}).items() if k in ARGUMENTS and v is not None}
+    for name in ("admission_seconds", "drain_seconds"):
+        row["worker_" + name] = stats([w[name] for w in report.get("workers", [])
+                                     if w.get(name) is not None])
     if "shutdown_policy" in report.get("arguments", {}):
         row["arguments"]["shutdown_policy"] = enum(report["arguments"]["shutdown_policy"], {"immediate", "drain"})
     if report.get("lane") == "long_lived_soak":
@@ -446,7 +449,8 @@ def render(data):
     fields = ["attempt", "scenario", "variant", "lane", "mode", "passed", "workers",
               "records", "seed_facts", "planned_callbacks", "successful_callbacks",
               "elapsed_seconds", "callback_mean_seconds", "callback_p99_seconds",
-              "convergence_seconds", "query_hit_rate", "artifact_bytes",
+              "convergence_seconds", "worker_admission_p99_seconds", "worker_drain_p99_seconds",
+              "shutdown_policy", "query_hit_rate", "artifact_bytes",
               "peak_single_reaped_child_rss_kib", "error_counts", "plugin_sha", "source_sha", "host_sha"]
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
@@ -471,6 +475,9 @@ def render(data):
         flat.update({k: row["arguments"].get(k) for k in ("workers", "records", "seed_facts")})
         flat["callback_mean_seconds"] = row["callback_seconds"]["mean"]
         flat["callback_p99_seconds"] = row["callback_seconds"]["p99"]
+        flat["worker_admission_p99_seconds"] = row["worker_admission_seconds"]["p99"]
+        flat["worker_drain_p99_seconds"] = row["worker_drain_seconds"]["p99"]
+        flat["shutdown_policy"] = row["arguments"].get("shutdown_policy")
         flat["error_counts"] = json.dumps(row["error_counts"], sort_keys=True)
         writer.writerow(flat)
         lines.append("| " + " | ".join(str(flat[k]) for k in (
