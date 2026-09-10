@@ -144,6 +144,23 @@ def test_rejects_unsafe_arguments_before_workspace(tmp_path, monkeypatch, args):
     assert not s.RUNS.exists()
 
 
+def test_final_descendant_scan_happens_before_reaping(monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    events = []
+    child = SimpleNamespace(pid=123, returncode=None, _stress_handles={123: 7},
+                            poll=lambda: events.append("reap") or 0)
+    monkeypatch.setattr(s, "observe_descendants", lambda c: events.append("scan"))
+    def wait(kind, descriptor, flags):
+        assert flags & s.os.WNOWAIT
+        assert flags & s.os.WNOHANG
+        events.append("wait-without-reaping")
+        return SimpleNamespace(si_pid=123)
+    monkeypatch.setattr(s.os, "waitid", wait)
+    assert s.poll_owned(child) == 0
+    assert events == ["scan", "wait-without-reaping", "scan", "reap"]
+
+
 def test_completed_leader_with_live_descendant_is_failure(tmp_path):
     s = module()
     # This child is owned by this test; no discovery by process names.
