@@ -48,7 +48,7 @@ HOST = Path(os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes
 RUNTIME_FILE = "zg-runtime.json"
 
 
-def runtime_command(manifest_path=None, allowed_root=ROOT / ".test-tools"):
+def runtime_command(manifest_path=None, allowed_root=None):
     """Return (argv prefix, metadata) for the engine, optionally from a prepared runtime.
 
     A manifest-selected runtime is an experiment artifact: it must live inside
@@ -57,6 +57,7 @@ def runtime_command(manifest_path=None, allowed_root=ROOT / ".test-tools"):
     """
     if manifest_path is None:
         return [str(ZG)], {"runtime": "raw_test_package"}
+    root = Path(allowed_root) if allowed_root is not None else ROOT / ".test-tools"
     path = Path(manifest_path)
     if not path.is_file():
         raise ValueError("runtime manifest is missing")
@@ -70,7 +71,7 @@ def runtime_command(manifest_path=None, allowed_root=ROOT / ".test-tools"):
     if not isinstance(entrypoint, str) or not entrypoint:
         raise ValueError("runtime manifest has no entrypoint")
     resolved = Path(entrypoint).resolve()
-    if not resolved.is_relative_to(Path(allowed_root).resolve()):
+    if not resolved.is_relative_to(root.resolve()):
         raise ValueError("runtime entrypoint escapes the harness tree")
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError("runtime entrypoint is not an executable file")
@@ -88,17 +89,18 @@ def write_runtime(run, command, metadata):
     write_json(Path(run) / RUNTIME_FILE, {"entrypoint": command[0], **metadata})
 
 
-def selected_entrypoint(run, allowed_root=ROOT / ".test-tools"):
+def selected_entrypoint(run, allowed_root=None):
     """Resolve the engine for a run: the recorded runtime, else the raw test package."""
     record = Path(run) / RUNTIME_FILE
     if not record.is_file():
         return ZG
+    root = Path(allowed_root) if allowed_root is not None else ROOT / ".test-tools"
     data = json.loads(record.read_text(encoding="utf-8"))
     entrypoint = data.get("entrypoint")
     if not isinstance(entrypoint, str) or not entrypoint:
         raise ValueError("recorded runtime has no entrypoint")
     resolved = Path(entrypoint).resolve()
-    if not resolved.is_relative_to(Path(allowed_root).resolve()):
+    if not resolved.is_relative_to(root.resolve()):
         raise ValueError("recorded runtime escapes the harness tree")
     if not resolved.is_file():
         raise ValueError("recorded runtime is missing")
@@ -724,7 +726,9 @@ def main(argv=None):
             command += ["--engine-restart-at", str(args.engine_restart_at)]
         report = supervise(run, command, env, args.duration + 240, args.sample_interval)
         report["runtime"] = runtime_metadata
-        report["arguments"] = {k: v for k, v in vars(args).items() if k != "worker_run"}
+        # argparse Path values are not JSON; the receipt stays serializable.
+        report["arguments"] = {k: (str(v) if isinstance(v, Path) else v)
+                               for k, v in vars(args).items() if k != "worker_run"}
         report["python"] = sys.version.split()[0]
         for name, path in (("plugin_sha", ROOT), ("host_sha", HOST)):
             report[name] = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, timeout=5).strip()
