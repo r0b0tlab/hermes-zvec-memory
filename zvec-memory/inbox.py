@@ -1,7 +1,9 @@
 """Durable FIFO notifications, independent of the long mirror/index lock."""
 import json
 import os
+import random
 import sqlite3
+import time
 from contextlib import contextmanager
 
 
@@ -37,17 +39,37 @@ class MirrorInbox:
         self.close()
 
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.path, timeout=0.2)
+    def connect(self, *, writer=False):
+        deadline = time.monotonic() + 0.2
+        db = sqlite3.connect(self.path, timeout=0 if writer else 0.2)
         try:
             db.execute("PRAGMA synchronous=FULL")
             with db:
+                if writer:
+                    # SQLite's increasing busy sleeps can miss short vacancies
+                    # during append/ack churn. Retry only reservation, with short
+                    # desynchronized waits and one shared 200ms admission budget.
+                    while True:
+                        try:
+                            db.execute("BEGIN IMMEDIATE")
+                            break
+                        except sqlite3.OperationalError as exc:
+                            if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY:
+                                raise
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise
+                            time.sleep(min(remaining, random.uniform(0.001, 0.003)))
+                            if time.monotonic() >= deadline:
+                                raise
+                # Mutation and FULL commit are performed once. Never replay an
+                # I/O or ambiguous commit failure as though admission had failed.
                 yield db
         finally:
             db.close()
 
     def append(self, payload):
-        with self.connect() as db:
+        with self.connect(writer=True) as db:
             db.execute("INSERT INTO notifications(payload) VALUES (?)", (json.dumps(payload),))
 
     def pending(self):
@@ -66,5 +88,5 @@ class MirrorInbox:
             return (row[0], json.loads(row[1])) if row else None
 
     def acknowledge(self, number):
-        with self.connect() as db:
+        with self.connect(writer=True) as db:
             db.execute("DELETE FROM notifications WHERE id = ?", (number,))
