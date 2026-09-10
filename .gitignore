@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.db
+.venv/
+.test-tools/
+benchmark-results/
