@@ -572,6 +572,17 @@ def test_auto_extract_fails_closed_when_filter_unavailable(tmp_path, monkeypatch
         p.shutdown()
 
 
+@pytest.mark.parametrize("tool,key", [("memory_search", "query"), ("memory_store", "content")])
+@pytest.mark.parametrize("value", [None, [], {}, "   "])
+def test_invalid_required_tool_values(tmp_path, tool, key, value):
+    p = make_provider(tmp_path)
+    try:
+        assert json.loads(p.handle_tool_call(tool, {key: value})).get("error")
+        assert list((p._vault / "facts").glob("*.md")) == []
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:

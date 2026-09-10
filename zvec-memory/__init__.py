@@ -686,10 +686,12 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _handle_search(self, args: dict) -> str:
         try:
+            if not isinstance(args, dict) or not isinstance(args.get("query"), str):
+                return tool_error("Required 'query' must be a string")
             token = self._recall_token()
             if token is None:
                 return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")
-            query = str(args.get("query", "")).strip()
+            query = args["query"].strip()
             if not query:
                 return tool_error("Missing required argument: 'query'")
             mode = str(args.get("mode", "hybrid"))
@@ -713,7 +715,9 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _handle_store(self, args: dict) -> str:
         try:
-            content = str(args.get("content", "")).strip()
+            if not isinstance(args, dict) or not isinstance(args.get("content"), str):
+                return tool_error("Required 'content' must be a string")
+            content = args["content"].strip()
             if not content:
                 return tool_error("Missing required argument: 'content'")
             category = str(args.get("category", "general"))
