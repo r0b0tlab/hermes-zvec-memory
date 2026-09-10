@@ -156,6 +156,8 @@ class ZvecMemoryProvider(MemoryProvider):
         self._prefetch_cache: Dict[str, tuple] = {}
         self._prefetch_inflight = set()
         self._cache_generation = 0
+        self._mirror_ready = True
+        self._mirror_refresh_required = False
         self._disk_worker = None
         self._index_worker = None
         self._last_reindex = 0.0
@@ -195,7 +197,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._automatic_writes = kwargs.get("agent_context", "primary") == "primary"
         self._vault = self._resolve_vault(kwargs.get("hermes_home"))
-        for directory in ("facts", "sessions"):
+        for directory in ("facts", "sessions", ".mirror-staging"):
             if (self._vault / directory).is_symlink():
                 raise ValueError(f"Refusing symlinked {directory} directory")
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
@@ -204,11 +206,17 @@ class ZvecMemoryProvider(MemoryProvider):
         self._index_worker = Worker("zvec-memory-index")
         with self._building_lock:
             self._vault_lock = self._vault_locks.setdefault(str(self._vault), threading.RLock())
+        try:
+            self._recover_mirrors()
+        except Exception:
+            logger.exception("zvec-memory mirror recovery failed; recall disabled")
         # First-run index build in the background: never block agent startup
         # on an embedding-model download. Claimed per-vault so two handles on
         # the same vault never run concurrent builds against each other.
         if not (self._vault / ".zvec-grep" / "manifest.json").exists():
             self._build_index()
+        elif self._mirror_refresh_required:
+            self._maybe_reindex(force=True)
 
     def system_prompt_block(self) -> str:
         if not self._vault:
@@ -271,6 +279,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return self._cap("## Zvec Memory\n" + out)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if not self._mirror_ready:
+            return ""
         if not self._vault or not query or is_trivial_prompt(query):
             return ""
         if not self.is_available() or not self._index_ready():
@@ -290,6 +300,8 @@ class ZvecMemoryProvider(MemoryProvider):
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if not self._mirror_ready:
+            return
         # Warm the cache for the next turn off the critical path, so the
         # inline prefetch is usually a dict lookup, not a subprocess spawn.
         if not self._vault or not query or is_trivial_prompt(query):
@@ -357,12 +369,130 @@ class ZvecMemoryProvider(MemoryProvider):
             return
         self._run_in_background(self._auto_extract, list(messages))
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes into the vault."""
-        if not self._automatic_writes or action != "add" or not self._vault or not content:
+    def on_memory_write(self, action: str, target: str, content: str, metadata=None) -> None:
+        """Mirror only targeted built-in records, never explicit facts/history."""
+        if not self._automatic_writes or not self._vault or action not in {"add", "replace", "remove"}:
             return
-        category = "user_pref" if target == "user" else "general"
-        self._run_in_background(self._write_fact, content, category, "mirror")
+        self._run_in_background(self._apply_mirror, action, target, content, dict(metadata or {}))
+
+    def _mirror_state(self):
+        path = self._vault / ".mirror-map.json"
+        if not path.exists():
+            return {"records": {}, "pending_deletes": [], "pending_creates": [], "refresh_required": False}
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or not isinstance(value.get("records"), dict) or not isinstance(value.get("pending_deletes"), list):
+            raise ValueError("Invalid mirror map; refusing destructive recovery")
+        value.setdefault("pending_creates", [])
+        if not isinstance(value["pending_creates"], list) or not isinstance(value.get("refresh_required", False), bool):
+            raise ValueError("Invalid mirror journal")
+        for record in value["records"].values():
+            if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("target", "content", "path")):
+                raise ValueError("Invalid mirror record")
+            self._mirror_file(record["path"])
+        for relative in value["pending_deletes"]:
+            self._mirror_file(relative)
+        for item in value["pending_creates"]:
+            if not isinstance(item, dict) or not isinstance(item.get("staged"), str):
+                raise ValueError("Invalid pending mirror create")
+            self._mirror_file(item.get("path"))
+            self._mirror_staged_file(item["staged"])
+        return value
+
+    def _save_mirror_state(self, state):
+        from utils import atomic_json_write
+        atomic_json_write(self._vault / ".mirror-map.json", state, mode=0o600)
+
+    def _mirror_file(self, relative):
+        if not isinstance(relative, str):
+            raise ValueError("Invalid mirror path")
+        path = (self._vault / relative).resolve()
+        if not path.is_relative_to((self._vault / "facts").resolve()) or path.suffix != ".md":
+            raise ValueError("Mirror path escapes facts directory")
+        return path
+
+    def _mirror_staged_file(self, relative):
+        path = (self._vault / relative).resolve()
+        if not path.is_relative_to((self._vault / ".mirror-staging").resolve()) or path.suffix != ".md":
+            raise ValueError("Mirror staging path escapes staging directory")
+        return path
+
+    def _apply_mirror(self, action, target, content, metadata):
+        import hashlib
+        with self._vault_lock:
+            state = self._mirror_state()
+            self._finish_mirror_deletes(state)
+            records = state["records"]
+            old_key = None
+            if action in {"replace", "remove"}:
+                old_text = metadata.get("old_text", "")
+                matches = [key for key, record in records.items()
+                           if record["target"] == target and isinstance(old_text, str)
+                           and old_text and old_text in record["content"]]
+                if len(matches) != 1:
+                    logger.warning("Mirror %s needs one match; found %d", action, len(matches))
+                    return
+                old_key = matches[0]
+            if action != "remove":
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("Empty mirrored content")
+                key = hashlib.sha256((target + "\0" + content).encode()).hexdigest()
+                if key == old_key or (key in records and old_key is None):
+                    return
+                if key not in records:
+                    staged = self._write_fact(content, "user_pref" if target == "user" else "general", "mirror",
+                                              directory=".mirror-staging")
+                    path = self._vault / "facts" / staged.name
+                    state["pending_creates"].append({"staged": str(staged.relative_to(self._vault)),
+                                                      "path": str(path.relative_to(self._vault))})
+                    state["refresh_required"] = True
+                    records[key] = {"target": target, "content": content,
+                                    "path": str(path.relative_to(self._vault))}
+            old = records.pop(old_key) if old_key else None
+            if old:
+                state["pending_deletes"].append(old["path"])
+                state["refresh_required"] = True
+                self._mirror_refresh_required = True
+            self._mirror_ready = False
+            self._invalidate_prefetch()
+            self._save_mirror_state(state)
+            self._finish_mirror_deletes(state)
+            self._mirror_ready = not state.get("refresh_required", False)
+        self._invalidate_prefetch()
+        self._maybe_reindex(force=True)
+
+    def _finish_mirror_deletes(self, state):
+        # Stage outside the indexed scope, commit the map, then publish.
+        # A map-write exception can occur after replace: never discard a
+        # staged file until the durable journal proves it is unreferenced.
+        for item in list(state.get("pending_creates", [])):
+            staged = self._mirror_staged_file(item["staged"])
+            path = self._mirror_file(item["path"])
+            if staged.exists():
+                # Hardlink publication is exclusive: never overwrite a fact.
+                try:
+                    os.link(staged, path)
+                except FileExistsError:
+                    if not os.path.samefile(staged, path):
+                        raise ValueError("Mirror destination already exists")
+                staged.unlink()
+            elif not path.is_file():
+                raise ValueError("Missing staged mirror; repair required")
+            state["pending_creates"].remove(item)
+            state["refresh_required"] = True
+            self._save_mirror_state(state)
+        for relative in list(state["pending_deletes"]):
+            self._mirror_file(relative).unlink(missing_ok=True)
+            state["pending_deletes"].remove(relative)
+            state["refresh_required"] = True
+            self._save_mirror_state(state)
+
+    def _recover_mirrors(self):
+        with self._vault_lock:
+            self._mirror_ready = False
+            state = self._mirror_state()
+            self._finish_mirror_deletes(state)
+            self._mirror_refresh_required = state.get("refresh_required", False)
+            self._mirror_ready = not self._mirror_refresh_required
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
         self._session_id = new_session_id
@@ -494,6 +624,8 @@ class ZvecMemoryProvider(MemoryProvider):
                 self._index_extra_args = []
             try:
                 with self._vault_lock:
+                    state = self._mirror_state()
+                    self._finish_mirror_deletes(state)
                     for attempt in range(4):
                         rc, _out, err = self._run_zg(
                             ["index", str(self._vault), "--reset-paths",
@@ -507,6 +639,11 @@ class ZvecMemoryProvider(MemoryProvider):
                         if rc == 0 or not transient or attempt == 3:
                             break
                         time.sleep(0.1 * 2 ** attempt)
+                    if rc == 0 and state.get("refresh_required", False):
+                        state["refresh_required"] = False
+                        self._save_mirror_state(state)
+                        self._mirror_refresh_required = False
+                        self._mirror_ready = True
             except Exception as exc:
                 rc, err = 1, str(exc)
             if rc != 0:
@@ -524,6 +661,8 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _handle_search(self, args: dict) -> str:
         try:
+            if not self._mirror_ready:
+                return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")
             query = str(args.get("query", "")).strip()
             if not query:
                 return tool_error("Missing required argument: 'query'")
@@ -561,8 +700,8 @@ class ZvecMemoryProvider(MemoryProvider):
 
     # -- vault writers --------------------------------------------------------
 
-    def _write_fact(self, content: str, category: str, tags: str) -> Path:
-        facts = self._vault / "facts"
+    def _write_fact(self, content: str, category: str, tags: str, *, directory="facts") -> Path:
+        facts = self._vault / directory
         facts.mkdir(parents=True, exist_ok=True)
         fd, filename = tempfile.mkstemp(prefix=f"{_utc_stamp()}-{category}-", suffix=".md", dir=facts)
         path = Path(filename)

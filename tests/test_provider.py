@@ -398,6 +398,111 @@ def test_writes_invalidate_inflight_prefetch(tmp_path, monkeypatch, write):
         p.shutdown()
 
 
+def test_mirror_replace_and_remove_preserves_explicit_facts(tmp_path):
+    p = make_provider(tmp_path)
+    try:
+        explicit = p._write_fact("old preference explicit", "general", "")
+        p.on_memory_write("add", "user", "old preference")
+        assert p._disk_worker.drain(2)
+        old = set((p._vault / "facts").glob("*.md")) - {explicit}
+        assert len(old) == 1
+        assert "metadata" in __import__("inspect").signature(p.on_memory_write).parameters
+        p.on_memory_write("replace", "user", "new preference", metadata={"old_text": "old preference"})
+        assert p._disk_worker.drain(2)
+        assert not next(iter(old)).exists()
+        files = set((p._vault / "facts").glob("*.md")) - {explicit}
+        assert len(files) == 1 and "new preference" in next(iter(files)).read_text()
+        p.on_memory_write("remove", "user", "", metadata={"old_text": "new preference"})
+        assert p._disk_worker.drain(2)
+        assert list((p._vault / "facts").glob("*.md")) == [explicit]
+    finally:
+        p.shutdown()
+
+
+def test_mirror_unlink_crash_recovers_and_gates_until_index(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    p._apply_mirror("add", "user", "old preference", {})
+    assert p._index_worker.drain(2)
+    old = next((p._vault / "facts").glob("*.md"))
+    real_unlink = Path.unlink
+    def fail_unlink(path, *a, **kw):
+        if path == old:
+            raise OSError("unlink fault")
+        return real_unlink(path, *a, **kw)
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(Path, "unlink", fail_unlink)
+            with pytest.raises(OSError):
+                p._apply_mirror("remove", "user", "", {"old_text": "old preference"})
+        state = json.loads((p._vault / ".mirror-map.json").read_text())
+        assert state["pending_deletes"], "deletion intent must survive interrupted unlink"
+        assert not p._mirror_ready
+        p.shutdown()
+        monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", lambda *a, **k: (1, "", "index fault"))
+        q = make_provider(tmp_path)
+        try:
+            assert q._index_worker.drain(2)
+            assert not old.exists()
+            assert not q._mirror_ready
+            assert json.loads(q.handle_tool_call("memory_search", {"query": "old preference"})).get("error")
+            assert q.prefetch("old preference details") == ""
+            assert json.loads((q._vault / ".mirror-map.json").read_text())["refresh_required"]
+            monkeypatch.setattr(q, "_run_zg", lambda *a, **k: (0, "", ""))
+            q._maybe_reindex(force=True)
+            assert q._index_worker.drain(2)
+            assert q._mirror_ready
+            assert not json.loads((q._vault / ".mirror-map.json").read_text())["refresh_required"]
+        finally:
+            q.shutdown()
+    finally:
+        p.shutdown()
+
+
+@pytest.mark.parametrize("landed", [False, True])
+def test_mirror_map_write_fault_never_leaves_unowned_searchable_create(tmp_path, monkeypatch, landed):
+    p = make_provider(tmp_path)
+    p._apply_mirror("add", "user", "old preference", {})
+    assert p._index_worker.drain(2)
+    old = next((p._vault / "facts").glob("*.md"))
+    save = p._save_mirror_state
+    def fail(state):
+        if landed:
+            save(state)
+        raise OSError("atomic map fault")
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(p, "_save_mirror_state", fail)
+            with pytest.raises(OSError):
+                p._apply_mirror("replace", "user", "new preference", {"old_text": "old preference"})
+        assert list((p._vault / "facts").glob("*.md")) == [old]
+        assert not p._mirror_ready
+        p.shutdown()
+        q = make_provider(tmp_path)
+        try:
+            assert q._index_worker.drain(2)
+            files = list((q._vault / "facts").glob("*.md"))
+            assert len(files) == 1
+            assert ("new preference" if landed else "old preference") in files[0].read_text()
+            assert q._mirror_ready
+        finally:
+            q.shutdown()
+    finally:
+        p.shutdown()
+
+
+def test_mirror_recovery_validates_entire_journal_before_deleting(tmp_path):
+    p = make_provider(tmp_path)
+    protected = p._write_fact("preserve me", "general", "")
+    p._save_mirror_state({"records": {}, "pending_deletes": [str(protected.relative_to(p._vault)), "../outside.md"], "refresh_required": True})
+    try:
+        with pytest.raises(ValueError):
+            p._recover_mirrors()
+        assert protected.exists()
+        assert not p._mirror_ready
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
