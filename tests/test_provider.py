@@ -603,6 +603,21 @@ def test_dash_prefixed_queries_are_bound_as_values(tmp_path, mode):
         p.shutdown()
 
 
+def test_search_schedules_debounced_dirty_index_without_daemon(tmp_path, monkeypatch):
+    p = make_provider(tmp_path)
+    calls = []
+    monkeypatch.setattr(p, "_run_zg", lambda cmd, timeout: (calls.append(cmd) or (0, "", "")))
+    try:
+        p._last_reindex = time.monotonic()
+        p.handle_tool_call("memory_store", {"content": "new fact"})
+        assert p._index_requested and not p._index_running
+        p.handle_tool_call("memory_search", {"query": "new fact details"})
+        assert p._index_worker.drain(2)
+        assert any(cmd[0] == "index" for cmd in calls)
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
