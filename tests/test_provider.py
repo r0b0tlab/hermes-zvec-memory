@@ -153,6 +153,23 @@ def test_queued_turn_keeps_call_session(tmp_path, monkeypatch):
         p.shutdown()
 
 
+@pytest.mark.parametrize("context", ["primary", "subagent", "flush"])
+def test_automatic_writes_only_for_primary(tmp_path, monkeypatch, context):
+    monkeypatch.setattr(ZvecMemoryProvider, "_build_index", lambda self: None)
+    p = ZvecMemoryProvider(config={"vault": str(tmp_path / "vault"), "auto_extract": True})
+    p.initialize("test", hermes_home=str(tmp_path), agent_context=context)
+    work = []
+    monkeypatch.setattr(p, "_run_in_background", lambda fn, *args: work.append(fn.__name__))
+    try:
+        p.sync_turn("hello", "reply")
+        p.on_memory_write("add", "user", "a preference")
+        p.on_session_end([{"role": "user", "content": "I prefer tea"}])
+        assert len(work) == (3 if context == "primary" else 0)
+        assert json.loads(p.handle_tool_call("memory_store", {"content": "explicit fact"}))["status"] == "stored"
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
