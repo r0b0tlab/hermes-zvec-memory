@@ -107,6 +107,32 @@ installed. The requested pool sizes are not an observed total process thread cap
 its dependencies by realpath (no OS sandbox), and `storage/zvec.js` is version-pinned, so any
 adoption needs its own narrowly scoped change plus a fresh bounded proof.
 
+## Decisions
+
+Recorded so the numbers above are not re-litigated from a single figure.
+
+**Native thread budget: not adopted (shelf).** The patched engine's only demonstrated benefit is
+fitting a lower task ceiling (peak process threads 71 → 41, −29 % tree sum) with unchanged peak RSS
+(1,259 → 1,260 MB) and unchanged latency (query `warm` p50 0.855 → 0.840 s). Production runs
+`TasksMax=1024` (see below), so that ceiling never binds, and the measurement is a 60 s smoke over a
+200-fact corpus with no peer contention — the 30-minute soak and the 10,000-file corpus lane were
+never run with the patched engine, and the *optimize* pool is exactly the knob that would show up on
+large corpora. Adopting it would also put a hand-patched, version-pinned copy of third-party JS
+(`storage/zvec.js` sha `724aac71…`, dependencies linked by realpath, first-native-init wins) on the
+critical path, re-deriving the patch on every engine upgrade. Revisit only if the engine runs under
+a constrained cgroup/container, or production logs show `terminate called without an active
+exception` plus service restarts. If revisited, the bar is the full acceptance the raw engine
+passed: 30-minute soak, corpus ladder, and a two-process contention run, all green with the patched
+engine.
+
+**Service task ceiling: adopted.** `hermes-zvec-memory.service` now declares `TasksMax=1024` instead
+of inheriting the user manager's ambient default (18232 at the time of measurement). The value is
+load-bearing and was previously invisible: below roughly 150 tasks the engine does not degrade, it
+aborts, which the 128-task lanes reproduced. 1024 is ~7× the measured 138-task peak and still bounds
+runaway thread or fork creation. `MemoryMax` stays `infinity` on purpose — measured peak was 1.6 GB
+against 15.6 GB of host RAM, and OOM-killing the memory engine is worse than letting the host
+reclaim; `MemoryHigh=4G` would be the throttle-first option if a guard is ever wanted.
+
 ## Deployment
 
 The reviewed revision was deployed to `~/.hermes/plugins/zvec-memory` after the offline suite
@@ -120,7 +146,8 @@ The reviewed revision was deployed to `~/.hermes/plugins/zvec-memory` after the 
 | Fresh-session store | `memory_store` wrote `facts/20260910-193441-tool-24foqzba.md`, content read back and verified |
 | Fresh-session recall | separate session returned the citation `facts/20260910-193441-tool-24foqzba.md:7` for a paraphrase query |
 | Inbox migration | production inbox converted `journal_mode=delete → wal` on the first new-code session, `pending 0` |
-| Campaign baseline | re-recorded as revision 3, preserving revisions 1 and 2 in `.test-tools/campaign/` |
+| Campaign baseline | re-recorded as revision 3 (plugin files) and revision 4 (declared `TasksMax=1024`, new engine `MainPID`), preserving every earlier revision in `.test-tools/campaign/` |
+| Post-change checks | engine restarted, `healthz` 200, unauthenticated MCP 401, fresh-session recall still cited `facts/20260910-193441-tool-24foqzba.md:7` |
 
 ## Supported envelope (measured, this machine)
 
