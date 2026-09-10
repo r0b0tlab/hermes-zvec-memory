@@ -397,6 +397,10 @@ class ZvecMemoryProvider(MemoryProvider):
         if not self._automatic_writes or not self._vault or action not in {"add", "replace", "remove"}:
             return
         try:
+            # Startup SQLite contention may leave the inbox deferred. Reopen
+            # with its bounded timeout, independently of prefetch/VaultLock.
+            if self._mirror_inbox is None:
+                self._mirror_inbox = MirrorInbox(self._vault)
             self._mirror_inbox.append([action, target, content, dict(metadata or {})])
         except Exception:
             from utils import atomic_json_write

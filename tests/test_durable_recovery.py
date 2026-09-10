@@ -63,6 +63,76 @@ def test_startup_defers_contended_recovery_then_demand_reopens(tmp_path, monkeyp
 
 
 
+def test_notification_reopens_deferred_inbox_without_prefetch(tmp_path, monkeypatch):
+    seed = make_provider(tmp_path)
+    seed.shutdown()
+    seed._mirror_inbox.append(["add", "user", "existing preference", {}])
+    ctx = multiprocessing.get_context("spawn")
+    entered, release = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=_hold_sqlite, args=(str(seed._mirror_inbox.path), entered, release))
+    child.start()
+    p = ZvecMemoryProvider(config={"vault": str(seed._vault)})
+    peer = None
+    callback = None
+    unlock = ctx.Event()
+    try:
+        assert entered.wait(5)
+        before = time.monotonic()
+        p.initialize("contended", hermes_home=str(tmp_path))
+        assert time.monotonic() - before < 0.8
+        assert p._mirror_inbox is None
+        release.set()
+        _join(child)
+
+        # Leave delivery pending to prove restart durability. Neither a
+        # prefetch nor a peer's long index lock may be needed to persist it.
+        assert p._disk_worker.close(timeout=3)
+        monkeypatch.setattr(p, "_maybe_reindex", lambda **kwargs: None)
+        locked = ctx.Event()
+        peer = ctx.Process(target=_hold_engine_lock, args=(str(seed._vault / ".mirror.lock"), locked, unlock))
+        peer.start()
+        assert locked.wait(5)
+        done, errors = threading.Event(), []
+        def notify():
+            try:
+                p.on_memory_write("add", "user", "new preference", {})
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+        callback = threading.Thread(target=notify)
+        callback.start()
+        assert done.wait(0.8), "notification persistence must not wait for the vault lock"
+        assert not errors, f"notification failed after deferred initialization: {errors}"
+        assert not (seed._vault / ".mirror-delivery-failed.json").exists()
+        with seed._mirror_inbox.connect() as db:
+            assert db.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 2
+        assert p._recall_token() is None
+    finally:
+        release.set()
+        unlock.set()
+        _join(child)
+        if peer is not None:
+            _join(peer)
+        if callback is not None:
+            callback.join(5)
+        p.shutdown()
+
+    recovered = make_provider(tmp_path)
+    try:
+        assert recovered._index_worker.drain(3)
+        assert recovered._mirror_inbox.first() is None
+        state = recovered._mirror_state()
+        assert sorted(record["content"] for record in state["records"].values()) == [
+            "existing preference", "new preference"]
+        assert len(list((seed._vault / "facts").glob("*.md"))) == 2
+        recovered._drain_mirror_inbox()
+        assert recovered._mirror_state() == state
+        assert recovered._recall_token() is not None
+    finally:
+        recovered.shutdown()
+
+
 def _hold_sqlite(path, entered, release):
     with sqlite3.connect(path) as db:
         db.execute("BEGIN EXCLUSIVE")
