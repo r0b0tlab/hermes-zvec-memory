@@ -311,6 +311,17 @@ def test_index_scopes_markdown_only(tmp_path, monkeypatch):
         p.shutdown()
 
 
+@pytest.mark.parametrize("budget", [-1, 0, 1, 4, 12, 80])
+def test_context_budget_is_hard_limit(tmp_path, budget):
+    p = make_provider(tmp_path, context_chars=budget)
+    try:
+        assert len(p._cap("word " * 100)) <= max(0, budget)
+        p._run_zg = lambda *a, **k: (0, "word " * 100, "")
+        assert len(p._run_prefetch_query("deploy details")) <= max(0, budget)
+    finally:
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
