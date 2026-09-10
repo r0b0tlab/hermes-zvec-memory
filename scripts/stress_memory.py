@@ -411,6 +411,15 @@ def observe_descendants(child):
 
 
 def poll_owned(child):
+    if child.returncode is not None:
+        return child.returncode
+    observe_descendants(child)
+    status = os.waitid(os.P_PIDFD, child._stress_handles[child.pid],
+                       os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if status is None:
+        return None
+    # Keep the exited leader unreaped so its PID/session cannot be reused
+    # until the final post-reparenting descendant scan pins live identities.
     observe_descendants(child)
     return child.poll()
 
