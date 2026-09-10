@@ -158,6 +158,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._cache_generation = 0
         self._mirror_ready = True
         self._mirror_refresh_required = False
+        self._observed_mirror_token = None
         self._disk_worker = None
         self._index_worker = None
         self._last_reindex = 0.0
@@ -279,7 +280,7 @@ class ZvecMemoryProvider(MemoryProvider):
         return self._cap("## Zvec Memory\n" + out)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not self._mirror_ready:
+        if self._recall_token() is None:
             return ""
         if not self._vault or not query or is_trivial_prompt(query):
             return ""
@@ -300,7 +301,7 @@ class ZvecMemoryProvider(MemoryProvider):
             return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if not self._mirror_ready:
+        if self._recall_token() is None:
             return
         # Warm the cache for the next turn off the critical path, so the
         # inline prefetch is usually a dict lookup, not a subprocess spawn.
@@ -397,6 +398,26 @@ class ZvecMemoryProvider(MemoryProvider):
             self._mirror_file(item.get("path"))
             self._mirror_staged_file(item["staged"])
         return value
+
+    def _recall_token(self):
+        # Atomic journal reads close recall on other handles without waiting
+        # on a potentially long-running native index lock.
+        if self._vault is None or not self._mirror_ready:
+            return None
+        try:
+            state = self._mirror_state()
+            token = json.dumps(state, sort_keys=True)
+            with self._lock:
+                if token != self._observed_mirror_token:
+                    self._observed_mirror_token = token
+                    self._cache_generation += 1
+                    self._prefetch_cache.clear()
+            if state.get("refresh_required") or state["pending_deletes"] or state["pending_creates"]:
+                return None
+            return token
+        except Exception:
+            logger.warning("zvec-memory mirror journal unreadable; recall disabled", exc_info=True)
+            return None
 
     def _save_mirror_state(self, state):
         from utils import atomic_json_write
@@ -661,7 +682,7 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def _handle_search(self, args: dict) -> str:
         try:
-            if not self._mirror_ready:
+            if self._recall_token() is None:
                 return tool_error("Mirror cleanup incomplete; repair .mirror-map.json and refresh the index before recall")
             query = str(args.get("query", "")).strip()
             if not query:
