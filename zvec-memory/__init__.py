@@ -150,9 +150,9 @@ class ZvecMemoryProvider(MemoryProvider):
         self._lock = threading.Lock()
         self._index_lock = threading.Lock()
         self._prefetch_cache: Dict[str, tuple] = {}
-        self._threads: List[threading.Thread] = []
+        self._disk_worker = None
         self._last_reindex = 0.0
-        self._stop = threading.Event()
+
 
     # -- lifecycle ------------------------------------------------------
 
@@ -193,6 +193,7 @@ class ZvecMemoryProvider(MemoryProvider):
                 raise ValueError(f"Refusing symlinked {directory} directory")
         (self._vault / "facts").mkdir(parents=True, exist_ok=True)
         (self._vault / "sessions").mkdir(parents=True, exist_ok=True)
+        self._disk_worker = Worker("zvec-memory-disk")
         # First-run index build in the background: never block agent startup
         # on an embedding-model download. Claimed per-vault so two handles on
         # the same vault never run concurrent builds against each other.
@@ -315,10 +316,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
-        self._stop.set()
-        for t in self._threads:
-            t.join(timeout=5)
-        self._threads = []
+        if self._disk_worker is not None and not self._disk_worker.close(timeout=5):
+            logger.warning("zvec-memory disk worker still running after shutdown deadline")
 
     # -- optional hooks ---------------------------------------------------
 
@@ -421,18 +420,11 @@ class ZvecMemoryProvider(MemoryProvider):
             cmd += [query]
         return cmd
 
-    def _run_in_background(self, fn, *args) -> None:
-        t = threading.Thread(target=self._guarded, args=(fn, *args), daemon=True)
-        with self._lock:
-            self._threads = [t for t in self._threads if t.is_alive()]
-            self._threads.append(t)
-        t.start()
-
-    def _guarded(self, fn, *args) -> None:
-        try:
-            fn(*args)
-        except Exception as exc:
-            logger.debug("zvec-memory background task failed: %s", exc)
+    def _run_in_background(self, fn, *args) -> bool:
+        accepted = self._disk_worker is not None and self._disk_worker.submit(fn, *args)
+        if not accepted:
+            logger.warning("zvec-memory automatic task rejected: worker unavailable or full")
+        return accepted
 
     def _build_index(self) -> None:
         try:

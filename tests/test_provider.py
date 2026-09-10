@@ -170,6 +170,30 @@ def test_automatic_writes_only_for_primary(tmp_path, monkeypatch, context):
         p.shutdown()
 
 
+def test_disk_worker_preserves_fifo(tmp_path):
+    from threading import Event
+    p = make_provider(tmp_path)
+    entered, release = Event(), Event()
+    output = []
+    try:
+        assert getattr(p, "_disk_worker", None) is not None
+        def first():
+            entered.set()
+            assert release.wait(2)
+            output.append(1)
+        assert p._run_in_background(first)
+        assert entered.wait(2)
+        assert p._run_in_background(output.append, 2)
+        release.set()
+        assert p._disk_worker.drain(2)
+        assert output == [1, 2]
+        p.shutdown()
+        assert not p._run_in_background(output.append, 3)
+    finally:
+        release.set()
+        p.shutdown()
+
+
 def test_name_and_schemas(tmp_path):
     p = make_provider(tmp_path)
     try:
@@ -240,7 +264,7 @@ def test_prefetch_cache_avoids_subprocess(tmp_path, monkeypatch):
         monkeypatch.setattr(p, "_run_zg", fake_run)
         monkeypatch.setattr(p, "is_available", lambda: True)
         p.queue_prefetch("what is the deploy process")
-        p.shutdown()  # join the warming thread
+        assert p._disk_worker.drain(5)
         assert p._cached_prefetch("what is the deploy process").startswith("## Zvec Memory")
 
         def boom(cmd, timeout):
