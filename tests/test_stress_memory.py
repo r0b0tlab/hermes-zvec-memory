@@ -483,6 +483,128 @@ def test_drain_shutdown_snapshot_error_is_failure(tmp_path, monkeypatch, snapsho
     assert receipt["live_threads_after_shutdown"] == []
 
 
+@pytest.fixture
+def drain_probe(monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    clock = [0.0]
+    monkeypatch.setattr(s.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(s.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    reads, demands = [], []
+    state = {"pending_creates": [], "pending_deletes": [], "refresh_required": False}
+    def mirror_state():
+        reads.append(clock[0])
+        return state
+    obj = SimpleNamespace(_mirror_state=mirror_state,
+                          _mirror_inbox=SimpleNamespace(pending=lambda: clock[0] < .2),
+                          _index_requested=False, _index_running=False,
+                          _recall_token=lambda: "ready", _index_ready=lambda: True,
+                          _disk_worker=None, _index_worker=None,
+                          queue_prefetch=lambda *a: demands.append(clock[0]))
+    return s, obj, clock, reads, demands, state
+
+
+def test_drain_skips_full_snapshot_until_inbox_empty(drain_probe):
+    s, obj, clock, reads, demands, state = drain_probe
+    s.drain_provider(obj, 1)
+    assert reads == [.2]  # Full convergence validation is still mandatory.
+    assert demands == [0, .1]
+
+
+def test_drain_discovers_absent_inbox_before_full_snapshot(drain_probe):
+    from types import SimpleNamespace
+    s, obj, clock, reads, demands, state = drain_probe
+    obj._mirror_inbox = None
+    def discover(*a):
+        demands.append(clock[0])
+        obj._mirror_inbox = SimpleNamespace(pending=lambda: False)
+    obj.queue_prefetch = discover
+    s.drain_provider(obj, 1)
+    assert demands == [0]
+    assert reads == [.1]
+
+
+@pytest.mark.parametrize("absent", [False, True])
+def test_drain_busy_or_absent_inbox_keeps_deadline(drain_probe, absent):
+    s, obj, clock, reads, demands, state = drain_probe
+    if absent:
+        obj._mirror_inbox = None
+    else:
+        obj._mirror_inbox.pending = lambda: True
+    with pytest.raises(RuntimeError, match="automatic convergence deadline exceeded"):
+        s.drain_provider(obj, .15)
+    assert clock[0] == .15
+    assert demands == [0, .1]
+    assert reads == []
+
+
+def test_drain_sqlite_busy_is_pending_not_empty(tmp_path, drain_probe):
+    import sqlite3
+    from test_provider import _mod
+    s, obj, clock, reads, demands, state = drain_probe
+    # A legacy rollback database permits a real exclusive read lock, unlike
+    # normal WAL writer contention. Exercise the real nonwaiting pending().
+    inbox = _mod.MirrorInbox.__new__(_mod.MirrorInbox)
+    inbox.path = tmp_path / "busy.sqlite3"
+    db = sqlite3.connect(inbox.path)
+    try:
+        db.execute("CREATE TABLE notifications (id INTEGER PRIMARY KEY, payload TEXT)")
+        db.execute("BEGIN EXCLUSIVE")
+        obj._mirror_inbox = inbox
+        def release(*a):
+            demands.append(clock[0])
+            db.rollback()
+        obj.queue_prefetch = release
+        s.drain_provider(obj, 1)
+        assert demands == [0]
+        assert reads == [.1]
+    finally:
+        db.close()
+        inbox.close()
+
+
+@pytest.mark.parametrize("missing", ["pending_creates", "pending_deletes", "refresh_required"])
+def test_drain_empty_inbox_still_rejects_malformed_journal(drain_probe, missing):
+    s, obj, clock, reads, demands, state = drain_probe
+    del state[missing]
+    with pytest.raises(KeyError, match=missing):
+        s.drain_provider(obj, 1)
+    assert reads == [.2]
+    assert demands == [0, .1]
+
+
+@pytest.mark.parametrize("gate", ["pending_creates", "pending_deletes", "refresh_required",
+                                   "index_requested", "index_running", "recall_blocked",
+                                   "index_not_ready", "disk_unfinished_tasks", "index_unfinished_tasks",
+                                   "inbox_refilled"])
+def test_drain_empty_probe_still_requires_every_pipeline_gate(drain_probe, gate):
+    from queue import Queue
+    from types import SimpleNamespace
+    s, obj, clock, reads, demands, state = drain_probe
+    obj._mirror_inbox.pending = lambda: False
+    if gate in state:
+        state[gate] = True if gate == "refresh_required" else ["pending"]
+    elif gate == "recall_blocked":
+        obj._recall_token = lambda: None
+    elif gate == "index_not_ready":
+        obj._index_ready = lambda: False
+    elif gate.endswith("unfinished_tasks"):
+        queue = Queue()
+        queue.put("pending")
+        setattr(obj, f"_{gate.split('_')[0]}_worker", SimpleNamespace(_queue=queue))
+    elif gate == "inbox_refilled":
+        # Inbox can refill between the cheap probe and full diagnostic read.
+        pending = iter([False, True])
+        obj._mirror_inbox.pending = lambda: next(pending)
+    else:
+        setattr(obj, f"_{gate}", True)
+    with pytest.raises(RuntimeError, match="automatic convergence deadline exceeded"):
+        s.drain_provider(obj, .05)
+    assert reads == [0]
+    assert demands == [0]
+    assert clock[0] == .05
+
+
 def test_exact_oracle():
     s = module()
     wanted = s.expected("run", 2, 3)

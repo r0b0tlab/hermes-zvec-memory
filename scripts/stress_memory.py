@@ -195,7 +195,12 @@ def pipeline_pending(obj):
 def drain_provider(obj, deadline):
     """Exercise demand-driven automatic convergence, not a manual refresh."""
     while time.monotonic() < deadline:
-        if not any(pipeline_pending(obj).values()):
+        # Busy inbox discovery is nonwaiting and already proves work remains.
+        # Avoid repeatedly validating every journal path while writers drain;
+        # this reduces harness observer overhead, not provider work. An absent
+        # inbox also needs automatic discovery via queue_prefetch below.
+        inbox = obj._mirror_inbox
+        if inbox is not None and not inbox.pending() and not any(pipeline_pending(obj).values()):
             return
         obj.queue_prefetch("Inspect synthetic stress drain status")
         time.sleep(min(.1, max(0, deadline - time.monotonic())))
