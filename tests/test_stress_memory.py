@@ -174,11 +174,53 @@ def test_final_descendant_scan_happens_before_reaping(monkeypatch):
     assert events == ["scan", "wait-without-reaping", "scan", "reap"]
 
 
+def test_completed_leader_waits_for_slow_resource_tracker(tmp_path):
+    s = module()
+    marker = tmp_path / "tracker-finished"
+    pidfile = tmp_path / "tracker.pid"
+    tracker = ("import sys,time,pathlib; from multiprocessing.resource_tracker import main; "
+               "main(int(sys.argv[1])); time.sleep(.2); "
+               f"pathlib.Path({str(marker)!r}).write_text('finished')")
+    code = ("import os,subprocess,sys,pathlib; r,w=os.pipe(); "
+            f"p=subprocess.Popen([sys.executable,'-c',{tracker!r},str(r)],pass_fds=(r,)); "
+            f"pathlib.Path({str(pidfile)!r}).write_text(str(p.pid))")
+    assert s.run_command([sys.executable, "-c", code], s.environment(tmp_path, ROOT),
+                         tmp_path / "child.log", 3) == 0
+    assert marker.read_text() == "finished", "tracker must finish naturally, not be killed"
+    assert not Path(f"/proc/{int(pidfile.read_text())}").exists()
+
+
+def test_interrupted_descendant_grace_still_kills_and_reaps(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    s = module()
+    s.enable_subreaper()
+    pidfile = tmp_path / "descendant.pid"
+    code = ("import subprocess,sys,pathlib; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(20)']); "
+            f"pathlib.Path({str(pidfile)!r}).write_text(str(p.pid))")
+    child = s.track_child(subprocess.Popen([sys.executable, "-c", code], start_new_session=True))
+    while s.poll_owned(child) is None:
+        time.sleep(.01)
+    pid = int(pidfile.read_text())
+    def interrupt(_):
+        raise RuntimeError("campaign interrupted")
+    monkeypatch.setattr(s.time, "sleep", interrupt)
+    try:
+        with pytest.raises(RuntimeError, match="campaign interrupted"):
+            s.cleanup_owned(child, time.monotonic() + 1)
+        assert not Path(f"/proc/{pid}").exists(), "interrupted grace must still reap"
+    finally:
+        if Path(f"/proc/{pid}").exists():
+            s.cleanup_owned(child)
+
+
 def test_completed_leader_with_live_descendant_is_failure(tmp_path):
     s = module()
     # This child is owned by this test; no discovery by process names.
     code = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(20)'])"
-    assert s.run_command([sys.executable, "-c", code], s.environment(tmp_path, ROOT), tmp_path / "child.log", 3) == 125
+    began = s.time.monotonic()
+    assert s.run_command([sys.executable, "-c", code], s.environment(tmp_path, ROOT), tmp_path / "child.log", .3) == 125
+    assert .25 <= s.time.monotonic() - began < 1, "leak grace must use the phase deadline"
 
 
 def test_phase_deadline_preserves_worker_receipts(tmp_path, monkeypatch):

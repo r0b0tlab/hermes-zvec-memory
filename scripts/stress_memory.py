@@ -421,26 +421,46 @@ def poll_owned(child):
     return child.poll()
 
 
-def cleanup_owned(child):
-    # Signal pinned kernel identities ONLY; the parent cgroup catches unobserved
-    # descendants (including processes deliberately escaping their session).
-    leftover = False
-    for pid, fd in child._stress_handles.items():
-        try:
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
-            leftover |= pid != child.pid
-        except ProcessLookupError:
-            pass
-        finally:
-            os.close(fd)
-    child.wait()
-    for pid in child._stress_handles:
-        if pid == child.pid:
-            continue
-        try:
-            os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
+def cleanup_owned(child, deadline=None):
+    # EOF-driven helpers may finish just after their leader. Wait only within
+    # the caller's existing phase deadline, using pinned kernel identities.
+    import select
+    poller = select.poll()
+    pending = set(child._stress_handles.values())
+    for fd in pending:
+        poller.register(fd, select.POLLIN)
+    try:
+        while pending:
+            for fd, _ in poller.poll(0):
+                pending.discard(fd)
+                poller.unregister(fd)
+            remaining = 0 if deadline is None else deadline - time.monotonic()
+            if not pending or remaining <= 0:
+                break
+            time.sleep(min(.01, remaining))
+    finally:
+        # Signal live pinned identities ONLY. Readable pidfds include zombies:
+        # successful SIGKILL delivery to a zombie is not evidence of a live leak.
+        # The parent cgroup still catches unobserved/escaped descendants.
+        leftover = False
+        for pid, fd in child._stress_handles.items():
+            try:
+                if fd not in pending:
+                    continue
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+                leftover |= pid != child.pid
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(fd)
+        child.wait()
+        for pid in child._stress_handles:
+            if pid == child.pid:
+                continue
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
     return leftover
 
 
@@ -457,7 +477,7 @@ def run_command(command, env, logfile, timeout):
                 time.sleep(.01)
             rc = child.returncode if child.returncode is not None else 124
         finally:
-            leftover = cleanup_owned(child)
+            leftover = cleanup_owned(child, deadline if child.returncode == 0 else None)
         return rc or (125 if leftover else 0)
 
 
