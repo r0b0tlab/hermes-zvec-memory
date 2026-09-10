@@ -46,6 +46,7 @@ from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from hermes_cli.config import cfg_get
 from tools.registry import tool_error
 from utils import is_truthy_value
+from .workers import Worker
 
 logger = logging.getLogger(__name__)
 
