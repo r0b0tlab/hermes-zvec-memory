@@ -131,9 +131,16 @@ content changes.
 | `unit_status: conflict` | `diff ~/.config/systemd/user/hermes-zvec-memory.service{.new,}` | keep your edit and re-apply ours, or accept ours |
 | Provider not active | `hermes memory status` | `hermes memory setup zvec-memory` |
 
-## Publishing to the plugin catalog (not yet done)
+## Publishing to the plugin catalog
 
-`plugin-catalog-entry.yaml` in this repo is a ready-to-submit entry for
-`plugin-catalog/` in the Hermes repo. Submit it as a PR after tagging the release
-commit, and fill `sha` with that commit's 40-hex id. Nothing is published from
-this checkout automatically.
+`plugin-catalog-entry.yaml` is the exact file the catalog PR adds. Its schema,
+the admission rules and the two CI gates it must pass were checked against
+`plugin-catalog/README.md`, the published plugin-catalog docs page and
+`.github/workflows/plugin-catalog-ci.yml` in hermes-agent; the per-requirement
+result, the verification commands and the submission steps are in
+[`docs/catalog-submission.md`](catalog-submission.md).
+
+The one requirement that is time-based: the pinned SHA must be **at least two
+weeks old** at pin time. The current pin (`v0.2.0`, `36fdba7…`) becomes eligible
+on 2026-09-25. Submit the PR on or after that date, and re-run both gates before
+doing so.
