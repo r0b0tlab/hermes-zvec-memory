@@ -231,3 +231,38 @@ def test_provider_package_exports_post_setup_for_a_bare_block(tmp_path, unit_dir
                              {"runtime_dir": str(tmp_path / "runtime_root")})
     assert result["status"] == "missing-engine" and result["provider"] == "zvec-memory"
     assert result["owns_config"] is False
+
+
+def test_install_engine_resolves_npm_from_path(tmp_path, monkeypatch):
+    engine = load_engine()
+
+    def fake_which(name):
+        if name == "npm":
+            return "/opt/node/bin/npm"
+        return name if name == "/opt/node/bin/npm" else None
+
+    monkeypatch.setattr(engine.shutil, "which", fake_which)
+    seen = []
+
+    class Result:
+        returncode, stdout, stderr = 1, "", "registry unreachable"
+
+    monkeypatch.setattr(engine.subprocess, "run",
+                        lambda argv, **kwargs: (seen.append({"argv": [str(a) for a in argv],
+                                                             "env": kwargs.get("env")}),
+                                                Result())[1])
+    result = engine.install_engine(tmp_path / "hermes-home", config_for(tmp_path))
+    assert result["status"] == "install-failed"
+    argv, environment = seen[0]["argv"], seen[0]["env"]
+    assert argv[0] == "/opt/node/bin/npm", "the npm on PATH wins over the hardcoded default"
+    assert f"{engine.ENGINE_PACKAGE}@{engine.PINNED_VERSION}" in argv
+    assert str(tmp_path / "runtime_root/runtime") in argv
+    assert environment["SHARP_IGNORE_GLOBAL_LIBVIPS"] == "1", \
+        "sharp must not attempt a source build against a global libvips"
+
+
+def test_install_engine_without_npm_says_so(tmp_path, monkeypatch):
+    engine = load_engine()
+    monkeypatch.setattr(engine.shutil, "which", lambda name: None)
+    result = engine.install_engine(tmp_path / "hermes-home", config_for(tmp_path))
+    assert result["status"] == "no-npm" and "Node.js" in result["detail"]

@@ -225,17 +225,22 @@ def ensure_engine(hermes_home, config=None) -> dict:
 
 
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
-                   npm: str = NPM_BIN) -> dict:
+                   npm: str | None = None) -> dict:
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
     hermes_home = Path(hermes_home)
     config = dict(config or {})
     prefix = runtime_root(hermes_home, config) / "runtime"
-    if shutil.which(npm) is None:
-        return {"status": "no-npm", "detail": f"{npm} not found; install Node.js >= 22"}
+    npm_bin = npm or shutil.which("npm") or NPM_BIN
+    if shutil.which(npm_bin) is None:
+        return {"status": "no-npm", "detail": f"{npm_bin} not found; install Node.js >= 22"}
     prefix.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run([npm, "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
+    # sharp tries to build from source when it finds a global libvips; the engine
+    # runtime must use the prebuilt binaries instead.
+    environment = {**os.environ,
+                   "SHARP_IGNORE_GLOBAL_LIBVIPS": os.environ.get("SHARP_IGNORE_GLOBAL_LIBVIPS", "1")}
+    proc = subprocess.run([npm_bin, "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                            "--save-exact", f"{ENGINE_PACKAGE}@{version}"],
-                          capture_output=True, text=True, timeout=900)
+                          capture_output=True, text=True, timeout=900, env=environment)
     if proc.returncode != 0:
         return {"status": "install-failed", "detail": (proc.stderr or proc.stdout).strip()[-400:]}
     found = installed_version(hermes_home, config)

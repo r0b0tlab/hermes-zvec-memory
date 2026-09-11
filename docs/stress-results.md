@@ -173,3 +173,35 @@ with a bounded FIFO, demand-driven retry, gated recall while a deletion is pendi
 budget with cache-generation invalidation, and no remote egress when local embeddings are used.
 The campaign found two correctness gaps — the task ceiling (harness) and the durable-inbox
 journal-conversion race (product) — and both are closed with regression tests.
+
+## Maintenance revisions (2026-09-11)
+
+The provider was reworked for maintainability and re-verified end to end; no recall or persistence
+behaviour regressed and the campaign manifest stays `complete_with_recorded_limits`.
+
+**What changed**
+
+- The runtime path no longer imports `hermes_cli`, `tools.registry`, `utils` or
+  `agent.context_compressor`; the two helpers it actually needed are vendored in `zvec-memory/hostio.py`
+  and pinned to the host by an equivalence suite plus a guarded import probe.
+- Durable formats are versioned: an engine-identity sidecar (`.zvec-grep/.zvec-memory-state.json`)
+  adopts an existing index once and rebuilds when the engine binary or embedding changes, and
+  `.mirror-map.json` carries a `schema_version` that refuses a newer layout instead of misreading it.
+- `hermes zvec-memory doctor|status|reindex|engine install` was added: eight checks (config, vault,
+  engine, index, inbox, mirror, identity, task ceiling), exit 0 only when all pass.
+- The engine launcher and systemd unit are now generated and installed by
+  `ZvecMemoryProvider.post_setup` (the `hermes memory setup` hook), which also owns activation;
+  `python scripts/upgrade.py` gates a swap behind the offline suite, the native lane, a verified
+  backup, a re-baseline and doctor, and can roll back.
+
+**Verification after the rework**
+
+| Gate | Result |
+| --- | --- |
+| Offline suite | 401 passed, 10 deselected |
+| Native lane (`ZVEC_RUN_NATIVE=1`, through the generated launcher) | 9 passed, 1 skipped |
+| `hermes zvec-memory doctor` on production | healthy (engine 0.2.2, index ready, inbox WAL 0 pending, mirror 3 records, `pids.max=18232`) |
+| Generated launcher vs the hand-built production launcher | byte-identical |
+| Fresh engine install in an isolated runtime root | `zg 0.2.2`, launcher runs, manifest + unit written |
+| `hermes memory setup zvec-memory` against the live host | takes over activation, config.yaml gains only the `plugins.zvec-memory` block |
+| Production baseline | re-recorded as revision 5; revision 4 preserved as `production-before-rev4.json` |

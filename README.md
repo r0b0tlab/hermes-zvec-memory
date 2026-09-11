@@ -19,30 +19,42 @@ active per Hermes profile. Do not modify Hermes core to install this provider.
 
 ## Installation
 
-From this repository, install zg in a user-owned prefix, or use an existing
-validated installation. A project-local example is:
-
 ```sh
-npm install --prefix .test-tools --save-exact @zvec/zvec-grep@0.2.2
+hermes plugins install https://github.com/<your-account>/hermes-zvec-memory#zvec-memory
+hermes memory setup zvec-memory      # installs the engine runtime and activates it
+hermes zvec-memory engine install    # the one explicit step that fetches the pinned engine
+hermes zvec-memory doctor
 ```
 
-On systems where sharp attempts an unwanted build against global libvips, use
-`SHARP_IGNORE_GLOBAL_LIBVIPS=1` for that installation command. Do not install
-Python dependencies into the operating system's Python.
+`hermes memory setup` lays out the engine launcher and the systemd unit, writes
+the provider's `config.json` and activates the provider. Start a fresh session
+afterwards: the current conversation does not hot-swap its provider or tool
+schemas. Only one external provider can be active per Hermes profile, and
+installing a plugin is not activating it.
 
-For a first plugin install (refuse to overwrite an existing provider):
+From a checkout, the same three commands work after copying `zvec-memory/` into
+`$HERMES_HOME/plugins/`:
 
 ```sh
 HERMES_TARGET="${HERMES_HOME:-$HOME/.hermes}"
-mkdir -p "$HERMES_TARGET/plugins"
 test ! -e "$HERMES_TARGET/plugins/zvec-memory" &&
   cp -R zvec-memory "$HERMES_TARGET/plugins/zvec-memory"
-hermes memory status
+hermes memory setup zvec-memory
 ```
 
-For an upgrade, stop/drain sessions using this provider and back up the previous
-plugin directory and provider data before replacing the directory. Never copy
-new files over old files while provider workers are still running.
+Upgrading is one gated command — see `docs/maintenance.md`:
+
+```sh
+cd ~/hermes-zvec-memory && python scripts/upgrade.py --dry-run && python scripts/upgrade.py
+```
+
+Engine requirements for a manual install: Node.js >=22 and
+`@zvec/zvec-grep@0.2.2`, a local embedding model (default
+`local/potion-retrieval-32m`), and POSIX filesystem locking (Linux tested; macOS
+not yet exercised; Windows unsupported by the process-safe transaction layer).
+On systems where sharp attempts an unwanted build against global libvips, use
+`SHARP_IGNORE_GLOBAL_LIBVIPS=1` for the npm install. Never install Python
+dependencies into the operating system's Python.
 
 Configure a stable absolute `zg_bin` path if zg is not on the Hermes process's
 PATH. A test checkout is not a suitable permanent production dependency path.
@@ -149,7 +161,7 @@ new/deleted data is visible/absent. Native lock/lease contention is not success.
 For lower warm-query latency, a local zg daemon keeps models loaded:
 
 ```sh
-zg server on --listen 127.0.0.1:7999 --token-file /absolute/private/server.token
+zg server on --listen 127.0.0.1:17999 --token-file /absolute/private/server.token
 zg server status --check-ready
 ```
 
@@ -165,8 +177,12 @@ the provider's own index scheduling remains necessary.
 
 ```sh
 hermes memory status
+hermes zvec-memory doctor          # exit 0 when healthy; --json for machines
 zg status /absolute/vault --check-ready
 ```
+
+Everyday maintenance (install, upgrade, rollback, versioned formats, recorded
+limits and troubleshooting) is documented in [`docs/maintenance.md`](docs/maintenance.md).
 
 In a fresh Hermes session, store a harmless fact and retrieve it by paraphrase,
 checking the cited file content. `backup_paths()` resolves custom vaults without

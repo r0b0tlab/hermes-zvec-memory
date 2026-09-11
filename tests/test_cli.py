@@ -156,3 +156,56 @@ def test_vault_resolution_matches_the_provider(tmp_path, raw):
     home.mkdir()
     provider = _mod.ZvecMemoryProvider(config={"vault": raw})
     assert cli.resolve_vault(raw, home) == provider._resolve_vault(str(home))
+
+
+class FakeEngine:
+    PINNED_VERSION = "0.2.2"
+    ENGINE_PACKAGE = "@zvec/zvec-grep"
+
+    def __init__(self, status="updated"):
+        self.status = status
+        self.versions = []
+
+    def runtime_root(self, home, config):
+        return Path("/tmp/runtime-root")
+
+    def install_engine(self, home, config, version=None):
+        self.versions.append(version)
+        return {"status": self.status, "version": version, "zg_bin": "/tmp/runtime-root/zg-default"}
+
+
+def engine_args(version=None):
+    cli = load_cli()
+    parser = argparse.ArgumentParser(prog="hermes zvec-memory")
+    cli.register_cli(parser)
+    argv = ["engine", "install"] + (["--version", version] if version else [])
+    return cli, parser.parse_args(argv)
+
+
+def test_engine_install_defaults_to_the_pinned_version(monkeypatch, capsys):
+    cli, parsed = engine_args()
+    assert parsed.zvec_command == "engine" and parsed.engine_action == "install"
+    fake = FakeEngine()
+    monkeypatch.setattr(cli, "_engine_module", lambda: fake)
+    monkeypatch.setattr(cli, "_configured", lambda: (Path("/tmp/vault"), {"zg_bin": "/zg"}))
+    monkeypatch.setattr(cli, "_hermes_home", lambda: Path("/tmp/hermes-home"))
+    assert cli.zvec_memory_command(parsed) == 0
+    assert fake.versions == ["0.2.2"]
+    assert '"status": "updated"' in capsys.readouterr().out
+
+
+def test_engine_install_reports_a_failed_install(monkeypatch, capsys):
+    cli, parsed = engine_args("9.9.9")
+    fake = FakeEngine(status="no-npm")
+    monkeypatch.setattr(cli, "_engine_module", lambda: fake)
+    monkeypatch.setattr(cli, "_configured", lambda: (Path("/tmp/vault"), {}))
+    monkeypatch.setattr(cli, "_hermes_home", lambda: Path("/tmp/hermes-home"))
+    assert cli.zvec_memory_command(parsed) == 1
+    assert fake.versions == ["9.9.9"]
+
+
+def test_engine_without_an_action_prints_usage():
+    cli = load_cli()
+    parser = argparse.ArgumentParser(prog="hermes zvec-memory")
+    cli.register_cli(parser)
+    assert cli.zvec_memory_command(parser.parse_args(["engine"])) == 2

@@ -1,0 +1,17 @@
+name: hermes-zvec-memory
+repo: https://github.com/<your-account>/hermes-zvec-memory
+sha: <40-hex commit id of the release you want pinned>
+description: "Local-first memory over a zg-indexed Markdown vault: hybrid semantic and keyword recall with file:line citations, no cloud."
+maintainer: <your-github-handle>
+tier: community
+docs_url: https://github.com/<your-account>/hermes-zvec-memory/blob/<sha>/docs/maintenance.md
+platforms: []
+capabilities:
+  provides_tools:
+    - memory_search
+    - memory_store
+  provides_hooks:
+    - on_session_end
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []
