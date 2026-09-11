@@ -35,6 +35,11 @@ def host(tmp_path, monkeypatch):
     """Resolve the real host only after all filesystem roots are isolated."""
     assert (HOST_ROOT / "agent" / "memory_provider.py").is_file(), HOST_ROOT
     monkeypatch.syspath_prepend(str(HOST_ROOT))
+    # The host creates $HERMES_HOME subdirs (skills/, logs/, ...) the first time
+    # hermes_cli.config is imported. Warm that import before pointing HERMES_HOME at
+    # this test's profile, so the assertions below measure the provider's own
+    # behaviour instead of the host's one-time home bootstrap.
+    importlib.import_module("hermes_cli.config")
     home = tmp_path / "profile"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

@@ -885,3 +885,113 @@ def test_successful_retry_reopens_handle_after_peer_ack(tmp_path, monkeypatch):
         assert "current preference" in p.prefetch("What are my preferences?")
     finally:
         p.shutdown()
+
+
+def test_auto_extract_is_skipped_when_the_compaction_helper_is_missing(tmp_path, monkeypatch):
+    """The host helper may move between releases; extraction must fail closed."""
+    import sys as _sys
+
+    provider = make_provider(tmp_path)
+    try:
+        provider._config["auto_extract"] = True
+        monkeypatch.setitem(_sys.modules, "agent.context_compressor", None)
+        facts = tmp_path / "vault" / "facts"
+        before = len(list(facts.glob("*.md")))
+        provider._auto_extract([{"role": "user", "content": "remember that I like apricots"},
+                                {"role": "assistant", "content": "noted"}])
+        assert len(list(facts.glob("*.md"))) == before, "extraction ran without the safety filter"
+    finally:
+        provider.shutdown()
+
+
+def test_engine_identity_change_requests_a_rebuild(tmp_path, monkeypatch):
+    """A changed engine identity must force a rebuild, not reuse a stale index."""
+    provider = make_provider(tmp_path)
+    try:
+        (tmp_path / "vault" / ".zvec-grep").mkdir(parents=True, exist_ok=True)
+        state_path = provider._engine_state_path()
+        recorded = json.loads(state_path.read_text())  # adopted during initialize
+        assert recorded["plugin_schema"] == _mod.ENGINE_STATE_SCHEMA
+
+        wanted = provider._engine_identity()
+        assert provider._engine_state_matches(wanted) is True
+        assert provider._engine_state_matches({**wanted, "zg_bin": "/elsewhere/zg"}) is False
+        assert provider._engine_state_matches({**wanted, "embedding": "local/other"}) is False
+        assert provider._engine_state_matches({**wanted, "zg_version": "0.2.3"}) is True, \
+            "an unknown recorded version is not evidence of a change"
+
+        calls = []
+        monkeypatch.setattr(provider, "_maybe_reindex", lambda **kwargs: calls.append(kwargs))
+        provider._ensure_engine_identity()
+        assert calls == [], "an unchanged identity must not rebuild"
+
+        state_path.write_text(json.dumps({**recorded, "plugin_schema": 0}))
+        provider._ensure_engine_identity()
+        assert calls and calls[-1].get("force") is True
+
+        calls.clear()
+        monkeypatch.setattr(provider, "_zg_version", lambda: "0.2.3")
+        state_path.write_text(json.dumps({**recorded, "zg_version": "0.2.2"}))
+        provider._ensure_engine_identity()
+        assert calls and calls[-1].get("force") is True, "a known version change must rebuild"
+
+        calls.clear()
+        state_path.write_text(json.dumps({**recorded, "zg_version": "0.2.3"}))
+        provider._ensure_engine_identity()
+        assert calls == []
+
+        state_path.write_text(json.dumps({**recorded, "zg_version": None}))
+        calls.clear()
+        provider._ensure_engine_identity()
+        assert calls == [], "an unknown current version must not thrash rebuilds"
+    finally:
+        provider.shutdown()
+
+
+def test_untracked_existing_index_is_adopted_not_rebuilt(tmp_path, monkeypatch):
+    """An index that predates this bookkeeping is adopted, not thrown away."""
+    provider = make_provider(tmp_path)
+    try:
+        state_path = provider._engine_state_path()
+        state_path.unlink()
+        calls = []
+        monkeypatch.setattr(provider, "_maybe_reindex", lambda **kwargs: calls.append(kwargs))
+        provider._ensure_engine_identity()
+        assert calls == [], "a pre-existing index must not be rebuilt on upgrade"
+        assert state_path.exists()
+    finally:
+        provider.shutdown()
+
+
+def test_zg_version_is_parsed_once_and_cached(tmp_path, monkeypatch):
+    provider = make_provider(tmp_path)
+    try:
+        seen = []
+
+        def fake(args, timeout):
+            seen.append(list(args))
+            return 0, "0.2.2\n", ""
+        monkeypatch.setattr(provider, "_run_zg", fake)
+        provider._zg_version_cache = None  # initialize already probed the cached path
+        assert provider._zg_version() == "0.2.2"
+        assert provider._zg_version() == "0.2.2"
+        assert len(seen) == 1
+    finally:
+        provider.shutdown()
+
+
+def test_mirror_map_records_its_schema_and_refuses_newer_layouts(tmp_path):
+    provider = make_provider(tmp_path)
+    try:
+        assert provider._mirror_state()["schema_version"] == _mod.MIRROR_MAP_SCHEMA
+        path = tmp_path / "vault" / ".mirror-map.json"
+        path.write_text(json.dumps({"records": {}, "pending_deletes": [], "pending_creates": []}))
+        assert provider._mirror_state()["schema_version"] == _mod.MIRROR_MAP_SCHEMA
+        provider._save_mirror_state({"records": {}, "pending_deletes": [], "pending_creates": [],
+                                     "refresh_required": False})
+        assert json.loads(path.read_text())["schema_version"] == _mod.MIRROR_MAP_SCHEMA
+        path.write_text(json.dumps({"schema_version": _mod.MIRROR_MAP_SCHEMA + 1, "records": {}}))
+        with pytest.raises(ValueError, match="newer"):
+            provider._mirror_state()
+    finally:
+        provider.shutdown()
