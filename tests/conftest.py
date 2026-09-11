@@ -16,3 +16,14 @@ def offline_engine(request, monkeypatch):
     # Never launch native/model work in the offline lane, even if zg exists.
     from test_provider import ZvecMemoryProvider
     monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", lambda *a, **k: (0, "", ""))
+
+
+@pytest.fixture(autouse=True)
+def no_production_engine(tmp_path, monkeypatch):
+    """No test may lay out files in the developer's real engine runtime.
+
+    A test that forgot to pass ``runtime_dir`` once rewrote the installed
+    launcher; the default root is now redirectable and always redirected here.
+    """
+    monkeypatch.setenv("HERMES_ZVEC_RUNTIME_DIR", str(tmp_path / "engine-root-guard"))
+    monkeypatch.setenv("HERMES_ZVEC_MODEL_CACHE", str(tmp_path / "engine-cache-guard"))

@@ -1052,3 +1052,13 @@ def register(ctx) -> None:
     """Register the zvec-memory provider with the plugin system."""
     config = _load_plugin_config()
     ctx.register_memory_provider(ZvecMemoryProvider(config=config))
+
+
+def post_setup(hermes_home, config=None):
+    """Entry point `hermes memory setup` calls; installs the engine runtime.
+
+    Imported lazily so the provider import path stays cheap.
+    """
+    from .engine import post_setup as _post_setup
+
+    return _post_setup(hermes_home, config)
