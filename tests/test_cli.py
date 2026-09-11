@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from test_provider import _mod
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -145,3 +147,12 @@ def test_reindex_asks_for_a_rebuild_and_reports_state(tmp_path, monkeypatch, cap
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
     assert cli.zvec_memory_command(argparse.Namespace(zvec_command="reindex", json=False)) == 0
     assert "Rebuild requested" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raw", ["$HERMES_HOME/zvec-memory", "${HERMES_HOME}/vault", "~/vault", "/abs/vault", "relative/vault"])
+def test_vault_resolution_matches_the_provider(tmp_path, raw):
+    cli = load_cli()
+    home = tmp_path / "home"
+    home.mkdir()
+    provider = _mod.ZvecMemoryProvider(config={"vault": raw})
+    assert cli.resolve_vault(raw, home) == provider._resolve_vault(str(home))
