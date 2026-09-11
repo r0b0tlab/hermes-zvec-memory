@@ -17,7 +17,8 @@ from typing import Callable, Dict, List
 
 COMMANDS = (("doctor", "Check config, vault, engine, index, inbox and mirror state"),
             ("status", "Show the same state without failing on warnings"),
-            ("reindex", "Request a full index rebuild on the next provider session"))
+            ("reindex", "Request a full index rebuild on the next provider session"),
+            ("engine", "Install the pinned local engine runtime (the one network step)"))
 
 REQUIRED_CHECKS = ("config", "vault", "engine", "index", "inbox", "mirror", "identity", "tasks")
 MIN_TASK_CEILING = 512
@@ -158,11 +159,55 @@ def _configured() -> tuple:
     return vault, config
 
 
+def _engine_module():
+    """The plugin's own engine module, whether or not we are a loaded package."""
+    try:
+        from . import engine
+
+        return engine
+    except ImportError:
+        import importlib.util
+
+        plugin_dir = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("zvec_engine_standalone",
+                                                      plugin_dir / "__init__.py",
+                                                      submodule_search_locations=[str(plugin_dir)])
+        package = importlib.util.module_from_spec(spec)
+        sys.modules["zvec_engine_standalone"] = package
+        spec.loader.exec_module(package)
+        return sys.modules["zvec_engine_standalone.engine"]
+
+
+def _engine_command(args) -> int:
+    """`hermes zvec-memory engine install [--version X]`: the explicit fetch step."""
+    action = getattr(args, "engine_action", None)
+    if action != "install":
+        print("usage: hermes zvec-memory engine install [--version 0.2.2]")
+        return 2
+    _, config = _configured()
+    engine = _engine_module()
+    version = getattr(args, "version", None) or engine.PINNED_VERSION
+    home = _hermes_home()
+    root = engine.runtime_root(home, config)
+    print(f"  Installing {engine.ENGINE_PACKAGE}@{version} under {root}")
+    result = engine.install_engine(home, config, version=version)
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("status") in {"present", "updated"} else 1
+
+
+def _hermes_home() -> Path:
+    from hermes_constants import get_hermes_home  # documented canonical helper
+
+    return Path(get_hermes_home())
+
+
 def zvec_memory_command(args) -> int:
     sub = getattr(args, "zvec_command", None)
     if sub is None:
-        print("usage: hermes zvec-memory {doctor,status,reindex}")
+        print("usage: hermes zvec-memory {doctor,status,reindex,engine}")
         return 2
+    if sub == "engine":
+        return _engine_command(args)
     vault, config = _configured()
     override = getattr(args, "vault", None)
     if override:
@@ -190,6 +235,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         parser = subs.add_parser(name, help=help_text)
         parser.add_argument("--json", action="store_true")
         parser.add_argument("--vault", help="override the configured vault path")
+        if name == "engine":
+            actions = parser.add_subparsers(dest="engine_action")
+            install = actions.add_parser("install", help="fetch the pinned engine package")
+            install.add_argument("--version", help="package version (default: the pinned one)")
     subparser.set_defaults(func=zvec_memory_command)
 
 
