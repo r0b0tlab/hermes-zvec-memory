@@ -188,6 +188,17 @@ class ZvecMemoryProvider(MemoryProvider):
     def unavailable_reason(self) -> str:
         return "zg not found — install with: npm install -g @zvec/zvec-grep (needs Node.js >= 22)"
 
+    def post_setup(self, hermes_home, config=None):
+        """Host hook (`hermes memory setup`): install the engine, own activation.
+
+        The host looks this up on the provider *instance*
+        (`hermes_cli/memory_setup.py::_post_setup_hook`), so it must exist here
+        and not only at module level.
+        """
+        from .engine import post_setup as _post_setup
+
+        return _post_setup(hermes_home, config)
+
     def _resolve_vault(self, hermes_home: str | None) -> Path:
         raw = str(self._config.get("vault", "")).strip()
         if not hermes_home:

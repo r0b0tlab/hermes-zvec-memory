@@ -199,6 +199,28 @@ def test_post_setup_activating_a_host_config_marks_ownership(tmp_path, unit_dir,
     assert saved == [config]
 
 
+def test_provider_instance_exposes_post_setup_for_the_host_hook(tmp_path, unit_dir, monkeypatch):
+    """`_post_setup_hook` looks the hook up on the instance and then stops."""
+    from test_provider import make_provider
+
+    importlib.import_module("zvec_memory_provider.engine")
+    monkeypatch.setattr(sys.modules["zvec_memory_provider.engine"], "_save_host_config",
+                        lambda config: True)
+    fake_runtime(tmp_path)
+    provider = make_provider(tmp_path)
+    try:
+        assert callable(getattr(provider, "post_setup"))
+        config = {"plugins": {"zvec-memory": {"runtime_dir": str(tmp_path / "runtime_root"),
+                                              "engine_home": str(tmp_path / "engine-home")}},
+                  "memory": {}}
+        result = provider.post_setup(str(tmp_path / "hermes-home"), config)
+        assert result["provider"] == "zvec-memory" and result["owns_config"] is True
+        assert config["memory"]["provider"] == "zvec-memory"
+        assert Path(result["zg_bin"]).is_file()
+    finally:
+        provider.shutdown()
+
+
 def test_provider_package_exports_post_setup_for_a_bare_block(tmp_path, unit_dir, monkeypatch):
     from test_provider import _mod
 
