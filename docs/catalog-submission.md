@@ -43,6 +43,12 @@ Sources (all authoritative, all read for this check):
   the host's capability registry (`tools.override`, `llm.*`, `gateway.platform_actions`)
   and this plugin uses none of them; the catalog entry's `capabilities:` block is
   a different shape and is what reviewers read.
+- `platforms: [linux, macos]` rather than empty (= all OSes). Windows is
+  excluded by design (POSIX filesystem locking in the transaction layer); macOS
+  is POSIX-compatible but not yet exercised. Checked in
+  `hermes_cli/plugin_catalog.py` + `plugins_cmd_catalog.py`: the field is
+  informational (shown in `hermes plugins info` and the install prompt) and does
+  not block installation on a listed-unsupported OS.
 - `hermes-zvec-memory` (not `zvec-memory`) as the catalog key: it matches the
   repository name. The install directory does **not** come from this key — the
   installer uses the manifest `name`, so a catalog install still lands in

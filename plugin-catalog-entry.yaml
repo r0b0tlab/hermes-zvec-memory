@@ -10,7 +10,12 @@ description: "Local-first memory over a zg-indexed Markdown vault: hybrid semant
 maintainer: am423
 tier: community
 docs_url: https://github.com/r0b0tlab/hermes-zvec-memory/blob/main/docs/maintenance.md
-platforms: []
+platforms:
+  - linux
+  - macos
+# Windows is excluded: the process-safe transaction layer relies on POSIX
+# filesystem locking (see the README). macOS is POSIX-compatible but not yet
+# exercised. The field is informational — it does not block an install.
 # Capabilities as registered at the pinned commit (verified, not aspirational):
 #   tools  — ZvecMemoryProvider.get_tool_schemas() returns memory_search, memory_store
 #   hooks  — plugin.yaml declares on_session_end, on_memory_write
