@@ -124,6 +124,16 @@ def report(checks: List[Dict]) -> Dict:
             "checked": sorted(c["name"] for c in checks) == sorted(REQUIRED_CHECKS)}
 
 
+def resolve_vault(raw: str, home: Path) -> Path:
+    """Expand the configured vault exactly as the provider does."""
+    text = str(raw or "").strip()
+    if not text:
+        return (Path(home) / "zvec-memory").resolve()
+    text = text.replace("$HERMES_HOME", str(home)).replace("${HERMES_HOME}", str(home))
+    path = Path(text).expanduser()
+    return (path if path.is_absolute() else Path(home) / path).resolve()
+
+
 def _configured() -> tuple:
     """(vault, config) from the provider's JSON config, else the default vault."""
     from hermes_constants import get_hermes_home  # documented canonical helper
@@ -144,7 +154,7 @@ def _configured() -> tuple:
             config = (parsed.get("plugins", {}) or {}).get("zvec-memory", {}) or {}
         except Exception:
             config = {}
-    vault = Path(config.get("vault") or home / "zvec-memory")
+    vault = resolve_vault(config.get("vault"), home)
     return vault, config
 
 
