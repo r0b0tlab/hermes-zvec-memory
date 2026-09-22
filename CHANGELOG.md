@@ -3,6 +3,28 @@
 All notable changes to this plugin. Versions match `zvec-memory/plugin.yaml`;
 the release tags point at the commits the plugin-catalog entry pins.
 
+## Unreleased
+
+- **The engine launcher resolves `node` at layout time.** `ensure_engine` no
+  longer bakes a hardcoded `/usr/bin/node` into the generated launcher and
+  manifest: `node_bin()` resolves the same way the installer already resolved
+  npm — `HERMES_ZVEC_NODE` override, then `node` on PATH, then well-known
+  install locations (Homebrew `/opt/homebrew/bin`, `/usr/local/bin`) for
+  minimal-PATH contexts — all realpath-collapsed so a symlinked shim and its
+  target yield identical bytes — then `/usr/bin/node` as the last resort.
+  Machines without a system nodejs (such as Hermes' bundled Node under
+  `~/.hermes/node`) no longer receive a launcher that cannot start.
+- The stress-lane network-guard probe resolves `node` from PATH instead of
+  assuming `/usr/bin/node`.
+- **`upgrade.py --rollback` restores into `Context` paths.** The unit and
+  profile-config targets are now `Context.unit_file` / `Context.config_file`
+  fields (same defaults as before) instead of hardcoded `Path.home()` values,
+  so a test or alternate profile cannot reach the developer's real unit or
+  `config.yaml` through a rollback.
+- The isolated test environment pins `httpx[socks]==0.28.1` (plus its new
+  transitive pins) so the host-contract tests can import the Hermes modules
+  behind `HERMES_AGENT_DIR`.
+
 ## 0.2.0 — 2026-09-11
 
 First tagged release. It covers everything since the repository's initial

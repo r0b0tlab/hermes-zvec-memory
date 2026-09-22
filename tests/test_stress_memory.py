@@ -1,6 +1,7 @@
 """Harness tests: never opt into the native engine."""
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -431,9 +432,12 @@ def test_initialization_failure_keeps_zero_acceptance_receipt(tmp_path, monkeypa
 
 
 def test_node_guard_blocks_network_without_connecting(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
     s = module()
     s.prepare_home(tmp_path)
-    result = subprocess.run(["/usr/bin/node", "-e", "require('net').connect(9, '127.0.0.1')"],
+    result = subprocess.run([node, "-e", "require('net').connect(9, '127.0.0.1')"],
                             env=s.environment(tmp_path, ROOT), capture_output=True, text=True, timeout=3)
     assert result.returncode != 0
     assert "stress: network disabled" in result.stderr

@@ -55,6 +55,8 @@ class Context:
     backups_root: Path = field(default_factory=lambda: Path.home() / ".hermes/backups")
     launcher: Path = field(default_factory=lambda: Path.home() / ".local/share/hermes-zvec-memory/zg-default")
     model_cache: Path = field(default_factory=lambda: Path.home() / ".cache/hermes-zvec-memory/models")
+    unit_file: Path = field(default_factory=lambda: Path.home() / ".config/systemd/user/hermes-zvec-memory.service")
+    config_file: Path = field(default_factory=lambda: Path.home() / ".hermes/config.yaml")
     runner: object = _run_command
     log: object = print
     dry_run: bool = False
@@ -218,8 +220,8 @@ def rollback(ctx: Context, backup=None) -> dict:
             restored.append(name)
     shutil.rmtree(ctx.plugin_dir / "__pycache__", ignore_errors=True)
     for name, target in (("zg-default", ctx.launcher), ("hermes-zvec-memory.service",
-                          Path.home() / ".config/systemd/user/hermes-zvec-memory.service"),
-                         ("config.yaml", Path.home() / ".hermes/config.yaml")):
+                          ctx.unit_file),
+                         ("config.yaml", ctx.config_file)):
         source = Path(backup) / name
         if source.is_file():
             shutil.copy2(source, target)

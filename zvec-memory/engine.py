@@ -26,8 +26,14 @@ logger = logging.getLogger(__name__)
 
 ENGINE_PACKAGE = "@zvec/zvec-grep"
 PINNED_VERSION = "0.2.2"
+# Last-resort paths, used only when nothing suitable is on PATH. Hermes ships
+# its own Node (symlinked into ~/.local/bin), so a hardcoded /usr/bin/node
+# breaks the launcher on machines without a system nodejs. NODE_CANDIDATES are
+# probed when node is not on PATH at all (e.g. a macOS GUI context with a
+# minimal PATH): Homebrew on Apple Silicon and Intel.
 NODE_BIN = "/usr/bin/node"
 NPM_BIN = "/usr/bin/npm"
+NODE_CANDIDATES = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
 LAUNCHER_NAME = "zg-default"
 UNIT_NAME = "hermes-zvec-memory.service"
 PROVIDER_NAME = "zvec-memory"
@@ -116,6 +122,22 @@ def installed_version(hermes_home, config=None):
         return None
 
 
+def node_bin() -> str:
+    """Resolve node the way the installer resolves npm: explicit override, then
+    PATH (Hermes installs its own Node), then well-known install locations.
+
+    The first hit is realpath-collapsed so a symlinked shim and its target
+    yield the same launcher bytes in every context.
+    """
+    override = os.environ.get("HERMES_ZVEC_NODE")
+    if override:
+        return override
+    found = shutil.which("node")
+    if not found:
+        found = next((path for path in NODE_CANDIDATES if os.path.exists(path)), None)
+    return os.path.realpath(found) if found else NODE_BIN
+
+
 def launcher_script(hermes_home, config=None) -> str:
     """The engine wrapper: every engine environment variable lives in one file."""
     return (
@@ -128,7 +150,7 @@ def launcher_script(hermes_home, config=None) -> str:
         f'export ZVEC_GREP_SERVER_URL="{server_url(config)}"\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
-        f'exec {NODE_BIN} {entry_path(hermes_home, config)} "$@"\n'
+        f'exec {node_bin()} {entry_path(hermes_home, config)} "$@"\n'
     )
 
 
@@ -200,7 +222,7 @@ def ensure_engine(hermes_home, config=None) -> dict:
         unit_status = "conflict"
 
     manifest_path = root / MANIFEST_NAME
-    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": NODE_BIN,
+    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": node_bin(),
                 "entry": str(entry_path(hermes_home, config)),
                 "engine_home": str(engine_home(hermes_home, config)),
                 "server_url": server_url(config), "launcher": str(launcher),

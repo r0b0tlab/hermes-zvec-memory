@@ -47,11 +47,15 @@ def make_ctx(tmp_path, runner, **overrides):
         backups_root=tmp_path / "backups",
         launcher=tmp_path / "share/zg-default",
         model_cache=tmp_path / "cache/models",
+        unit_file=tmp_path / "config/systemd/user/hermes-zvec-memory.service",
+        config_file=tmp_path / "config/hermes-home/config.yaml",
         runner=runner,
         log=lambda *a, **k: None,
         **overrides)
     ctx.launcher.parent.mkdir(parents=True, exist_ok=True)
     ctx.launcher.write_text("#!/usr/bin/env bash\n")
+    for target in (ctx.unit_file, ctx.config_file):
+        target.parent.mkdir(parents=True, exist_ok=True)
     return ctx
 
 
@@ -153,6 +157,10 @@ def test_deploy_is_a_no_op_when_the_installed_files_are_identical(tmp_path):
 
 def test_rollback_restores_the_newest_backup(tmp_path):
     ctx = make_ctx(tmp_path, FakeRunner())
+    # Rollback restores into ctx targets only; a test must never reach the
+    # developer's real unit or profile config.
+    for target in (ctx.plugin_dir, ctx.launcher, ctx.unit_file, ctx.config_file):
+        assert target.is_relative_to(tmp_path), "rollback targets must stay in the test sandbox"
     old = tmp_path / "backups/zvec-upgrade-2026-01-01_000000"
     (old / "zvec-memory.previous").mkdir(parents=True)
     (old / "zvec-memory.previous/__init__.py").write_text("# previous plugin\n")
@@ -170,6 +178,9 @@ def test_rollback_restores_the_newest_backup(tmp_path):
     assert result["ok"] is True and "zg-default" in result["restored"]
     assert (ctx.plugin_dir / "__init__.py").read_text() == "# previous plugin\n"
     assert ctx.launcher.read_text() == "# previous launcher\n"
+    assert "hermes-zvec-memory.service" in result["restored"] and "config.yaml" in result["restored"]
+    assert ctx.unit_file.read_text() == "[Service]\nExecStart=/usr/bin/true\n"
+    assert ctx.config_file.read_text() == "memory:\n  provider: zvec-memory\n"
 
 
 def test_rollback_without_a_backup_exits_two(tmp_path, monkeypatch, capsys):

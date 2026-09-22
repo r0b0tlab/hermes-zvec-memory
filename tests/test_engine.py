@@ -63,8 +63,45 @@ def test_launcher_script_is_byte_identical_to_the_verified_launcher(tmp_path):
         'export ZVEC_GREP_SERVER_URL="http://127.0.0.1:17999/mcp"\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
-        f'exec /usr/bin/node {tmp_path / "runtime_root/runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js"} "$@"\n')
+        f'exec {engine.node_bin()} {tmp_path / "runtime_root/runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js"} "$@"\n')
     assert script.endswith('"$@"\n'), "the launcher must forward its arguments"
+
+
+def test_node_resolution_prefers_override_then_path_then_the_convention(tmp_path, monkeypatch):
+    engine = load_engine()
+    monkeypatch.setenv("HERMES_ZVEC_NODE", "/custom/bin/node")
+    assert engine.node_bin() == "/custom/bin/node"
+
+    monkeypatch.delenv("HERMES_ZVEC_NODE")
+    monkeypatch.setattr(engine.shutil, "which",
+                        lambda name: "/opt/node/bin/node" if name == "node" else None)
+    assert engine.node_bin() == "/opt/node/bin/node"
+
+    monkeypatch.setattr(engine.shutil, "which", lambda name: None)
+    monkeypatch.setattr(engine, "NODE_CANDIDATES", ())
+    assert engine.node_bin() == engine.NODE_BIN
+    assert engine.NODE_BIN == "/usr/bin/node", "the hardcoded path survives only as the last resort"
+
+
+def test_node_resolution_probes_well_known_locations_when_path_is_minimal(tmp_path, monkeypatch):
+    engine = load_engine()
+    monkeypatch.delenv("HERMES_ZVEC_NODE", raising=False)
+    monkeypatch.setattr(engine.shutil, "which", lambda name: None)
+    real = tmp_path / "node-homebrew"
+    real.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(engine, "NODE_CANDIDATES", (str(tmp_path / "missing"), str(real)))
+    assert engine.node_bin() == os.path.realpath(str(real))
+
+
+def test_node_resolution_collapses_a_symlinked_shim(tmp_path, monkeypatch):
+    engine = load_engine()
+    real = tmp_path / "node-runtime"
+    real.write_text("#!/bin/sh\n")
+    shim = tmp_path / "bin" / "node"
+    shim.parent.mkdir()
+    shim.symlink_to(real)
+    monkeypatch.setattr(engine.shutil, "which", lambda name: str(shim) if name == "node" else None)
+    assert engine.node_bin() == os.path.realpath(str(real))
 
 
 def test_default_runtime_root_honours_the_environment_override(tmp_path, monkeypatch):
