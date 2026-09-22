@@ -59,6 +59,14 @@ produce a launcher that points at nothing. The npm step runs with
 `SHARP_IGNORE_GLOBAL_LIBVIPS=1` so the prebuilt binaries are used instead of a
 source build against a global libvips.
 
+The generated launcher executes the first `node` on `PATH`, resolved at layout
+time and realpath-collapsed so a symlinked shim and its target yield the same
+bytes. Set `HERMES_ZVEC_NODE=/absolute/node` before re-running
+`hermes zvec-memory engine install` to pin a specific runtime. When `node` is
+not on `PATH` at all (a macOS GUI context has a minimal `PATH`), well-known
+install locations (Homebrew `/opt/homebrew/bin`, `/usr/local/bin`) are probed
+before `/usr/bin/node`, the last resort.
+
 ## Upgrading the plugin
 
 ```sh
@@ -127,7 +135,7 @@ content changes.
 | --- | --- | --- |
 | Recall goes dark, engine exits | `journalctl --user -u hermes-zvec-memory.service -n 50` for the abort signature | the service hit a task/thread ceiling — confirm `TasksMax=1024` and `systemctl --user restart` |
 | `doctor` says `index not ready` | `hermes zvec-memory reindex`, then a fresh session | the engine rebuilt or the vault moved |
-| `doctor` says `engine` FAIL | run the launcher by hand: `~/.local/share/hermes-zvec-memory/zg-default --version` | re-run `hermes zvec-memory engine install` |
+| `doctor` says `engine` FAIL | run the launcher by hand: `~/.local/share/hermes-zvec-memory/zg-default --version` | re-run `hermes zvec-memory engine install`; when `node` is not at `/usr/bin/node` the launcher resolves it from `PATH` (pin one with `HERMES_ZVEC_NODE` before re-laying the engine) |
 | `unit_status: conflict` | `diff ~/.config/systemd/user/hermes-zvec-memory.service{.new,}` | keep your edit and re-apply ours, or accept ours |
 | Provider not active | `hermes memory status` | `hermes memory setup zvec-memory` |
 
