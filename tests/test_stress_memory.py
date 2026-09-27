@@ -953,3 +953,60 @@ def test_peer_failure_cleans_every_spawned_child(tmp_path, monkeypatch, fault):
             for fd in getattr(child, "_stress_handles", {}).values():
                 try: s.os.close(fd)
                 except OSError: pass
+
+
+@pytest.mark.parametrize("fault", ["register", "signal", "close", "wait"])
+def test_cleanup_attempts_every_pinned_identity_after_fault(monkeypatch, fault):
+    import select
+    from types import SimpleNamespace
+    s = module()
+    calls = {"signal": [], "close": [], "wait": []}
+    class Poller:
+        def register(self, fd, flags):
+            if fault == "register": raise RuntimeError("registration fault")
+        def poll(self, timeout): return []
+        def unregister(self, fd): pass
+    monkeypatch.setattr(select, "poll", Poller)
+    def send(fd, sig):
+        calls["signal"].append(fd)
+        if fault == "signal" and fd == 11: raise PermissionError("signal fault")
+    def close(fd):
+        calls["close"].append(fd)
+        if fault == "close" and fd == 11: raise OSError("close fault")
+    def waitid(kind, fd, flags):
+        calls["wait"].append(fd)
+        if fault == "wait" and fd == 12: raise OSError("wait fault")
+        return SimpleNamespace(si_pid=fd)
+    monkeypatch.setattr(s.signal, "pidfd_send_signal", send)
+    monkeypatch.setattr(s.os, "close", close)
+    monkeypatch.setattr(s.os, "waitid", waitid)
+    monkeypatch.setattr(select, "select", lambda *a: ([], [], []))
+    ticks = iter(range(100))
+    monkeypatch.setattr(s.time, "monotonic", lambda: next(ticks))
+    child = SimpleNamespace(pid=101, returncode=0, _stress_handles={101:11, 102:12, 103:13},
+                            poll=lambda: 0, wait=lambda **k: 0)
+    with pytest.raises(RuntimeError): s.cleanup_owned(child)
+    assert calls["signal"] == [11, 12, 13]
+    assert 13 in calls["wait"], "a failed wait must not skip later identities"
+    assert 13 in calls["close"], "a failed close must not skip later descriptors"
+
+
+def test_cleanup_deadline_retains_unresolved_identity(tmp_path, monkeypatch):
+    import time
+    s = module()
+    child = s.track_child(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                           start_new_session=True))
+    descriptors = dict(child._stress_handles)
+    monkeypatch.setattr(s.signal, "pidfd_send_signal", lambda *args: None)
+    began = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="unresolved=1"):
+            s.cleanup_owned(child)
+        assert 1.5 <= time.monotonic() - began < 3
+        assert child._stress_handles == descriptors
+        assert child._stress_unresolved == [child.pid]
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait(timeout=2)
+        for fd in descriptors.values(): s.os.close(fd)

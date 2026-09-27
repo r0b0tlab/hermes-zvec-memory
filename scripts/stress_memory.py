@@ -438,14 +438,16 @@ def poll_owned(child):
 
 
 def cleanup_owned(child, deadline=None):
-    # EOF-driven helpers may finish just after their leader. Wait only within
-    # the caller's existing phase deadline, using pinned kernel identities.
+    """Discharge every pinned identity under one bounded cleanup deadline."""
     import select
-    poller = select.poll()
-    pending = set(child._stress_handles.values())
-    for fd in pending:
-        poller.register(fd, select.POLLIN)
+    handles = dict(child._stress_handles)
+    pending = set(handles.values())
+    errors, original = [], None
+    leftover = False
     try:
+        poller = select.poll()
+        for fd in pending:
+            poller.register(fd, select.POLLIN)
         while pending:
             for fd, _ in poller.poll(0):
                 pending.discard(fd)
@@ -454,29 +456,71 @@ def cleanup_owned(child, deadline=None):
             if not pending or remaining <= 0:
                 break
             time.sleep(min(.01, remaining))
+    except BaseException as exc:
+        original = exc
     finally:
-        # Signal live pinned identities ONLY. Readable pidfds include zombies:
-        # successful SIGKILL delivery to a zombie is not evidence of a live leak.
-        # The parent cgroup still catches unobserved/escaped descendants.
-        leftover = False
-        for pid, fd in child._stress_handles.items():
+        for pid, fd in handles.items():
+            if fd not in pending:
+                continue
             try:
-                if fd not in pending:
-                    continue
                 signal.pidfd_send_signal(fd, signal.SIGKILL)
                 leftover |= pid != child.pid
             except ProcessLookupError:
                 pass
-            finally:
-                os.close(fd)
-        child.wait()
-        for pid in child._stress_handles:
-            if pid == child.pid:
-                continue
+            except BaseException as exc:
+                errors.append(exc)
+        awaiting, blocked = set(handles), set()
+        cleanup_deadline = time.monotonic() + 2
+        while awaiting:
+            for pid in list(handles):
+                if pid not in awaiting or pid in blocked:
+                    continue
+                try:
+                    if pid == child.pid:
+                        if child.returncode is not None or child.poll() is not None:
+                            awaiting.discard(pid)
+                    elif os.waitid(os.P_PIDFD, handles[pid], os.WEXITED | os.WNOHANG) is not None:
+                        awaiting.discard(pid)
+                except ChildProcessError:
+                    # Already reaped or not yet adopted: use the retained pidfd
+                    # to distinguish death from a live non-child.
+                    try:
+                        if select.select([handles[pid]], [], [], 0)[0]:
+                            awaiting.discard(pid)
+                    except BaseException as exc:
+                        errors.append(exc)
+                        blocked.add(pid)
+                except BaseException as exc:
+                    errors.append(exc)
+                    blocked.add(pid)
+            remaining = cleanup_deadline - time.monotonic()
+            active = [handles[pid] for pid in awaiting - blocked]
+            if not awaiting or remaining <= 0 or not active:
+                break
             try:
-                os.waitpid(pid, 0)
-            except ChildProcessError:
-                pass
+                select.select(active, [], [], min(.01, remaining))
+            except BaseException as exc:
+                errors.append(exc)
+                break
+        for pid, fd in handles.items():
+            if pid in awaiting:
+                continue  # retain the only pinned identity for unresolved work
+            try:
+                os.close(fd)
+            except BaseException as exc:
+                errors.append(exc)
+        child._stress_handles = {pid: handles[pid] for pid in awaiting}
+        child._stress_unresolved = sorted(awaiting)
+    if original is not None:
+        if errors or awaiting:
+            original.add_note("owned cleanup incomplete; enclosing cgroup remains responsible")
+        raise original
+    if errors or awaiting:
+        for exc in errors:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise exc
+        raise RuntimeError("owned cleanup incomplete: " + ",".join(type(exc).__name__ for exc in errors)
+                           + f" unresolved={len(awaiting)}")
     return leftover
 
 

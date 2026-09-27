@@ -212,29 +212,54 @@ class ProcessTree:
                 "process_count": len(rows), "processes": list(rows.values())}
 
     def stop(self, grace=2):
+        errors = []
         def live():
-            return {p: r for p, r in self.identities().items() if r.get("state") != "Z"}
+            try:
+                return {p: r for p, r in self.identities().items() if r.get("state") != "Z"}
+            except BaseException as exc:
+                errors.append(exc)
+                return {}
         def send(sig):
             for pid, row in reversed(list(live().items())):
+                fd = None
                 try:
                     fd = os.pidfd_open(pid)
-                    try:
-                        now = proc_rows().get(pid)
-                        if now and now["start_ticks"] == row["start_ticks"]:
-                            signal.pidfd_send_signal(fd, sig)
-                    finally:
-                        os.close(fd)
+                    now = proc_rows().get(pid)
+                    if now and now["start_ticks"] == row["start_ticks"]:
+                        signal.pidfd_send_signal(fd, sig)
                 except ProcessLookupError:
                     pass
-        send(signal.SIGTERM)
-        deadline = time.monotonic() + grace
-        while live() and time.monotonic() < deadline:
-            time.sleep(.02)
-        send(signal.SIGKILL)
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except BaseException as exc:
+                            errors.append(exc)
+        try:
+            send(signal.SIGTERM)
+            deadline = time.monotonic() + grace
+            while live() and time.monotonic() < deadline:
+                time.sleep(.02)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            send(signal.SIGKILL)
         deadline = time.monotonic() + 1
         while live() and time.monotonic() < deadline:
-            time.sleep(.02)
-        return list(live())
+            try:
+                time.sleep(.02)
+            except BaseException as exc:
+                errors.append(exc)
+                break
+        remaining = list(live())
+        if errors:
+            for exc in errors:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise exc
+            raise RuntimeError("tree cleanup incomplete: " + ",".join(sorted({type(exc).__name__ for exc in errors})))
+        return remaining
 
 
 def trend(samples):

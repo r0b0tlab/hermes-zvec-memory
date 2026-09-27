@@ -450,3 +450,22 @@ def test_tree_creation_failure_retains_child_ownership(tmp_path, monkeypatch, bo
         for child in [*created, stranger]:
             if child.poll() is None: child.kill()
             child.wait(timeout=2)
+
+
+def test_tree_cleanup_signal_error_does_not_skip_other_identities(monkeypatch):
+    rows = {pid: {"pid": pid, "start_ticks": pid, "ppid": 1 if pid == 101 else 101,
+                  "pgrp": 101, "state": "S"} for pid in (101, 102, 103)}
+    monkeypatch.setattr(soak, "proc_rows", lambda: dict(rows))
+    tree = soak.ProcessTree(101)
+    tree.identities()
+    attempts, closed = [], []
+    monkeypatch.setattr(soak.os, "pidfd_open", lambda pid: pid)
+    monkeypatch.setattr(soak.os, "close", closed.append)
+    def send(fd, sig):
+        attempts.append(fd)
+        if len(attempts) == 1: raise PermissionError("injected signal refusal")
+        rows.pop(fd, None)
+    monkeypatch.setattr(soak.signal, "pidfd_send_signal", send)
+    with pytest.raises(RuntimeError): tree.stop(grace=0)
+    assert {101, 102, 103} <= set(attempts)
+    assert {101, 102, 103} <= set(closed)
