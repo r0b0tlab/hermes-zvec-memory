@@ -13,6 +13,8 @@ read-only. Each case first verifies the production baseline recorded in
 about it changed.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 from pathlib import Path
@@ -25,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture_limits import limits_match
 import subprocess
 import time
+import tempfile
 import uuid
 
 import yaml
@@ -107,9 +110,24 @@ def unchanged():
 
 
 def atomic(path, data):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    path = Path(path)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + ".", suffix=".tmp", delete=False) as stream:
+            tmp = Path(stream.name)
+            json.dump(data, stream, indent=2, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def group_empty(group):
@@ -187,6 +205,79 @@ def manifest_entry(case, tasks, cgroup, report=None, exit_code=None, source_sha=
             entry["failure_category"] = "oom"
     entry.setdefault("metadata", {})["metrics"] = metrics
     return entry
+
+
+@contextmanager
+def locked_file(name):
+    select_output(HERE)
+    fd = os.open(HERE / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another campaign controller owns this lease") from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def campaign_lease():
+    with locked_file(".controller.lock"):
+        yield
+
+
+def publish_attempt(receipt):
+    entry = manifest_entry(receipt["case"], receipt["tasks"], receipt.get("cgroup", {}),
+                           receipt.get("report"), receipt.get("exit_code"), receipt.get("source_sha", ""))
+    entry["attempt_id"] = receipt["attempt_id"]
+    entry["tags"]["variant"] = receipt["variant"]
+    entry["passed"] = receipt["passed"] is True
+    if not entry["passed"]:
+        entry["failure_category"] = receipt.get("failure_category", entry.get("failure_category", "other"))
+    with locked_file(".manifest.lock"):
+        path = HERE / "manifest.json"
+        manifest = json.loads(path.read_text())
+        for key, value in (("runs", receipt), ("reports", entry)):
+            manifest[key] = [row for row in manifest[key] if row.get("attempt_id") != receipt["attempt_id"]]
+            manifest[key].append(value)
+        manifest["status"] = "running" if receipt["passed"] else "stopped_on_failure"
+        atomic(path, manifest)
+
+
+@contextmanager
+def attempt_record(case, variant, tasks, unit):
+    select_output(HERE)
+    if not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}\.service", unit):
+        raise ValueError("invalid owned attempt unit")
+    stamp = unit.removesuffix(".service")
+    receipt = {"schema_version": 1, "attempt_id": stamp, "unit": unit,
+               "label": case["label"], "case": dict(case), "variant": variant,
+               "tasks": tasks, "passed": False, "status": "started", "errors": [],
+               "cleanup_verified": False, "production_unchanged": False,
+               "resources_verified": False, "started_unix_ns": time.time_ns(),
+               "failure_category": "unfinished"}
+    with (HERE / (stamp + ".started.json")).open("x", encoding="utf-8") as stream:
+        json.dump(receipt, stream, indent=2, allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(HERE, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    try:
+        yield receipt
+    except BaseException as exc:
+        receipt["passed"] = False
+        receipt["failure_category"] = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "controller_exception"
+        receipt["errors"].append("controller:" + type(exc).__name__)
+        raise
+    finally:
+        receipt["status"] = "final"
+        receipt["finished_unix_ns"] = time.time_ns()
+        atomic(HERE / (stamp + ".json"), receipt)
+        publish_attempt(receipt)
 
 
 def execute(case, variant, tasks):

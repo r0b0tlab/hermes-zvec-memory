@@ -3,6 +3,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,3 +214,59 @@ def test_command_captures_both_effective_limit_phases():
     assert limits["swap_bytes"] == 0
     assert any(part.startswith("ExecStartPre=") and "--phase start" in part for part in command)
     assert any(part.startswith("ExecStopPost=") and "--phase stop" in part for part in command)
+
+
+def initialize_private_campaign(tmp_path, monkeypatch):
+    root = tmp_path / "campaign"
+    campaign.select_output(root, initialize=True)
+    monkeypatch.setattr(campaign, "HERE", root)
+    monkeypatch.setattr(campaign, "BASELINE", root / "production-before.json")
+    return root
+
+
+@pytest.mark.parametrize("exception", [RuntimeError("preflight"), KeyboardInterrupt()])
+def test_started_attempt_survives_exception_and_manifest_is_idempotent(tmp_path, monkeypatch, exception):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    with pytest.raises(type(exception)):
+        with campaign.attempt_record(CASE, "fix", 256, unit) as receipt:
+            assert (root / (unit[:-8] + ".started.json")).is_file()
+            raise exception
+    path = root / (unit[:-8] + ".json")
+    final = json.loads(path.read_text())
+    assert final["passed"] is False and final["errors"]
+    assert final["failure_category"] in {"interrupted", "controller_exception"}
+    assert final["cleanup_verified"] is False
+    campaign.publish_attempt(final)
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert len(manifest["runs"]) == len(manifest["reports"]) == 1
+    assert manifest["runs"][0]["attempt_id"] == final["attempt_id"]
+    assert manifest["reports"][0]["passed"] is False
+
+
+def test_campaign_lease_refuses_concurrent_controller(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    with campaign.campaign_lease():
+        with pytest.raises(RuntimeError, match="controller"):
+            with campaign.campaign_lease(): pytest.fail("overlapping workload admitted")
+    with campaign.campaign_lease(): pass
+    assert json.loads((root / "manifest.json").read_text())["runs"] == []
+
+
+def test_atomic_publication_syncs_file_directory_and_uses_unique_temp(tmp_path, monkeypatch):
+    import stat
+    path = tmp_path / "manifest.json"
+    old_temp = tmp_path / "manifest.json.tmp"
+    old_temp.write_text("unrelated retained scratch")
+    before = set(tmp_path.iterdir())
+    synced = []
+    real = campaign.os.fsync
+    def fsync(fd):
+        synced.append(stat.S_ISDIR(campaign.os.fstat(fd).st_mode))
+        return real(fd)
+    monkeypatch.setattr(campaign.os, "fsync", fsync)
+    campaign.atomic(path, {"runs": []})
+    assert json.loads(path.read_text()) == {"runs": []}
+    assert synced == [False, True]
+    assert old_temp.read_text() == "unrelated retained scratch"
+    assert set(tmp_path.iterdir()) == before | {path}
