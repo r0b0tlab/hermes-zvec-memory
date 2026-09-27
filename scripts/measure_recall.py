@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import host_provenance
+from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
@@ -201,8 +201,9 @@ def load_provider():
     """Import only after HOME/HERMES_HOME have been isolated."""
     import importlib.util
     sys.path.insert(0, str(HERMES_AGENT_DIR))
+    source = provider_source(REPO_ROOT)
     spec = importlib.util.spec_from_file_location(
-        "zvec_benchmark_provider", REPO_ROOT / "zvec-memory" / "__init__.py")
+        source_import_name("zvec_benchmark_provider", source), source / "zvec-memory" / "__init__.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -264,6 +265,7 @@ def main(argv=None):
     ap.add_argument("--output", type=Path, help="write full JSON evidence, including failures")
     ap.add_argument("--model-cache", type=Path,
                     help="explicit reusable zg model cache (default: isolated temporary cache)")
+    ap.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(REPO_ROOT)))
     args = ap.parse_args(argv)
     # Resolve supplied paths BEFORE replacing HOME.
     args.zg_bin = str(Path(args.zg_bin).expanduser().resolve()) if "/" in args.zg_bin else args.zg_bin
@@ -303,6 +305,7 @@ def main(argv=None):
         values = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC",
                   "HOME": str(home), "HERMES_HOME": str(home / "hermes"),
                   "HERMES_AGENT_DIR": str(HERMES_AGENT_DIR),
+                  "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(REPO_ROOT, args.provider_source)),
                   "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
                   "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
                   "TMPDIR": str(home / "tmp"), "XDG_STATE_HOME": str(home / "state"),
@@ -330,8 +333,6 @@ def main(argv=None):
         with tempfile.TemporaryDirectory(prefix="zvec-measure-") as directory:
             with environment(Path(directory)):
                 for key, argv in (
-                    ("plugin_sha", ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]),
-                    ("plugin_status", ["git", "-C", str(REPO_ROOT), "status", "--porcelain"]),
                     ("node_version", ["node", "--version"]),
                     ("zg_version", [args.zg_bin, "--version"]),
                 ):
@@ -339,6 +340,10 @@ def main(argv=None):
                 record["provenance"]["host_provenance"] = host_provenance(HERMES_AGENT_DIR)
                 if "git_sha" in record["provenance"]["host_provenance"]:
                     record["provenance"]["hermes_sha"] = record["provenance"]["host_provenance"]["git_sha"]
+                record["provenance"]["product_identity"] = product_identity(provider_source(REPO_ROOT, args.provider_source))
+                record["provenance"]["harness_identity"] = harness_identity(REPO_ROOT)
+                if "git_sha" in record["provenance"]["product_identity"]:
+                    record["provenance"]["plugin_sha"] = record["provenance"]["product_identity"]["git_sha"]
                 provider_class = load_provider()
                 vault = Path(directory) / "vault"
                 facts = vault / "facts"

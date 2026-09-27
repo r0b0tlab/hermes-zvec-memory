@@ -22,7 +22,7 @@ import time
 import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import host_provenance, stop_direct
+from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/stress-runs"
@@ -32,7 +32,7 @@ ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
 HOST = Path(os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent"))).resolve()
 
 
-def environment(run, repo):
+def environment(run, repo, selected_source=None):
     home = run / "home"
     return {"PATH": "/usr/bin:/bin", "HOME": str(home),
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
@@ -40,6 +40,7 @@ def environment(run, repo):
             "XDG_CACHE_HOME": str(home / "cache"), "ZVEC_GREP_HOME": str(run / "zg-state"),
             "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
             "ZVEC_TEST_ROOT": str(run), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(repo, selected_source)),
             "HERMES_ZVEC_RUNTIME_DIR": str(run / "runtime"),
             "HERMES_ZVEC_MODEL_CACHE": str(run / "models"),
             "ZVEC_TEST_NODE_MODULES": str(repo / ".test-tools/node_modules"),
@@ -139,7 +140,8 @@ def inventory(run):
 
 def provider(run, mode, session):
     sys.path.insert(0, str(HOST))
-    spec = importlib.util.spec_from_file_location("stress_provider", ROOT / "zvec-memory/__init__.py")
+    source = provider_source(ROOT)
+    spec = importlib.util.spec_from_file_location(source_import_name("stress_provider", source), source / "zvec-memory/__init__.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -584,7 +586,7 @@ def load_campaign(run, args, report):
         (vault / ".zvec-grep").mkdir()
         (vault / ".zvec-grep/manifest.json").write_text("{}")
     report["initial_inventory"] = inventory(run)
-    env = environment(run, ROOT)
+    env = environment(run, ROOT, getattr(args, "provider_source", None))
     children, handles = [], []
     deadline = time.monotonic() + args.timeout
     began = time.monotonic()
@@ -705,7 +707,7 @@ def regression_campaign(run, args, report):
         xml = root / "junit.xml"
         cmd = [sys.executable, "-I", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                "--basetemp", str(root / "pytest"), "--junitxml", str(xml), *files]
-        env = environment(root, ROOT)
+        env = environment(root, ROOT, getattr(args, "provider_source", None))
         if native:
             env.update(ZVEC_RUN_NATIVE="1", ZVEC_TEST_BIN=str(ZG),
                        ZVEC_TEST_MODEL_CACHE=str(ROOT / ".test-tools/models"))
@@ -750,6 +752,7 @@ def main(argv=None):
     ap.add_argument("--worker", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--run", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
     args = ap.parse_args(argv)
     if not (1 <= args.workers <= 8 and 1 <= args.records <= 1000 and 0 <= args.seed_facts <= 10000
             and 1 <= args.iterations <= 500 and 1 <= args.timeout <= 1800
@@ -770,8 +773,9 @@ def main(argv=None):
                     raise ValueError("symlink inside run")
         except Exception as exc:
             ap.error(f"refusing invalid owned run: {exc}")
+        env = environment(args.run, ROOT, args.provider_source)
         os.environ.clear()
-        os.environ.update(environment(args.run, ROOT))
+        os.environ.update(env)
         if args.worker is not None:
             return worker(args.run, args.worker, args.records, args.mode, args.shutdown_policy, args.timeout)
         return recover(args.run, args.workers, args.records, args.mode, args.recovery_timeout, args.shutdown_policy)
@@ -803,8 +807,10 @@ def main(argv=None):
         report["host_provenance"] = host_provenance(HOST)
         if "git_sha" in report["host_provenance"]:
             report["host_sha"] = report["host_provenance"]["git_sha"]
-        report["plugin_sha"] = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, timeout=5).strip()
+        report["product_identity"] = product_identity(provider_source(ROOT, args.provider_source))
+        report["harness_identity"] = harness_identity(ROOT)
+        if "git_sha" in report["product_identity"]:
+            report["plugin_sha"] = report["product_identity"]["git_sha"]
         if args.lane == "load":
             load_campaign(run, args, report)
         else:

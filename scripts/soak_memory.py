@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import host_provenance, stop_direct
+from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
@@ -110,12 +110,13 @@ def selected_entrypoint(run, allowed_root=None):
     return resolved
 
 
-def environment(run, port):
+def environment(run, port, selected_source=None):
     if not 1024 <= port <= 65535 or port == 17999:
         raise ValueError("unsafe test port")
     home = run / "home"
     return {"PATH": "/usr/bin:/bin", "HOME": str(home),
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
+            "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(ROOT, selected_source)),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
             "XDG_DATA_HOME": str(home / "data"), "LANG": "C.UTF-8", "TZ": "UTC",
             "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
@@ -392,7 +393,7 @@ def retrieval_hit(text, content):
     return bool(body) and "facts/" in body.splitlines()[0] and content in body
 
 
-def owned_worker_environment(candidate):
+def owned_worker_environment(candidate, selected_source=None):
     candidate = Path(candidate)
     run = candidate.resolve()
     if candidate.is_symlink() or candidate.absolute() != run or run.parent != RUNS.resolve():
@@ -411,7 +412,7 @@ def owned_worker_environment(candidate):
     }
     if marker != expected or type(marker["port"]) is not int:
         raise ValueError("owner marker mismatch")
-    env = environment(run, marker["port"])
+    env = environment(run, marker["port"], selected_source)
     os.environ.clear()
     os.environ.update(env)
     return run, env
@@ -419,9 +420,10 @@ def owned_worker_environment(candidate):
 
 def provider_factory(run, number):
     sys.path.insert(0, str(HOST))
-    name = "soak_provider"
+    source = provider_source(ROOT)
+    name = source_import_name("soak_provider", source)
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, ROOT / "zvec-memory/__init__.py")
+        spec = importlib.util.spec_from_file_location(name, source / "zvec-memory/__init__.py")
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
@@ -756,6 +758,7 @@ def main(argv=None):
     parser.add_argument("--runtime-manifest", type=Path,
                         help="prepared private runtime manifest; default raw test package")
     parser.add_argument("--worker-run", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
     args = parser.parse_args(argv)
     if not (1 <= args.duration <= 1800 and 0 <= args.seed_facts <= 1000
             and .1 <= args.sample_interval <= 30 and 1 <= args.convergence_timeout <= 120
@@ -767,7 +770,7 @@ def main(argv=None):
         parser.error(str(exc))
     if args.worker_run:
         try:
-            run, env = owned_worker_environment(args.worker_run)
+            run, env = owned_worker_environment(args.worker_run, args.provider_source)
         except (OSError, ValueError, TypeError):
             parser.error("refusing non-owned worker environment")
         return worker(run, args, env)
@@ -784,7 +787,7 @@ def main(argv=None):
         port = free_port()
         write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 2,
                                         "repo": str(ROOT), "port": port})
-        env = environment(run, port)
+        env = environment(run, port, args.provider_source)
         for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR", "ZVEC_GREP_HOME"):
             Path(env[key]).mkdir(parents=True, exist_ok=True)
         with (run / "token").open("x") as token:
@@ -802,12 +805,13 @@ def main(argv=None):
             command += ["--engine-restart-at", str(args.engine_restart_at)]
         # Resolve actual host/runtime provenance before admitting any workload.
         provenance = {"host_provenance": host_provenance(HOST),
-                      "plugin_sha": subprocess.check_output(
-                          ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-                          text=True, timeout=5).strip(),
+                      "product_identity": product_identity(provider_source(ROOT, args.provider_source)),
+                      "harness_identity": harness_identity(ROOT),
                       "zg_version": json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]}
         if "git_sha" in provenance["host_provenance"]:
             provenance["host_sha"] = provenance["host_provenance"]["git_sha"]
+        if "git_sha" in provenance["product_identity"]:
+            provenance["plugin_sha"] = provenance["product_identity"]["git_sha"]
         report.update(provenance)
         report = {**report, **supervise(run, command, env, args.duration + 240, args.sample_interval)}
         report["runtime"] = runtime_metadata

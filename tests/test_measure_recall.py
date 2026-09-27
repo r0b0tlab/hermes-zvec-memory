@@ -109,7 +109,9 @@ def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc)
             events.append("shutdown")
             release.set()
 
+    original_run = benchmark.subprocess.run
     def native(argv, **kwargs):
+        if argv[0] not in {"node", "offline-zg"}: return original_run(argv, **kwargs)
         if "index" in argv:
             events.append("index")
             vault = Path(argv[-1])
@@ -125,7 +127,7 @@ def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc)
     assert record["gates"]["passed"] is (native_rc == 0)
     if native_rc:
         assert any(e.get("stderr") == "native query failed" for e in record["errors"])
-    assert record["provenance"]["plugin_sha"] == "test metadata"
+    assert record["provenance"]["plugin_sha"] == benchmark.product_identity(benchmark.provider_source(benchmark.REPO_ROOT))["git_sha"]
     assert record["prefetch"]["repeated_identical_query"]["cache_ready"] is True
     samples = record["prefetch"]["distinct_next_turn_queries"]["samples"]
     assert [s["query"] for s in samples] == [q for q, _ in benchmark.NEAR_QUERIES]
@@ -176,8 +178,11 @@ def test_installed_snapshot_provenance_precedes_provider(tmp_path, monkeypatch):
     from test_harness_support import fixture_host
     root = fixture_host(tmp_path / "selected-host")
     monkeypatch.setattr(benchmark, "HERMES_AGENT_DIR", root)
-    monkeypatch.setattr(benchmark.subprocess, "run", lambda *a, **k:
-                        SimpleNamespace(returncode=0, stdout="fixture", stderr=""))
+    original_run = benchmark.subprocess.run
+    def native(command, **kwargs):
+        if command[0] in {"node", "zg"}: return SimpleNamespace(returncode=0, stdout="fixture", stderr="")
+        return original_run(command, **kwargs)
+    monkeypatch.setattr(benchmark.subprocess, "run", native)
     def stop():
         raise RuntimeError("stop at provider boundary")
     monkeypatch.setattr(benchmark, "load_provider", stop)
@@ -238,7 +243,11 @@ def test_benchmark_isolated_environment_scrubs_ambient_extras(tmp_path, monkeypa
         observed.append(dict(os.environ))
         raise RuntimeError("stop before native provider")
     monkeypatch.setattr(benchmark, "load_provider", provider)
-    monkeypatch.setattr(benchmark.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="fixture", stderr=""))
+    original_run = benchmark.subprocess.run
+    def native(command, **kwargs):
+        if command[0] in {"node", "zg"}: return SimpleNamespace(returncode=0, stdout="fixture", stderr="")
+        return original_run(command, **kwargs)
+    monkeypatch.setattr(benchmark.subprocess, "run", native)
     assert benchmark.main(["--output", str(tmp_path / "receipt.json")]) == 1
     assert len(observed) == 1
     assert not set(poison) & observed[0].keys()

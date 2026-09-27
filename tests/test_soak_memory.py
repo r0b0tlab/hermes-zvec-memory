@@ -331,7 +331,8 @@ def test_soak_receipt_records_the_selected_runtime(tmp_path, monkeypatch):
     engine.write_text("#!/usr/bin/env node\n")
     engine.chmod(0o755)
     (tmp_path / "engine/package.json").write_text(json.dumps({"version": "0.2.2"}))
-    from test_harness_support import fixture_host
+    from test_harness_support import fixture_host, fixture_product
+    fixture_product(tmp_path / "repo")
     fixture_host(tmp_path / "repo")
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -364,7 +365,8 @@ def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch)
         "entrypoint": str(engine),
         "requested_native_threads": {"queryThreads": 1, "optimizeThreads": 1},
         "observed_total_threads": 61, "source_sha256": "pin", "patched_sha256": "patched"}))
-    from test_harness_support import fixture_host
+    from test_harness_support import fixture_host, fixture_product
+    fixture_product(tmp_path / "repo")
     fixture_host(repo)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
@@ -400,8 +402,11 @@ def test_installed_snapshot_provenance_precedes_soak_work(tmp_path, monkeypatch,
     monkeypatch.setattr(soak, "RUNS", tmp_path / "runs")
     monkeypatch.setattr(soak, "runtime_command", lambda *a: ([str(entry)], {"kind": "fixture"}))
     calls = []
-    monkeypatch.setattr(soak.subprocess, "check_output",
-                        lambda *a, **k: calls.append("plugin-provenance") or "a" * 40)
+    original_identity = soak.product_identity
+    def identity(source):
+        calls.append("plugin-provenance")
+        return original_identity(source)
+    monkeypatch.setattr(soak, "product_identity", identity)
     def work(*args):
         assert args[1][1:3] == ["-I", "-B"]
         calls.append("worker")
