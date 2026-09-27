@@ -533,18 +533,32 @@ def workload(run, args, report, daemon, factory=provider_factory):
     def search(p, query, content, required=True, absent=False, kind="fts", probe="control", slot=None):
         heartbeat()
         start = time.monotonic()
-        result = json.loads(p.handle_tool_call("memory_search", {
-            "query": query, "mode": kind, "limit": 5, "globs": ["facts/**"]}))
-        body = response_text(result)
-        sources = capture_sources(result, vault)
-        lines = cited_lines(result, sources)
-        hit = any(content in line for line in lines) if absent else content in lines
-        record("queries", {"probe": probe, "slot": slot, "key": query, "response": result, "sources": sources,
-            "kind": kind, "seconds": time.monotonic()-start, "hit": hit,
-            "required": required, "absent": absent, "chars": len(body)})
-        if result.get("error") or len(body) > 2000 or (required and not hit) or (absent and hit):
-            (run / "retrieval-error.private.log").write_text(json.dumps(result))
-            raise RuntimeError("native_retrieval_gate_failed")
+        returned = p.handle_tool_call("memory_search", {
+            "query": query, "mode": kind, "limit": 5, "globs": ["facts/**"]})
+        # Preserve the attempt before JSON/source validation. Failed observations
+        # remain private diagnostics, deliberately unreferenced by the ledger.
+        row = {"probe": probe, "slot": slot, "key": query, "response": returned,
+               "sources": {}, "valid": False, "kind": kind, "required": required, "absent": absent,
+               "phase": phase, "stage": stage, "cycle": cycle, "generation": daemon.generation}
+        index = len(report["queries"])
+        report["queries"].append(row)
+        try:
+            result = json.loads(returned)
+            row["response"] = result
+            if isinstance(result, dict) and isinstance(result.get("results"), str):
+                row["chars"] = len(result["results"])
+            response_text(result)
+            row["sources"] = capture_sources(result, vault)
+            lines = cited_lines(result, row["sources"])
+            hit = any(content in line for line in lines) if absent else content in lines
+            row["hit"] = hit
+            if (required and not hit) or (absent and hit):
+                (run / "retrieval-error.private.log").write_text(json.dumps(result))
+                raise RuntimeError("native_retrieval_gate_failed")
+            row["valid"] = True
+            report["ledger"].append(["queries", index])
+        finally:
+            row["seconds"] = time.monotonic()-start
 
     def notify(p, action, text, previous="", slot=None):
         start = time.monotonic()

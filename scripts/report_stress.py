@@ -55,7 +55,11 @@ Parent service/cgroup unit envelopes are NOT supported: point manifest paths at
 inner receipts and propagate outer failures with passed=false/failure_category.
 Cgroup cleanup verification and cgroup peak memory are not exported by this
 adapter; concurrent sampled RSS is a distinct measurement, not cgroup peak.
-No resource JSONL, production snapshot, native command log or private file is read.
+Controller-owned manifests require a complete durable inventory and confirmed
+finalization under existing controller/manifest leases. Busy or inconsistent
+campaigns fail closed; export never reconciles them. Generic hand-authored
+manifests remain supported. No production snapshot, resource JSONL, or native
+command log is read.
 Errors are lists of arbitrary objects (counted as other) or {category: known_enum};
 error_counts maps categories to nonnegative integer occurrence counts. Supply one
 representation per occurrence to avoid double counting. All totals cover observed
@@ -81,6 +85,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from retrieval_evidence import cited_lines, response_text
+from campaign_inventory import manifest_read
 
 # Extension contract: metrics is a mapping from these names to nonnegative raw
 # numeric sample lists. Add names here with tests; never pass arbitrary keys through.
@@ -535,6 +540,8 @@ def validate_soak_ledger(raw):
             label = row["kind"]
             if count(row["chars"]) > 2000: raise ValueError("prefetch overflow")
         elif section == "queries":
+            if row.get("valid") is False:
+                raise ValueError("invalid attempted query is not ledger coverage")
             label = row["probe"]
             positive = label in {"control", "revised"}
             content = (control if label == "control" else
@@ -761,7 +768,11 @@ def load_manifest(path):
     reports remain failed attempts. Metadata may supply report fields for failed
     attempts without receipts; all export still goes through the same allowlist.
     """
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    with manifest_read(path) as manifest:
+        return load_entries(path, manifest)
+
+
+def load_entries(path, manifest):
     entries = manifest if isinstance(manifest, list) else manifest["reports"]
     if not isinstance(entries, list):
         raise ValueError("manifest reports must be a list")
@@ -862,7 +873,7 @@ def main(argv=None):
             with zipfile.ZipFile(args.output_dir / "share.zip", "x", zipfile.ZIP_DEFLATED) as bundle:
                 for name, text in artifacts.items():
                     bundle.writestr(name, text)
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RuntimeError):
         # Do not leak paths, values, or exception strings to captured share logs.
         parser.exit(2, "report export failed: invalid input or output unavailable\n")
     print(json.dumps({"attempts": data["attempts"], "failed_attempts": data["failed_attempts"],

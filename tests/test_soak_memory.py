@@ -113,6 +113,73 @@ def test_readiness_rejects_wrong_pid_or_token(tmp_path):
     assert not soak.ready_identity(dict(record, ready=False), 100, "url")
 
 
+def synthetic_native_boundary(self, args, timeout):
+    from test_report_stress import zero_hit_body
+    if args[0] == "index":
+        (self._vault / ".zvec-grep").mkdir(exist_ok=True)
+        (self._vault / ".zvec-grep/manifest.json").write_text("{}")
+        return 0, "indexed", ""
+    query = next((a.split("=", 1)[1] for a in args if a.startswith(("--fts=", "--hybrid="))), "")
+    hits = [p for p in (self._vault / "facts").glob("*.md") if query in p.read_text()]
+    if not hits: return 0, zero_hit_body(query), ""
+    # Match the inspected pinned formatter, including its terminal empty entry.
+    body = "query groups (1):\nQ1 [supplemental]: " + query + "\nhits: " + str(len(hits))
+    for i, path in enumerate(hits, 1):
+        lines = path.read_text().split("\n")
+        body += f"\n\n#{i} matchedBy=fts facts/{path.name}:1-{len(lines)}\nsource:\n" + "\n".join(
+            f"{n}\t{line}" for n, line in enumerate(lines, 1)) + "\n"
+    return 0, body, ""
+
+
+@pytest.mark.parametrize("probe", ["control", "deleted"])
+@pytest.mark.parametrize("damage", ["blank", "whitespace", "unrecognized", "incomplete", "missing_source", "invalid_json"])
+def test_soak_retains_invalid_attempt_without_ledger_coverage(tmp_path, monkeypatch, probe, damage):
+    from types import SimpleNamespace
+    from test_provider import ZvecMemoryProvider
+    from test_retrieval_evidence import native_fixture
+    from test_report_stress import tool, soak_report
+    response = {"results": {"blank": "", "whitespace": " \n\t", "unrecognized": "SYNTHETIC unsupported",
+                           "incomplete": "query groups (1):\nQ1 [supplemental]: SYNTHETIC\nhits: 0"}.get(damage, "")}
+    if damage == "missing_source": response = native_fixture()["response"]
+    if damage == "invalid_json": response = "SYNTHETIC non-JSON response"
+    original = ZvecMemoryProvider.handle_tool_call
+    def respond(self, name, args):
+        target = (args.get("query") == "soakcontrolanchor" if probe == "control" else
+                  args.get("query", "").startswith("soakslot") and not self._mirror_state()["records"])
+        if name == "memory_search" and target:
+            return response if isinstance(response, str) else json.dumps(response)
+        return original(self, name, args)
+    monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", synthetic_native_boundary)
+    monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(ZvecMemoryProvider, "handle_tool_call", respond)
+    def factory(run, number):
+        p = ZvecMemoryProvider(config={"vault": str(run / "vault"), "zg_bin": "/no/native",
+            "context_chars": 2000, "reindex_min_seconds": 0})
+        p.initialize(f"soak-{number}", hermes_home=str(tmp_path / "home/hermes"))
+        return p
+    args = SimpleNamespace(duration=.01, seed_facts=0, engine_restart_at=None,
+                           convergence_timeout=3, sample_interval=.05)
+    report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
+    daemon = SimpleNamespace(generation=1, process=SimpleNamespace(poll=lambda: None))
+    with pytest.raises((ValueError, RuntimeError, OSError)):
+        soak.workload(tmp_path, args, report, daemon, factory)
+    assert report["queries"], "failed attempted query must not disappear"
+    row = report["queries"][-1]
+    assert row["valid"] is False and row["response"] == response
+    assert row["probe"] == probe
+    assert row["key"] == ("soakcontrolanchor" if probe == "control" else "soakslot00")
+    assert row["phase"] in {"cold_start", "warm", "corpus_removal"} and row["generation"] == 1
+    assert ["queries", len(report["queries"])-1] not in report["ledger"]
+    # Even if copied into an otherwise complete ledger, an invalid attempt
+    # cannot stand in for the successful probe; raw query text stays private.
+    raw = soak_report()
+    query = next(q for q in raw["worker"]["queries"] if q["probe"] == probe)
+    query.update(row)
+    with pytest.raises(ValueError): tool().aggregate([raw])
+    raw["passed"] = False
+    assert "SYNTHETIC" not in json.dumps(tool().aggregate([raw]))
+
+
 @pytest.mark.parametrize("restart_at", [None, 0])
 @pytest.mark.parametrize("duration,seed_facts", [(.01, 0), (.4, 2)])
 def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restart_at, duration, seed_facts):
@@ -122,18 +189,7 @@ def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restar
     calls = []
     def native_boundary(self, args, timeout):
         calls.append(args[0])
-        if args[0] == "index":
-            (self._vault / ".zvec-grep").mkdir(exist_ok=True)
-            (self._vault / ".zvec-grep/manifest.json").write_text("{}")
-            return 0, "indexed", ""
-        query = next((a.split("=", 1)[1] for a in args if a.startswith(("--fts=", "--hybrid="))), "")
-        hits = [p for p in (self._vault / "facts").glob("*.md") if query in p.read_text()]
-        body = "query groups (1):\nQ1: " + query + "\nhits: " + str(len(hits))
-        for i, path in enumerate(hits, 1):
-            lines = path.read_text().splitlines()
-            body += f"\n#{i} facts/{path.name}:1-{len(lines)}\nsource:\n" + "\n".join(
-                f"{n}\t{line}" for n, line in enumerate(lines, 1)) + "\n"
-        return 0, body, ""
+        return synthetic_native_boundary(self, args, timeout)
     monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", native_boundary)
     monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
     args = SimpleNamespace(duration=duration, seed_facts=seed_facts, engine_restart_at=restart_at,

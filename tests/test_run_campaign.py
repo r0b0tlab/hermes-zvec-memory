@@ -774,6 +774,109 @@ def test_namespace_shell_does_not_expand_python_environment(tmp_path, monkeypatc
     assert json.loads(result.stdout) == sorted(campaign.workload_environment(unit))
 
 
+def green_export_fixture(root):
+    """Valid inner success plus the controller's durable committed records."""
+    report = root / "report.json"
+    report.write_text(json.dumps({
+        "passed": True, "lane": "regression", "mode": "offline",
+        "arguments": {"iterations": 1}, "planned_iterations": 1, "completed_iterations": 1,
+        "planned_callbacks": 0, "successful_callbacks": 0, "elapsed_seconds": 1,
+        "workers": [], "iterations": [{"number": 0, "exit": 0, "tests": 1,
+                                        "skipped": 0, "failures": 0, "errors": 0,
+                                        "elapsed_seconds": 1}]}))
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    with campaign.campaign_lease(), campaign.attempt_record(CASE, "fix", 256, unit) as receipt:
+        receipt.update(passed=True, report=str(report), report_validated=True,
+                       cleanup_verified=True, launch_started=False)
+    return receipt
+
+
+def assert_export_refused_read_only(root, tmp_path, monkeypatch):
+    from report_stress import main
+    before = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    real_open = Path.open
+    def guarded_open(path, *args, **kwargs):
+        assert not path.name.startswith("production-"), "export read a production snapshot"
+        return real_open(path, *args, **kwargs)
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", guarded_open)
+        with pytest.raises(SystemExit) as exc:
+            main(["--manifest", str(root / "manifest.json"),
+                  "--output-dir", str(tmp_path / "share")])
+        assert exc.value.code == 2
+    assert not (tmp_path / "share").exists()
+    assert {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()} == before
+
+
+def test_export_refuses_hard_interrupted_finalization_before_reconciliation(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = green_export_fixture(root)
+    # Exact durable SIGKILL window: green manifest replaced, pending not removed.
+    campaign.atomic(root / (receipt["attempt_id"] + ".finalizing.json"),
+                    {**receipt, "passed": False, "errors": ["manifest_finalization:unconfirmed"]})
+    assert json.loads((root / "manifest.json").read_text())["reports"][0]["passed"] is True
+    assert_export_refused_read_only(root, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("lock", [".controller.lock", ".manifest.lock"])
+def test_export_refuses_active_campaign_writer(tmp_path, monkeypatch, lock):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    green_export_fixture(root)
+    with campaign.locked_file(lock):
+        assert_export_refused_read_only(root, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("damage", ["omitted_started", "omitted_failure", "stale_run", "stale_report", "missing_started"])
+def test_export_requires_durable_inventory_before_reconciliation(tmp_path, monkeypatch, damage):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = green_export_fixture(root)
+    if damage.startswith("omitted"):
+        durable_attempt_fixture(root, "b", final=damage == "omitted_failure", launched=False)
+    elif damage == "missing_started":
+        (root / (receipt["attempt_id"] + ".started.json")).unlink()
+    else:
+        path = root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["runs" if damage == "stale_run" else "reports"][0]["passed"] = False
+        path.write_text(json.dumps(manifest))
+    assert_export_refused_read_only(root, tmp_path, monkeypatch)
+
+
+def test_export_manifest_alias_cannot_bypass_campaign_authority(tmp_path, monkeypatch):
+    from report_stress import main
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = green_export_fixture(root)
+    campaign.atomic(root / (receipt["attempt_id"] + ".finalizing.json"),
+                    {**receipt, "passed": False, "errors": ["manifest_finalization:unconfirmed"]})
+    alias = tmp_path / "generic.json"
+    alias.symlink_to(root / "manifest.json")
+    with pytest.raises(SystemExit) as exc:
+        main(["--manifest", str(alias), "--output-dir", str(tmp_path / "share")])
+    assert exc.value.code == 2 and not (tmp_path / "share").exists()
+
+
+def test_export_reads_committed_campaign_under_both_leases_without_production(tmp_path, monkeypatch):
+    from report_stress import main
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    green_export_fixture(root)
+    before = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    real_open = Path.open
+    def observed_open(path, *args, **kwargs):
+        assert not path.name.startswith("production-")
+        if path == root / "report.json":
+            for lock in (".controller.lock", ".manifest.lock"):
+                with pytest.raises(RuntimeError, match="controller"):
+                    with campaign.locked_file(lock):
+                        pytest.fail("export released lease before reading inner report")
+        return real_open(path, *args, **kwargs)
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", observed_open)
+        assert main(["--manifest", str(root / "manifest.json"),
+                     "--output-dir", str(tmp_path / "share")]) == 0
+    assert json.loads((tmp_path / "share/aggregate.json").read_text())["passed"] is True
+    assert {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()} == before
+
+
 def durable_attempt_fixture(root, digit, *, final=False, launched=True):
     stem = "hermes-zvec-stress-" + digit * 32
     receipt = {"schema_version": 2, "attempt_id": stem, "unit": stem + ".service",

@@ -37,8 +37,13 @@ def cited_sections(text):
         if not marker or start > end:
             raise ValueError("missing numbered source preview")
         lines = []
-        for line in source.splitlines():
+        for line in re.split(r"\r?\n", source):
             match = re.fullmatch(r"([1-9]\d*)\t(.*)", line)
+            # The pinned formatter includes the newline-split terminal empty
+            # entry. Provider .strip() removes its tab only at response EOF.
+            if (not match and section == sections[-1] and source.endswith("\n" + line)
+                    and line == str(end)):
+                match = re.fullmatch(r"([1-9]\d*)\t(.*)", line + "\t")
             if match:
                 number, value = int(match[1]), match[2]
                 if not start <= number <= end or (lines and number <= lines[-1][0]):
@@ -49,6 +54,13 @@ def cited_sections(text):
         if not lines:
             raise ValueError("empty source preview")
         yield name, start, end, lines
+    if rank == 0:
+        # One query is sent per harness probe. Absence is evidence only when
+        # the pinned engine explicitly completes that group with zero hits.
+        empty = re.fullmatch(r"query groups \(1\):\nQ1 \[(?:primary|supplemental)\]: ([^\r\n]+)"
+                             r"\nhits: 0\n\nNo matches\.\n?", text)
+        if not empty or not empty[1].strip():
+            raise ValueError("missing complete zero-hit result envelope")
 
 
 def capture_sources(response, vault):
@@ -75,7 +87,7 @@ def cited_lines(response, sources):
         text = sources.get(name)
         if not isinstance(text, str) or len(text) > 65536:
             raise ValueError("missing source snapshot")
-        actual = text.splitlines()
+        actual = re.split(r"\r?\n", text)
         if not 1 <= start <= end <= len(actual):
             raise ValueError("citation outside source")
         for number, value in lines:

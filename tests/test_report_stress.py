@@ -33,6 +33,11 @@ def report(values, passed=True):
                          "expected_mirror_records": 0, "errors": []}}
 
 
+def zero_hit_body(key):
+    from test_retrieval_evidence import native_fixture
+    return native_fixture("zero_hit")["response"]["results"].replace("stressSYNTHETIC002", key)
+
+
 def soak_report():
     # Synthetic unit fixture ONLY, never a capacity receipt.
     raw = {"schema_version": 1, "lane": "long_lived_soak",
@@ -63,9 +68,9 @@ def soak_report():
     def query(probe, slot=None):
         content = (control if probe == "control" else
                    f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo." if probe == "revised" else "")
-        body = f"#1 facts/a.md:1\nsource:\n1\t{content}\n" if content else "hits: 0"
         key = ("soakcontrolanchor" if probe == "control" else "soakcleanupanchor" if probe == "cleanup"
                else "soakbackground000000" if probe == "background" else f"soakslot{slot:02d}")
+        body = f"#1 facts/a.md:1\nsource:\n1\t{content}\n" if content else zero_hit_body(key)
         record("queries", probe=probe, slot=slot, key=key, kind="hybrid" if probe == "control" else "fts",
                seconds=.5, chars=len(body), response={"results": body},
                sources={"facts/a.md": content} if content else {}, hit=bool(content),
@@ -580,8 +585,8 @@ def complete_native_report():
         "key": control, "hit": True, "chars": len(f"#1 facts/control.md:1\nsource:\n1\t{control}\n"), "seconds": .1,
         "sources": {"facts/control.md": control + "\n"},
         "expected_sha256": digest(control), "response": {"results": f"#1 facts/control.md:1\nsource:\n1\t{control}\n"}}],
-        negative_queries=[{"key": "stress"+token, "stale": False, "chars": 0,
-                           "seconds": .1, "response": {"results": ""}, "sources": {},
+        negative_queries=[{"key": "stress"+token, "stale": False, "chars": len(zero_hit_body("stress"+token)),
+                           "seconds": .1, "response": {"results": zero_hit_body("stress"+token)}, "sources": {},
                            "forbidden_sha256": digest(f"For key stress{token}, the {adjective} answer is payload{token}.")}
                           for adjective in ("obsolete", "verified")])
     return raw

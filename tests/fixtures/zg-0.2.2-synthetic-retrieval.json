@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "kind": "SYNTHETIC sanitized retained native response, not a new engine run",
+    "engine": "@zvec/zvec-grep 0.2.2",
+    "receipt_sha256": "9e005065f866b932a76bbf19d187cdbf44f67cf41ce6d5c030d58b7f7dbd403c",
+    "source_sha256": "6302f74854cb577f71f13e6c7b89b3d730dd3339ebd57161a5ed014b11992231",
+    "transform": "Only synthetic identifiers, relative filename and timestamp substituted; response whitespace unchanged."
+  },
+  "positive": {
+    "response": {
+      "results": "query groups (1):\nQ1 [supplemental]: stressSYNTHETIC001\nhits: 1\n\n#1 matchedBy=fts facts/SYNTHETIC.md:1-8\nheading: For key stressSYNTHETIC001, the verified answer is payloadSYNTHETIC\nheading_level: 1\nsource:\n1\t# For key stressSYNTHETIC001, the verified answer is payloadSYNTHETIC\n2\t\n3\tcategory: user_pref\n4\ttags: mirror\n5\tstored: 20000101-000000\n6\t\n7\tFor key stressSYNTHETIC001, the verified answer is payloadSYNTHETIC001.\n8",
+      "mode": "fts"
+    },
+    "sources": {
+      "facts/SYNTHETIC.md": "# For key stressSYNTHETIC001, the verified answer is payloadSYNTHETIC\n\ncategory: user_pref\ntags: mirror\nstored: 20000101-000000\n\nFor key stressSYNTHETIC001, the verified answer is payloadSYNTHETIC001.\n"
+    }
+  },
+  "zero_hit": {
+    "response": {
+      "results": "query groups (1):\nQ1 [supplemental]: stressSYNTHETIC002\nhits: 0\n\nNo matches.",
+      "mode": "fts"
+    },
+    "sources": {}
+  }
+}
