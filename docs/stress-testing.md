@@ -11,7 +11,8 @@ Measured results live in `docs/stress-results.md`. This file is the reproduction
 - All artifacts stay under `.test-tools/` (private: `stress-runs/`, `soak-runs/`, `campaign/`,
   `thread-runtimes/`). Exported shares stay under `stress-results/` (gitignored).
 - Each case runs as its own transient user unit in `app.slice` with
-  `MemoryMax=2G`, `CPUQuota=200%`, `TasksMax=<budget>`, `KillMode=control-group` and a
+  `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=200%` (100 ms period),
+  `TasksMax=<budget>`, `KillMode=control-group` and a
   `RuntimeMaxSec` deadline. The unit owns escaped native grandchildren.
 - Subprocess environments are constructed, never copied: `HOME`, `HERMES_HOME`, XDG roots and
   `ZVEC_GREP_HOME` all point inside the run directory. No credentials, no remote embedding
@@ -31,8 +32,9 @@ Measured results live in `docs/stress-results.md`. This file is the reproduction
 | `scripts/soak_memory.py` | same-handle long-lived soak over a run-owned daemon |
 | `scripts/report_stress.py` | privacy-allowlisted aggregate export |
 | `scripts/prepare_zg_thread_runtime.py` | private engine copy with requested thread pools |
-| `.test-tools/campaign/planned.json` | case definitions (private) |
-| `.test-tools/campaign/manifest.json` | every attempt plus the export entries (private) |
+| `scripts/campaign_cases.json` | tracked synthetic case definitions |
+| `scripts/capture_limits.py` | tracked start/stop effective-limit collector |
+| `$CAMPAIGN/manifest.json` | private attempts and export entries |
 
 ## Resource profiles
 
@@ -47,28 +49,37 @@ layer aborts (`terminate called without an active exception`), and SQLite/RocksD
 `Resource temporarily unavailable`. That is a harness ceiling, not a provider defect: the
 production unit itself runs with `TasksMax=18232`.
 
-## Running the lanes
+## Preparing a campaign
+
+The 3.0 controller is under repair. Do not run its workload-launch path until
+resource ownership, failure finalization, closed original-spawn environments,
+and separate product/harness identity gates have passed. The isolated bootstrap
+runner is used for implementation tests in the meantime.
+
+The committed public definitions can be listed from a clean source export:
 
 ```sh
-export HERMES_AGENT_DIR=$HOME/.hermes/hermes-agent
-
-# finite lanes
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 --case native-repeat-2
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 --case native-repeat-10
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 --case offline-8x200-drain
-
-# soak lanes (bounded proof first, then the full run)
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 --case daemon-proof-5m
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 --case daemon-soak-30m-restart
-
-# a prepared thread-limited engine, for the pool experiment
-.venv/bin/python scripts/run_campaign.py --variant fix --tasks 256 \
-  --case daemon-smoke-threadruntime
+.venv/bin/python scripts/run_campaign.py --list
 ```
 
-Run one lane at a time. `--list` prints the known labels; an unknown label or a task budget
-outside 64..4096 exits 2 before anything runs. `run_campaign.py` stops on the first failure and
-keeps the attempt.
+The interpreter/dependencies, explicitly selected host source, pinned raw native
+package and preseeded model cache are external prerequisites, not shipped assets.
+An installed non-Git host is identified by actual contract-file hashes rather
+than substituting a reference checkout's revision.
+
+Campaign metadata is initialized explicitly in a new private directory:
+
+```sh
+.venv/bin/python scripts/run_campaign.py --init --output-dir "$CAMPAIGN"
+```
+
+Initialization does not read production or create a production baseline.
+Unknown case labels and `--list` do not create output. Reusing an existing
+initialization directory is rejected. After explicit baseline authorization,
+`--snapshot-production --reason` requires the same `--output-dir "$CAMPAIGN"`.
+Every later case selection also requires that directory. Do not treat inherited
+shell exports as proof that a transient user service received an isolated
+environment; original-spawn isolation must be checked independently.
 
 ## Receipts and reading them
 

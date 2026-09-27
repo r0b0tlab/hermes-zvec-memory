@@ -14,7 +14,7 @@ truth and the installed copy lives in `$HERMES_HOME/plugins/zvec-memory`.
 | Engine launcher | `~/.local/share/hermes-zvec-memory/zg-default` | `engine.ensure_engine` (generated) |
 | Engine state (index home, token) | `$HERMES_HOME/zvec-runtime/` | the engine |
 | systemd unit | `~/.config/systemd/user/hermes-zvec-memory.service` | `engine.ensure_engine` (generated) |
-| Backups + receipts | `$HERMES_HOME/backups/zvec-upgrade-*` | `.test-tools/deploy_plugin.py` |
+| Recovery generation | operator-selected private archive | explicit approved, quiescent maintenance |
 
 The launcher and the unit are **generated**. Do not hand-edit them: the next
 `ensure_engine` run rewrites the launcher when it differs, and a hand-edited unit
@@ -65,38 +65,26 @@ source build against a global libvips.
 
 ## Upgrading the plugin
 
-```sh
-cd ~/hermes-zvec-memory
-git pull                       # or check out the revision you want
-python scripts/upgrade.py --dry-run
-python scripts/upgrade.py
-```
+`scripts/upgrade.py` is retired, including `--dry-run`, `--rollback`, `--only`,
+and `--backup`. It returns 2 without touching files or invoking subprocesses.
+Do not use ignored deployment helpers or restore a partial historical updater
+backup over an active profile.
 
-The command runs these steps in order and stops at the first failure, leaving the
-installed plugin untouched:
+Use host-managed installation/update of an explicitly reviewed revision. Before
+maintenance, verify the candidate in isolation and obtain approval for the exact
+profile, runtime generation and service changes. Quiesce relevant writers before
+claiming a coherent backup of configuration, plugin, launcher/unit/manifest,
+runtime identity and durable data. Test that recovery generation in isolation;
+a directory listed by `backup_paths()` alone is not proof of recoverability.
 
-1. `verify` — the working tree must be clean; records `HEAD`.
-2. `offline-suite` — `pytest tests/ -q -m 'not integration'` (expect ~400 passed).
-3. `native-smoke` — `pytest tests/ -q -m integration` against the installed
-   launcher (expect `9 passed, 1 skipped`).
-4. `backup` — `.test-tools/deploy_plugin.py` writes `$HERMES_HOME/backups/zvec-upgrade-<stamp>/`
-   with the previous plugin, `config.yaml`, the unit and the launcher, plus
-   `deployment.json` and `ROLLBACK.txt`.
-5. `deploy` — copies `zvec-memory/*.py`, `plugin.yaml`, `README.md` into the
-   installed directory; prints `already current` when the bytes are identical.
-6. `rebaseline` — re-records the production baseline through the campaign
-   controller.
-7. `doctor` — must exit 0.
+Publication and deployment are separate gates. A running service does not prove
+its disk unit is safe to reload. Preserve and diagnose divergent definitions;
+do not reload a known-bad unit just to dismiss a warning. Never automatically
+refresh a production baseline as part of an update. A fresh session must store a
+fact, and a second session must recall it by paraphrase with a resolving citation.
 
-Roll back with:
-
-```sh
-python scripts/upgrade.py --rollback                      # newest backup
-python scripts/upgrade.py --rollback --backup ~/.hermes/backups/zvec-upgrade-2026-09-11_103922
-```
-
-A running Hermes session keeps its old provider instance until it ends; start a
-fresh session after an upgrade or rollback.
+The 3.0 implementation is in progress; this branch has not been deployed and its
+complete setup/recovery/native release gates are not yet certified.
 
 ## `hermes memory setup`
 

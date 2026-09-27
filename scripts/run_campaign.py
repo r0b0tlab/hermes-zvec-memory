@@ -16,6 +16,13 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import os
+import re
+import stat
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from capture_limits import limits_match
 import subprocess
 import time
 import uuid
@@ -106,10 +113,19 @@ def atomic(path, data):
 
 
 def group_empty(group):
+    group = Path(group)
     try:
-        return not (group / "cgroup.procs").read_text().strip()
+        values = dict(
+            line.split()
+            for line in (group / "cgroup.events").read_text().splitlines()
+        )
     except FileNotFoundError:
-        return True
+        if not group.exists():
+            return True
+        raise RuntimeError("cgroup exists but population evidence is unavailable")
+    if values.get("populated") not in {"0", "1"}:
+        raise RuntimeError("invalid recursive cgroup population evidence")
+    return values["populated"] == "0"
 
 
 def build_command(case, unit, tasks):
@@ -118,19 +134,26 @@ def build_command(case, unit, tasks):
     assert all(isinstance(x, str) for x in case["args"])
     assert unit.endswith(".service"), unit
     limit = int(case["timeout_s"])
-    limitsfile = HERE / (unit.removesuffix(".service") + ".limits.json")
-    capture_command = (str(ROOT / ".venv/bin/python") + " "
-                       + str(HERE / "capture_limits.py") + " " + str(limitsfile))
+    def capture_command(phase):
+        path = HERE / (unit.removesuffix(".service") + f".{phase}.limits.json")
+        # systemd Exec*= uses its own quoting and specifiers, not a shell.
+        def quoted(value):
+            return json.dumps(str(value).replace("%", "%%").replace("$", "$$"))
+        return " ".join([quoted(ROOT / ".venv/bin/python"), "-I", "-B",
+                         quoted(ROOT / "scripts/capture_limits.py"), quoted(path),
+                         "--unit", unit, "--phase", phase, "--tasks", str(tasks)])
     command = ["systemd-run", "--user", "--unit=" + unit, "--slice=app.slice",
                "--service-type=exec", "--wait", "--pipe", "-p", "MemoryMax=2G",
-               "-p", "CPUQuota=200%", "-p", "TasksMax=" + str(tasks),
+               "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%",
+               "-p", "CPUQuotaPeriodSec=100ms", "-p", "TasksMax=" + str(tasks),
                "-p", "KillMode=control-group",
                "-p", "MemoryAccounting=yes", "-p", "CPUAccounting=yes",
-               "-p", "ExecStopPost=" + capture_command,
+               "-p", "ExecStartPre=" + capture_command("start"),
+               "-p", "ExecStopPost=" + capture_command("stop"),
                "-p", "RuntimeMaxSec=" + str(limit), "-p", "TimeoutStopSec=10",
                "--working-directory=" + str(ROOT), str(ROOT / ".venv/bin/python"),
                str(ROOT / "scripts" / case["script"]), *case["args"]]
-    limits = {"memory_bytes": 2147483648, "cpu_quota_percent": 200,
+    limits = {"memory_bytes": 2147483648, "swap_bytes": 0, "cpu_quota_percent": 200,
               "tasks": int(tasks), "runtime_seconds": limit}
     return command, limits
 
@@ -240,8 +263,59 @@ def execute(case, variant, tasks):
     return bool(receipt["passed"])
 
 
-def load_cases():
-    return {x["label"]: x for x in json.loads((HERE / "planned.json").read_text())["cases"]}
+def load_cases(path=None):
+    data = json.loads(Path(path or ROOT / "scripts/campaign_cases.json").read_text())
+    if not isinstance(data, dict) or type(data.get("schema_version")) is not int or data["schema_version"] != 1:
+        raise ValueError("invalid campaign definitions")
+    if not isinstance(data.get("cases"), list) or not data["cases"]:
+        raise ValueError("empty campaign definitions")
+    result = {}
+    for case in data["cases"]:
+        if not isinstance(case, dict):
+            raise ValueError("invalid case")
+        label = case.get("label")
+        if not isinstance(label, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", label):
+            raise ValueError("invalid case label")
+        if label in result:
+            raise ValueError("duplicate case label")
+        if case.get("script") not in SCRIPTS:
+            raise ValueError("unsupported script")
+        args = case.get("args")
+        if not isinstance(args, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in args):
+            raise ValueError("invalid arguments")
+        timeout = case.get("timeout_s")
+        if type(timeout) is not int or not 1 <= timeout <= 2400:
+            raise ValueError("invalid timeout")
+        required = case.get("prerequisites")
+        if (not isinstance(required, list) or not required
+                or not all(isinstance(key, str) and key in {"python", "host", "engine", "models"} for key in required)
+                or len(required) != len(set(required))):
+            raise ValueError("invalid prerequisites")
+        result[label] = case
+    return result
+
+
+def select_output(path, initialize=False):
+    candidate = Path(path).expanduser().absolute()
+    if candidate.is_symlink() or candidate.resolve() != candidate:
+        raise ValueError("aliased campaign output")
+    owner = {"kind": "zvec-campaign", "version": 1, "repo": str(ROOT)}
+    if initialize:
+        candidate.mkdir(mode=0o700, parents=True, exist_ok=False)
+        atomic(candidate / "OWNER.json", owner)
+        atomic(candidate / "manifest.json", {"schema_version": 1, "runs": [], "reports": [], "status": "initialized"})
+    info = candidate.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("campaign output must be private and owned")
+    for name in ("OWNER.json", "manifest.json"):
+        if (candidate / name).is_symlink():
+            raise ValueError("aliased campaign metadata")
+    if json.loads((candidate / "OWNER.json").read_text()) != owner:
+        raise ValueError("campaign owner mismatch")
+    manifest = json.loads((candidate / "manifest.json").read_text())
+    if not isinstance(manifest, dict) or any(not isinstance(manifest.get(key), list) for key in ("runs", "reports")):
+        raise ValueError("invalid campaign manifest")
+    return candidate
 
 
 def rebaseline(reason):
@@ -261,27 +335,46 @@ def rebaseline(reason):
     return 0
 
 
-def main():
+def main(argv=None):
+    global HERE, BASELINE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--variant", choices=["baseline", "fix"], default="fix")
     parser.add_argument("--tasks", type=int, choices=range(MIN_TASKS, MAX_TASKS + 1),
                         default=DEFAULT_TASKS, help="cgroup task ceiling (64..4096)")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--init", action="store_true")
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--snapshot-production", action="store_true",
                         help="re-record the production baseline (requires --reason)")
     parser.add_argument("--reason", help="why the production baseline is being re-recorded")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        cases = load_cases()
+    except (OSError, ValueError, TypeError):
+        parser.error("invalid or missing tracked campaign definitions")
+    if sum((args.list, args.init, args.snapshot_production, bool(args.case))) != 1:
+        parser.error("select exactly one operation")
+    if args.list:
+        print("\n".join(cases))
+        return 0
+    if any(x not in cases for x in args.case):
+        parser.error("select known --case labels (see --list)")
+    if args.output_dir is None:
+        parser.error("--output-dir is required")
+    try:
+        selected = select_output(args.output_dir, initialize=args.init)
+    except (OSError, ValueError, TypeError):
+        parser.error("missing, invalid, or already existing campaign output")
+    HERE, BASELINE = selected, selected / "production-before.json"
+    if args.init:
+        return 0
     if args.snapshot_production:
         if not args.reason:
             parser.error("--snapshot-production requires --reason")
         return rebaseline(args.reason)
-    cases = load_cases()
-    if args.list:
-        print("\n".join(cases))
-        return 0
-    if not args.case or any(x not in cases for x in args.case):
-        parser.error("select known --case labels (see --list)")
+    if not BASELINE.is_file() or BASELINE.is_symlink():
+        parser.error("record an explicit production baseline before launch")
     for label in args.case:
         if not execute(cases[label], args.variant, args.tasks):
             return 1

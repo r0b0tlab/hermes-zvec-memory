@@ -42,11 +42,11 @@ test ! -e "$HERMES_TARGET/plugins/zvec-memory" &&
 hermes memory setup zvec-memory
 ```
 
-Upgrading is one gated command — see `docs/maintenance.md`:
-
-```sh
-cd ~/hermes-zvec-memory && python scripts/upgrade.py --dry-run && python scripts/upgrade.py
-```
+The standalone `scripts/upgrade.py` is retired. All invocation forms return 2
+without running subprocesses or changing files. Plugin installation and updates
+belong to the Hermes plugin manager; see `docs/maintenance.md` for the separate
+validation, maintenance-approval, coherent recovery, and fresh-session gates.
+Do not use historical standalone rollback commands.
 
 Engine requirements for a manual install: Node.js >=22 and
 `@zvec/zvec-grep@0.2.2`, a local embedding model (default

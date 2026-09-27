@@ -42,7 +42,7 @@ def test_default_command_uses_documented_resource_profile():
     assert "MemoryMax=2G" in command and "CPUQuota=200%" in command
     assert "TasksMax=256" in command and "KillMode=control-group" in command
     assert "--slice=app.slice" in command
-    assert limits == {"memory_bytes": 2147483648, "cpu_quota_percent": 200,
+    assert limits == {"memory_bytes": 2147483648, "swap_bytes": 0, "cpu_quota_percent": 200,
                       "tasks": 256, "runtime_seconds": 360}
     assert campaign.DEFAULT_TASKS == 256
 
@@ -131,3 +131,85 @@ def test_new_unwatched_file_is_reported_as_added():
     files["/home/x/.hermes/plugins/zvec-memory/extra.py"] = "newhash"
     differences = campaign.production_differences(BASE, snap(files=files))
     assert any("extra.py" in item for item in differences)
+
+
+def test_clean_export_lists_without_private_prerequisites(tmp_path):
+    import shutil
+    export = tmp_path / "export"
+    tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", "-z"]).decode().split("\0")
+    for name in filter(None, tracked):
+        source, target = ROOT / name, export / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    script = export / "scripts/run_campaign.py"
+    result = subprocess.run([sys.executable, str(script), "--list"], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert {"offline-1x20", "native-repeat-2", "daemon-soak-30m-restart"} <= set(result.stdout.split())
+    assert not (export / ".test-tools").exists()
+    assert not (export / ".git").exists()
+    probe = importlib.util.spec_from_file_location("export_campaign", script)
+    assert probe is not None and probe.loader is not None
+    module = importlib.util.module_from_spec(probe)
+    probe.loader.exec_module(module)
+    command, _ = module.build_command(CASE, "hermes-zvec-stress-fixture.service", 256)
+    assert any(str(export / "scripts/capture_limits.py") in part for part in command)
+    assert (export / "scripts/capture_limits.py").is_file()
+    result = subprocess.run([sys.executable, str(script), "--case", "unknown"], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 2 and not (export / ".test-tools").exists()
+
+
+def test_explicit_campaign_init_is_private_and_non_overwriting(tmp_path):
+    import stat
+    output = tmp_path / "campaign"
+    args = [sys.executable, str(ROOT / "scripts/run_campaign.py"), "--init", "--output-dir", str(output)]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(output.stat().st_mode) == 0o700
+    assert json.loads((output / "manifest.json").read_text())["runs"] == []
+    assert json.loads((output / "OWNER.json").read_text())["kind"] == "zvec-campaign"
+    assert not (output / "production-before.json").exists()
+    before = {p.name: p.read_bytes() for p in output.iterdir()}
+    assert subprocess.run(args, capture_output=True, timeout=10).returncode == 2
+    assert {p.name: p.read_bytes() for p in output.iterdir()} == before
+
+
+def test_missing_or_unowned_campaign_refuses_before_production(tmp_path, monkeypatch):
+    import pytest
+    def forbidden(): raise AssertionError("production must not be read")
+    monkeypatch.setattr(campaign, "production_snapshot", forbidden)
+    for directory in (tmp_path / "missing", tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            campaign.main(["--case", "offline-1x20", "--output-dir", str(directory)])
+        assert exc.value.code == 2
+
+
+def test_case_definitions_reject_duplicate_labels(tmp_path):
+    import pytest
+    source = tmp_path / "cases.json"
+    case = {**CASE, "prerequisites": ["python", "host"]}
+    source.write_text(json.dumps({"schema_version": 1, "cases": [case, case]}))
+    with pytest.raises(ValueError, match="duplicate"):
+        campaign.load_cases(source)
+
+
+def test_empty_parent_is_not_empty_recursive_cgroup(tmp_path):
+    (tmp_path / "cgroup.procs").write_text("")
+    (tmp_path / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+    assert campaign.group_empty(tmp_path) is False
+    (tmp_path / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+    assert campaign.group_empty(tmp_path) is True
+
+
+def test_missing_population_evidence_is_not_proof_of_cleanup(tmp_path):
+    import pytest
+    (tmp_path / "cgroup.procs").write_text("")
+    with pytest.raises(RuntimeError): campaign.group_empty(tmp_path)
+    assert campaign.group_empty(tmp_path / "gone") is True
+
+
+def test_command_captures_both_effective_limit_phases():
+    command, limits = campaign.build_command(CASE, "hermes-zvec-stress-fixture.service", 256)
+    assert "MemorySwapMax=0" in command and "CPUQuotaPeriodSec=100ms" in command
+    assert limits["swap_bytes"] == 0
+    assert any(part.startswith("ExecStartPre=") and "--phase start" in part for part in command)
+    assert any(part.startswith("ExecStopPost=") and "--phase stop" in part for part in command)
