@@ -1055,3 +1055,23 @@ def test_regression_original_spawn_disables_ambient_python(tmp_path, monkeypatch
     monkeypatch.setattr(s, "run_command", command)
     s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=1, timeout=1), {"errors": []})
     assert observed[0][1:3] == ["-I", "-B"]
+
+
+def test_paired_workers_use_identical_corpus_despite_private_run_names(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    observed = []
+    def provider(run, *args):
+        batch=[]; observed.append(batch)
+        def notify(*args): batch.append(args)
+        def store(name, arguments):
+            batch.append((name,arguments["content"]))
+            return json.dumps({"status":"stored","path":str(run/"fixture-control.md")})
+        return SimpleNamespace(on_memory_write=notify,handle_tool_call=store)
+    monkeypatch.setattr(s,"provider",provider)
+    monkeypatch.setattr(s,"pipeline_pending",lambda obj: {})
+    monkeypatch.setattr(s,"close_provider",lambda *a: None)
+    for name in ("stress-baseline-random","stress-fixed-random"):
+        run=tmp_path/name;run.mkdir()
+        assert s.worker(run,0,2,"offline") == 0
+    assert observed[0] == observed[1], "random temporary directory names must not change paired corpus bytes"

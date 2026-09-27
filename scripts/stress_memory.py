@@ -52,6 +52,9 @@ def environment(run, repo, selected_source=None):
             "NODE_OPTIONS": f'--require="{run / "deny-network.cjs"}"'}
 
 
+CORPUS_SEED = "zvec-controlled-corpus-v1"
+
+
 def fact(run_id, worker, number, revised):
     token = hashlib.sha256(f"{run_id}:{worker}:{number}".encode()).hexdigest()[:20]
     adjective = "verified" if revised else "obsolete"
@@ -253,8 +256,8 @@ def worker(run, number, records, mode, shutdown_policy="immediate", timeout=180)
             for n in range(records):
                 if phase == "remove" and n % 2:
                     continue
-                previous = fact(run.name, number, n, phase == "remove")
-                content = "" if phase == "remove" else fact(run.name, number, n, phase == "replace")
+                previous = fact(CORPUS_SEED, number, n, phase == "remove")
+                content = "" if phase == "remove" else fact(CORPUS_SEED, number, n, phase == "replace")
                 t = time.perf_counter()
                 obj.on_memory_write(phase, "user", content, {} if phase == "add" else {"old_text": previous})
                 sample = {"phase": phase, "record": n, "seconds": time.perf_counter()-t, "accepted": True}
@@ -263,7 +266,7 @@ def worker(run, number, records, mode, shutdown_policy="immediate", timeout=180)
                     progress.write(json.dumps(sample) + "\n")
                     progress.flush()
         result["admission_seconds"] = time.monotonic() - admission_start
-        content = f"Explicit control fact for worker {number} in {run.name}."
+        content = f"Explicit control fact for worker {number} in {CORPUS_SEED}."
         out = json.loads(obj.handle_tool_call("memory_store", {"content": content}))
         if out.get("status") != "stored":
             raise RuntimeError(str(out))
@@ -350,7 +353,7 @@ def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate
         drain_provider(obj, start + timeout)
         result["convergence_seconds"] = time.monotonic()-start
         state = obj._mirror_state()
-        wanted = expected(run.name, workers, records)
+        wanted = expected(CORPUS_SEED, workers, records)
         result["mirror_records"] = len(state["records"])
         result["expected_mirror_records"] = len(wanted)
         result["errors"].extend(validate_state(state, wanted))
@@ -359,7 +362,7 @@ def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate
             result["errors"].append("inbox not drained")
         if (run / "vault/.mirror-delivery-failed.json").exists():
             result["errors"].append("delivery-failure marker present")
-        forbidden = [fact(run.name, w, n, revised) for w in range(workers) for n in range(records)
+        forbidden = [fact(CORPUS_SEED, w, n, revised) for w in range(workers) for n in range(records)
                      for revised in (False, True) if not revised or not n % 2]
         controls = [json.loads((run / f"worker-{n}.json").read_text()).get("control") for n in range(workers)]
         result["errors"].extend(validate_sources(run / "vault", state, forbidden, controls))
@@ -789,7 +792,7 @@ def main(argv=None):
     write_json(run / "OWNER.json", {"kind": "zvec-stress", "repo": str(ROOT)})
     report = {"lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
               "shutdown_policy": args.shutdown_policy,
-              "arguments": vars(args), "python": sys.version,
+              "arguments": {**vars(args), "corpus_seed": CORPUS_SEED}, "python": sys.version,
               "evidence": "offline engine mock; NOT native evidence" if args.mode == "offline" else "native direct engine"}
     report.update(status="running", passed=False)
     write_json(run / "report.json", report)

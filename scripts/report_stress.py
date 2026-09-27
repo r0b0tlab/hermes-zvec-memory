@@ -125,7 +125,7 @@ def samples(report):
 def complete_native_queries(raw, workers, records):
     """Independent expected source oracle; query keys alone are not identities."""
     import hashlib
-    run_id = Path(raw["run"]).name
+    run_id = raw.get("arguments", {}).get("corpus_seed", Path(raw["run"]).name)
     def text(worker, record, revised):
         token = hashlib.sha256(f"{run_id}:{worker}:{record}".encode()).hexdigest()[:20]
         adjective = "verified" if revised else "obsolete"
