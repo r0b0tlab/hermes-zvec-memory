@@ -150,7 +150,7 @@ def group_empty(group):
 
 def unit_state(unit):
     text = output(["systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "ActiveState",
-                   "-p", "ControlGroup", "-p", "InvocationID"])
+                   "-p", "ControlGroup", "-p", "InvocationID", "-p", "Job"])
     result = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
     if result.get("LoadState") not in {"loaded", "not-found"}:
         raise RuntimeError("unit state unavailable")
@@ -201,21 +201,23 @@ def cleanup_unit(unit, capture):
     def same_identity():
         current = unit_state(unit)
         if current["LoadState"] == "not-found":
-            return False
+            return current
         if (current.get("InvocationID") != capture["invocation_id"]
                 or current.get("ControlGroup") not in {capture["control_group"], ""}):
             raise RuntimeError("owned unit identity changed; refusing stop")
-        return True
-    loaded = same_identity()
-    if group_empty(group):
-        return True
-    if not loaded or not same_identity():
-        raise RuntimeError("populated cgroup has no matching loaded unit")
-    result = subprocess.run(["systemctl", "--user", "stop", unit], timeout=25,
-                            capture_output=True, text=True)
-    if result.returncode:
-        raise RuntimeError("owned unit stop failed")
-    same_identity()
+        return current
+    current = same_identity()
+    if current["LoadState"] == "loaded":
+        # Empty during activation is not completion: cancel pending ExecStart
+        # even when the collector is the last process to have left the group.
+        result = subprocess.run(["systemctl", "--user", "stop", unit], timeout=25,
+                                capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError("owned unit stop failed")
+        current = same_identity()
+    if current["LoadState"] != "not-found" and (current.get("ActiveState") not in {"inactive", "failed"}
+                                                or current.get("Job") not in {"", "0"}):
+        raise RuntimeError("owned unit is not quiescent")
     return group_empty(group)
 
 
@@ -323,7 +325,7 @@ def campaign_lease(require_manifest=True):
         yield
 
 
-def publish_attempt(receipt):
+def attempt_entry(receipt):
     entry = manifest_entry(receipt["case"], receipt["tasks"], receipt.get("cgroup", {}),
                            receipt.get("report") if receipt.get("report_validated") else None, receipt.get("exit_code"), receipt.get("source_sha", ""))
     for key in ("product_identity", "harness_identity", "host_provenance"):
@@ -334,6 +336,11 @@ def publish_attempt(receipt):
     entry["passed"] = receipt["passed"] is True
     if not entry["passed"]:
         entry["failure_category"] = receipt.get("failure_category", entry.get("failure_category", "other"))
+    return entry
+
+
+def publish_attempt(receipt):
+    entry = attempt_entry(receipt)
     with locked_file(".manifest.lock"):
         path = HERE / "manifest.json"
         manifest = json.loads(path.read_text())
@@ -341,7 +348,29 @@ def publish_attempt(receipt):
             manifest[key] = [row for row in manifest[key] if row.get("attempt_id") != receipt["attempt_id"]]
             manifest[key].append(value)
         manifest["status"] = "running" if receipt["passed"] or receipt["status"] == "started" else "stopped_on_failure"
-        atomic(path, manifest)
+        publish_manifest(manifest)
+
+
+def invalidate_manifest():
+    # Export reads this file directly, not the final receipts. A failed fsync
+    # can follow a successful replace, so leaving the old pathname is unsafe.
+    (HERE / "manifest.json").unlink(missing_ok=True)
+    directory = os.open(HERE, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def publish_manifest(manifest):
+    try:
+        atomic(HERE / "manifest.json", manifest)
+    except BaseException as exc:
+        try:
+            invalidate_manifest()
+        except BaseException as invalidation:
+            exc.add_note("manifest invalidation failed: " + type(invalidation).__name__)
+        raise
 
 
 @contextmanager
@@ -377,13 +406,29 @@ def attempt_record(case, variant, tasks, unit):
         receipt["status"] = "final"
         receipt["finished_unix_ns"] = time.time_ns()
         receipt["passed"] = receipt["passed"] is True and not receipt["errors"]
-        atomic(HERE / (stamp + ".json"), receipt)
+        pending = HERE / (stamp + ".finalizing.json")
         try:
+            # Persist a conservative fallback before exposing any success. If
+            # failed-receipt repair also fails, reconciliation must not revive
+            # an unconfirmed green final receipt.
+            atomic(pending, {**receipt, "passed": False,
+                             "errors": [*receipt["errors"], "manifest_finalization:unconfirmed"]})
+            atomic(HERE / (stamp + ".json"), receipt)
             publish_attempt(receipt)
+            # An unsynced removal can only resurrect the failed fallback after
+            # a crash; it cannot resurrect success. No green data follows it.
+            pending.unlink()
         except BaseException as exc:
             receipt["passed"] = False
             receipt["errors"].append("manifest_finalization:" + type(exc).__name__)
-            atomic(HERE / (stamp + ".json"), receipt)
+            try:
+                invalidate_manifest()
+            except BaseException as invalidation:
+                exc.add_note("manifest invalidation failed: " + type(invalidation).__name__)
+            try:
+                atomic(HERE / (stamp + ".json"), receipt)
+            except BaseException as repair:
+                exc.add_note("failed receipt repair: " + type(repair).__name__)
             raise
 
 
@@ -403,6 +448,8 @@ def execute(case, variant, tasks):
                 receipt["elapsed_seconds"] = time.monotonic() - start
                 try:
                     differences = unchanged()
+                    if receipt.get("baseline_sha256") is not None and sha256(BASELINE) != receipt["baseline_sha256"]:
+                        differences = [*differences, "production baseline changed during attempt"]
                     receipt["production_unchanged"] = not differences
                     if differences:
                         receipt["production_differences"] = differences
@@ -421,10 +468,21 @@ def execute(case, variant, tasks):
 def execute_body(case, variant, tasks, receipt):
     receipt["launch_started"] = False
     receipt["cleanup_verified"] = True  # no process exists until launch admission
+    baseline_bytes = BASELINE.read_bytes()
+    receipt["baseline_revision"] = json.loads(baseline_bytes).get("baseline_revision")
+    receipt["baseline_sha256"] = hashlib.sha256(baseline_bytes).hexdigest()
     differences = unchanged()
     if differences:
         raise RuntimeError("production baseline changed")
-    previous = json.loads((HERE / "manifest.json").read_text())["runs"]
+    manifest = json.loads((HERE / "manifest.json").read_text())
+    previous = durable_attempts()
+    if any(HERE.glob("*.finalizing.json")):
+        raise RuntimeError("uncertain publication requires explicit reconciliation")
+    for key, expected in (("runs", previous), ("reports", [attempt_entry(row) for row in previous])):
+        rows = manifest[key]
+        if (len(rows) != len(expected) or
+                {row["attempt_id"]: row for row in rows} != {row["attempt_id"]: row for row in expected}):
+            raise RuntimeError("incomplete attempt inventory requires explicit reconciliation")
     if any(row.get("attempt_id") != receipt["attempt_id"] and
            (row.get("status") == "started" or
             (row.get("launch_started") and row.get("cleanup_verified") is not True)) for row in previous):
@@ -576,89 +634,125 @@ def select_output(path, initialize=False, require_manifest=True):
     return candidate
 
 
+def durable_attempts():
+    """Read the complete owned inventory, independently of the manifest cache."""
+    for path in HERE.glob("hermes-zvec-stress-*.json"):
+        match = re.fullmatch(r"(hermes-zvec-stress-[a-f0-9]{32})(?:\.(?:launch|finalizing))?\.json", path.name)
+        if match and not (HERE / (match[1] + ".started.json")).is_file():
+            raise ValueError("attempt inventory has a record without its started identity")
+    records = []
+    for path in sorted(HERE.glob("*.started.json")):
+        stem = path.name.removesuffix(".started.json")
+        unit = stem + ".service"
+        if not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}\.service", unit) or path.is_symlink():
+            raise ValueError("unattributable started record")
+        initial = json.loads(path.read_text())
+        if (not isinstance(initial, dict) or initial.get("attempt_id") != stem
+                or initial.get("unit") != unit or initial.get("status") != "started"
+                or type(initial.get("schema_version")) is not int
+                or initial["schema_version"] not in {1, 2}
+                or initial.get("variant") not in {"baseline", "fix"}
+                or type(initial.get("tasks")) is not int or not MIN_TASKS <= initial["tasks"] <= MAX_TASKS
+                or not isinstance(initial.get("case"), dict)
+                or initial["case"].get("label") != initial.get("label")):
+            raise ValueError("invalid started record")
+        receipt = dict(initial)
+        for suffix, phase in ((".launch.json", "launch"), (".json", "final"), (".finalizing.json", "pending")):
+            record_path = HERE / (stem + suffix)
+            if record_path.is_symlink():
+                raise ValueError("aliased attempt record")
+            if not record_path.exists():
+                continue
+            record = json.loads(record_path.read_text())
+            if (not isinstance(record, dict)
+                    or any(record.get(k) != initial[k] for k in ("attempt_id", "unit", "case", "variant", "tasks"))
+                    or (phase == "launch" and record.get("launch_started") is not True)
+                    or (phase in {"final", "pending"} and (record.get("status") != "final" or type(record.get("passed")) is not bool))):
+                raise ValueError("unattributable " + phase + " record")
+            if phase == "pending":
+                if receipt.get("status") != "final":
+                    receipt.update(record)
+                receipt.update(status="final", passed=False,
+                               errors=[*receipt.get("errors", []),
+                                       *[error for error in record["errors"] if error not in receipt.get("errors", [])]])
+            else:
+                receipt.update(record)
+        records.append(receipt)
+    return records
+
+
 def reconcile():
     """Recover accounting from owned records; never rerun or green an orphan."""
     with campaign_lease(require_manifest=False):
-        records = []
-        for path in sorted(HERE.glob("*.started.json")):
-            stem = path.name.removesuffix(".started.json")
-            unit = stem + ".service"
-            if not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}\.service", unit) or path.is_symlink():
-                raise ValueError("unattributable started record")
-            initial = json.loads(path.read_text())
-            if (not isinstance(initial, dict) or initial.get("attempt_id") != stem
-                    or initial.get("unit") != unit or initial.get("status") != "started"
-                    or type(initial.get("schema_version")) is not int
-                    or initial["schema_version"] not in {1, 2}
-                    or initial.get("variant") not in {"baseline", "fix"}
-                    or type(initial.get("tasks")) is not int or not MIN_TASKS <= initial["tasks"] <= MAX_TASKS
-                    or not isinstance(initial.get("case"), dict)
-                    or initial["case"].get("label") != initial.get("label")):
-                raise ValueError("invalid started record")
-            final_path = HERE / (stem + ".json")
-            launch_path = HERE / (stem + ".launch.json")
-            if final_path.is_symlink() or launch_path.is_symlink():
-                raise ValueError("aliased attempt record")
-            if final_path.exists():
-                receipt = json.loads(final_path.read_text())
-                if (not isinstance(receipt, dict) or receipt.get("status") != "final"
-                        or type(receipt.get("passed")) is not bool
-                        or any(receipt.get(k) != initial[k] for k in ("attempt_id", "unit", "case", "variant", "tasks"))):
-                    raise ValueError("unattributable final record")
-            else:
-                receipt = dict(initial)
-                if launch_path.exists():
-                    launch = json.loads(launch_path.read_text())
-                    if (not isinstance(launch, dict) or launch.get("launch_started") is not True
-                            or any(launch.get(k) != initial[k] for k in ("attempt_id", "unit", "case", "variant", "tasks"))):
-                        raise ValueError("unattributable launch record")
-                    receipt.update(launch)
-                receipt.update(status="final", passed=False, failure_category="interrupted",
-                               errors=["unfinished_controller_attempt"], production_unchanged=False,
-                               resources_verified=False, finished_unix_ns=time.time_ns(),
-                               cleanup_verified=initial["schema_version"] == 2 and not launch_path.exists())
-                if launch_path.exists():
-                    try:
-                        first = read_capture(unit, "start")
-                        receipt["start_capture"] = first
-                        receipt["cleanup_verified"] = cleanup_unit(unit, first)
-                    except BaseException as exc:
-                        receipt["errors"].append("reconcile_cleanup:" + type(exc).__name__)
-                atomic(final_path, receipt)
-            records.append(receipt)
-        path = HERE / "manifest.json"
-        try:
-            current = json.loads(path.read_text())
-            if not isinstance(current, dict) or any(not isinstance(current.get(k), list) for k in ("runs", "reports")):
-                raise ValueError("invalid manifest")
-        except (FileNotFoundError, ValueError):
-            if path.exists():
-                backup = HERE / ("manifest.corrupt-" + uuid.uuid4().hex + ".json")
-                with backup.open("xb") as stream:
-                    stream.write(path.read_bytes())
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            atomic(path, {"schema_version":1,"runs":[],"reports":[],"status":"reconciled"})
+        records = durable_attempts()
         for receipt in records:
-            publish_attempt(receipt)
-        manifest = json.loads(path.read_text())
-        return int(any(row.get("passed") is not True for row in manifest["runs"]))
+            launched = receipt.get("launch_started") is True
+            needs_write = receipt["status"] != "final" or (HERE / (receipt["attempt_id"] + ".finalizing.json")).exists()
+            if receipt["status"] != "final":
+                receipt.update(status="final", passed=False, failure_category="interrupted",
+                               errors=[*receipt.get("errors", []), "unfinished_controller_attempt"], production_unchanged=False,
+                               resources_verified=False, finished_unix_ns=time.time_ns(),
+                               cleanup_verified=receipt["schema_version"] == 2 and not launched)
+            if launched and receipt.get("cleanup_verified") is not True:
+                # Cleanup recovery discharges ownership, not the failed attempt.
+                receipt["passed"] = False
+                receipt["cleanup_verified"] = False
+                needs_write = True
+                try:
+                    first = read_capture(receipt["unit"], "start")
+                    receipt["start_capture"] = first
+                    receipt["cleanup_verified"] = cleanup_unit(receipt["unit"], first)
+                except BaseException as exc:
+                    receipt["errors"].append("reconcile_cleanup:" + type(exc).__name__)
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        atomic(HERE / (receipt["attempt_id"] + ".json"), receipt)
+                        raise
+            if needs_write:
+                atomic(HERE / (receipt["attempt_id"] + ".json"), receipt)
+        # Never expose an empty or partially reconstructed inventory, even if
+        # interrupted immediately after replacement. Durable records win over
+        # stale cached rows, including previously failed attempts.
+        with locked_file(".manifest.lock", require_manifest=False):
+            path = HERE / "manifest.json"
+            try:
+                current = json.loads(path.read_text())
+                if not isinstance(current, dict) or any(not isinstance(current.get(k), list) for k in ("runs", "reports")):
+                    raise ValueError("invalid manifest")
+            except (FileNotFoundError, ValueError):
+                if path.exists():
+                    backup = HERE / ("manifest.corrupt-" + uuid.uuid4().hex + ".json")
+                    with backup.open("xb") as stream:
+                        stream.write(path.read_bytes())
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                current = {"schema_version": 1, "runs": [], "reports": []}
+            owned = {row["attempt_id"] for row in records}
+            if any(not isinstance(row, dict) or row.get("attempt_id") not in owned
+                   for key in ("runs", "reports") for row in current[key]):
+                raise ValueError("manifest inventory has unattributable attempts; refusing to discard evidence")
+            current.update(runs=records, reports=[attempt_entry(row) for row in records],
+                           status="stopped_on_failure" if any(row["passed"] is not True for row in records) else "reconciled")
+            publish_manifest(current)
+        for receipt in records:
+            (HERE / (receipt["attempt_id"] + ".finalizing.json")).unlink(missing_ok=True)
+        return int(any(row["passed"] is not True for row in records))
 
 
 def rebaseline(reason):
     """Write a new production baseline, preserving the previous revision."""
-    previous = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
-    revision = int(previous.get("baseline_revision", 0)) + 1
-    if previous:
-        (HERE / f"production-before-rev{previous.get('baseline_revision', 0)}.json").write_text(
-            json.dumps(previous, indent=2), encoding="utf-8")
-    snapshot = production_snapshot(revision=revision, reason=reason)
-    atomic(BASELINE, snapshot)
-    differences = production_differences(previous, snapshot) if previous else []
-    print(json.dumps({"baseline_revision": revision, "reason": reason,
-                      "differences_from_previous": differences,
-                      "config_sha256": snapshot["config_sha256"],
-                      "watched_files": len(snapshot["files"])}, indent=2))
+    with campaign_lease():
+        previous = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
+        revision = int(previous.get("baseline_revision", 0)) + 1
+        if previous:
+            (HERE / f"production-before-rev{previous.get('baseline_revision', 0)}.json").write_text(
+                json.dumps(previous, indent=2), encoding="utf-8")
+        snapshot = production_snapshot(revision=revision, reason=reason)
+        atomic(BASELINE, snapshot)
+        differences = production_differences(previous, snapshot) if previous else []
+        print(json.dumps({"baseline_revision": revision, "reason": reason,
+                          "differences_from_previous": differences,
+                          "config_sha256": snapshot["config_sha256"],
+                          "watched_files": len(snapshot["files"])}, indent=2))
     return 0
 
 

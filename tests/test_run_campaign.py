@@ -221,6 +221,7 @@ def initialize_private_campaign(tmp_path, monkeypatch):
     campaign.select_output(root, initialize=True)
     monkeypatch.setattr(campaign, "HERE", root)
     monkeypatch.setattr(campaign, "BASELINE", root / "production-before.json")
+    campaign.BASELINE.write_text(json.dumps(snap()))
     return root
 
 
@@ -362,19 +363,60 @@ def test_cleanup_uses_recorded_group_and_rechecks_unit_identity(tmp_path, monkey
     def stop(command, **kwargs):
         stopped.append(command)
         if state == "stop_failure": raise TimeoutError("stop failed")
-        (group / "cgroup.events").write_text("populated 0\n")
+        current.update(ActiveState="inactive", Job="0")
+        if state != "missing_population": (group / "cgroup.events").write_text("populated 0\n")
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(campaign.subprocess, "run", stop)
     if state in {"empty", "populated"}:
         assert campaign.cleanup_unit(unit, start) is True
-        assert len(stopped) == (1 if state == "populated" else 0)
+        assert len(stopped) == 1
     else:
         with pytest.raises((RuntimeError, OSError, TimeoutError)):
             campaign.cleanup_unit(unit, start)
-        if state in {"reused_identity", "missing_population"}: assert not stopped
+        if state == "reused_identity": assert not stopped
 
 
-@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard", "product_identity", "harness_identity", "host_provenance"])
+@pytest.mark.parametrize("after", ["inactive", "failed", "not-found", "activating", "active", "pending_job", "missing_job"])
+def test_cleanup_cancels_activating_empty_unit_before_release(tmp_path, monkeypatch, after):
+    mount = tmp_path / "cgroup"
+    monkeypatch.setattr(campaign, "CGROUP_ROOT", mount)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    capture = capture_fixture(unit, "start")
+    group = mount / capture["control_group"].lstrip("/")
+    group.mkdir(parents=True)
+    (group / "cgroup.events").write_text("populated 0\n")
+    state = {"LoadState": "loaded", "ActiveState": "activating", "Job": "42",
+             "ControlGroup": capture["control_group"], "InvocationID": capture["invocation_id"]}
+    monkeypatch.setattr(campaign, "unit_state", lambda name: dict(state))
+    stopped = []
+    def stop(command, **kwargs):
+        assert command == ["systemctl", "--user", "stop", unit]
+        assert kwargs["timeout"] <= 25
+        stopped.append(command)
+        state.update(ActiveState=after, Job="0")
+        if after == "not-found": state.update(LoadState="not-found")
+        if after == "pending_job": state.update(ActiveState="inactive", Job="43")
+        if after == "missing_job":
+            state.update(ActiveState="inactive")
+            del state["Job"]
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(campaign.subprocess, "run", stop)
+    if after in {"inactive", "failed", "not-found"}:
+        assert campaign.cleanup_unit(unit, capture) is True
+    else:
+        with pytest.raises(RuntimeError, match="quiescent"): campaign.cleanup_unit(unit, capture)
+    assert len(stopped) == 1, "populated=0 does not cancel pending ExecStart"
+
+
+def test_unit_state_queries_pending_job_evidence(monkeypatch):
+    def output(command):
+        assert command[-2:] == ["-p", "Job"]
+        return "LoadState=loaded\nActiveState=inactive\nJob=0"
+    monkeypatch.setattr(campaign, "output", output)
+    assert campaign.unit_state("fixture.service")["Job"] == "0"
+
+
+@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard", "product_identity", "harness_identity", "host_provenance", "baseline_revision", "baseline_bytes"])
 def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault):
     """Synthetic kernel/workload files test the real controller, not capacity."""
     source = tmp_path / "source"
@@ -391,6 +433,9 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
     def unchanged():
         checks.append(1)
         if fault == "post_guard" and len(checks) == 2: raise OSError("post guard unavailable")
+        if fault in {"baseline_revision", "baseline_bytes"} and len(checks) == 2:
+            campaign.BASELINE.write_text(json.dumps(snap(baseline_revision=2 if fault == "baseline_revision" else 1,
+                                                          service="fixture drift hidden by a replaced baseline")))
         return []
     monkeypatch.setattr(campaign, "unchanged", unchanged)
     monkeypatch.setattr(campaign, "unit_state", lambda unit: dict(state))
@@ -444,6 +489,8 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
     assert len(checks) == 2
     if fault is None:
         assert all(final[key] == value for key,value in identities.items())
+        assert final["baseline_revision"] == BASE["baseline_revision"]
+        assert final["baseline_sha256"] == campaign.sha256(campaign.BASELINE)
         assert final["cleanup_verified"] and final["resources_verified"] and final["production_unchanged"]
     else:
         assert final["errors"] and not manifest["reports"][0]["passed"]
@@ -488,6 +535,88 @@ def test_attempt_is_published_before_work_and_finalization_cannot_hide_failure(t
             assert data["passed"] is False
             assert any("manifest" in error for error in data["errors"])
         else: assert not final.exists()
+
+
+@pytest.mark.parametrize("fault", ["fsync", "interrupt", "failed_receipt_repair"])
+def test_post_replace_publication_failure_cannot_export_or_reconcile_green(tmp_path, monkeypatch, fault):
+    import stat
+    from report_stress import load_manifest
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    manifest_path = root / "manifest.json"
+    report = root / "report.json"
+    report.write_text(json.dumps({"passed": True}))
+    real_replace, real_fsync, real_atomic = campaign.os.replace, campaign.os.fsync, campaign.atomic
+    exposed, armed = [], []
+    def replace(source, target):
+        result = real_replace(source, target)
+        if target == manifest_path:
+            data = json.loads(target.read_text())
+            if data["runs"][0]["passed"]:
+                exposed.append(data)
+                armed.append(True)
+        return result
+    def fsync(fd):
+        if armed and stat.S_ISDIR(campaign.os.fstat(fd).st_mode):
+            armed.clear()
+            if fault == "interrupt": raise KeyboardInterrupt("post-rename interrupt")
+            raise OSError("post-rename directory fsync failed")
+        return real_fsync(fd)
+    def atomic(path, data):
+        if fault == "failed_receipt_repair" and exposed and path.name == unit[:-8] + ".json":
+            raise OSError("failed receipt repair unavailable")
+        return real_atomic(path, data)
+    monkeypatch.setattr(campaign.os, "replace", replace)
+    monkeypatch.setattr(campaign.os, "fsync", fsync)
+    monkeypatch.setattr(campaign, "atomic", atomic)
+    with pytest.raises(KeyboardInterrupt if fault == "interrupt" else OSError, match="post-rename"):
+        with campaign.attempt_record(CASE, "fix", 256, unit) as receipt:
+            receipt.update(passed=True, report=str(report), report_validated=True,
+                           cleanup_verified=True, launch_started=False)
+    assert len(exposed) == 1, "fault must occur after a green manifest was actually replaced"
+    if manifest_path.exists():
+        reports, _ = load_manifest(manifest_path)
+        assert not any(row["passed"] for row in reports), "future export must not see unconfirmed success"
+    durable = campaign.durable_attempts()
+    assert len(durable) == 1 and durable[0]["passed"] is False
+    assert any("manifest_finalization" in error for error in durable[0]["errors"])
+    monkeypatch.setattr(campaign.os, "replace", real_replace)
+    monkeypatch.setattr(campaign.os, "fsync", real_fsync)
+    monkeypatch.setattr(campaign, "atomic", real_atomic)
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: pytest.fail("uncertain publication admitted new work"))
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    try:
+        assert campaign.execute(CASE, "fix", 256) is False
+    except (OSError, ValueError):
+        pass  # missing/invalid manifest is also closed admission
+    assert campaign.reconcile() == 1
+    reports, _ = load_manifest(manifest_path)
+    assert not any(row["passed"] for row in reports)
+    assert any("manifest_finalization" in error for error in json.loads((root / (unit[:-8] + ".json")).read_text())["errors"])
+
+
+@pytest.mark.parametrize("failure_at", ["before", "after"])
+def test_pending_publication_retains_original_failure_evidence(tmp_path, monkeypatch, failure_at):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    real_atomic = campaign.atomic
+    def atomic(path, data):
+        if path.name == unit[:-8] + ".json":
+            if failure_at == "after": real_atomic(path, data)
+            raise OSError("final receipt unavailable")
+        return real_atomic(path, data)
+    monkeypatch.setattr(campaign, "atomic", atomic)
+    with pytest.raises(OSError, match="final receipt unavailable"):
+        with campaign.attempt_record(CASE, "fix", 256, unit) as receipt:
+            receipt.update(passed=False, errors=["original_failure", "original_failure"],
+                           failure_category="child_exit", exit_code=17, cleanup_verified=True)
+    recovered = campaign.durable_attempts()[0]
+    assert recovered["failure_category"] == "child_exit" and recovered["exit_code"] == 17
+    assert recovered["errors"].count("original_failure") == 2
+    assert recovered["cleanup_verified"] is True and recovered["passed"] is False
+    monkeypatch.setattr(campaign, "atomic", real_atomic)
+    assert campaign.reconcile() == 1
+    assert json.loads((root / "manifest.json").read_text())["runs"] == [recovered]
 
 
 @pytest.mark.parametrize("manifest_damage", ["missing", "corrupt", "valid"])
@@ -626,6 +755,157 @@ def test_namespace_shell_does_not_expand_python_environment(tmp_path, monkeypatc
     result = subprocess.run(shell, env=campaign.workload_environment(unit), capture_output=True, text=True, timeout=3)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == sorted(campaign.workload_environment(unit))
+
+
+def durable_attempt_fixture(root, digit, *, final=False, launched=True):
+    stem = "hermes-zvec-stress-" + digit * 32
+    receipt = {"schema_version": 2, "attempt_id": stem, "unit": stem + ".service",
+               "label": CASE["label"], "case": dict(CASE), "variant": "fix", "tasks": 256,
+               "status": "started", "passed": False, "errors": [], "cleanup_verified": False}
+    (root / (stem + ".started.json")).write_text(json.dumps(receipt))
+    if launched:
+        receipt.update(launch_started=True)
+        (root / (stem + ".launch.json")).write_text(json.dumps(receipt))
+    if final:
+        receipt.update(status="final", failure_category="child_exit", errors=["child_nonzero_exit"],
+                       cleanup_verified=not launched)
+        (root / (stem + ".json")).write_text(json.dumps(receipt))
+    return receipt
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "partial"])
+def test_interrupted_reconciliation_never_publishes_partial_inventory(tmp_path, monkeypatch, damage):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    earlier = durable_attempt_fixture(root, "a", final=True, launched=False)
+    orphan = durable_attempt_fixture(root, "b")
+    manifest_path = root / "manifest.json"
+    if damage == "missing": manifest_path.unlink()
+    elif damage == "corrupt": manifest_path.write_text("broken manifest fixture")
+    else: campaign.publish_attempt(earlier)
+    monkeypatch.setattr(campaign, "read_capture", lambda unit, phase: capture_fixture(unit, phase))
+    monkeypatch.setattr(campaign, "cleanup_unit", lambda *args: False)
+    real_atomic = campaign.atomic
+    publications = []
+    def interrupted_publish(path, data):
+        real_atomic(path, data)
+        if path == manifest_path:
+            publications.append(json.loads(path.read_text()))
+            raise KeyboardInterrupt("controller interrupted after first manifest replacement")
+    monkeypatch.setattr(campaign, "atomic", interrupted_publish)
+    with pytest.raises(KeyboardInterrupt): campaign.reconcile()
+    assert len(publications) == 1
+    for key in ("runs", "reports"):
+        assert {row["attempt_id"] for row in publications[0][key]} == {earlier["attempt_id"], orphan["attempt_id"]}
+        assert not any(row["passed"] for row in publications[0][key])
+    monkeypatch.setattr(campaign, "atomic", real_atomic)
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: pytest.fail("unresolved orphan admitted a unit"))
+    if manifest_path.exists():
+        assert campaign.execute(CASE, "fix", 256) is False
+    else:
+        with pytest.raises(FileNotFoundError): campaign.execute(CASE, "fix", 256)
+
+
+@pytest.mark.parametrize("state", ["started", "launched", "unresolved_final", "omitted_failure", "stale_final"])
+def test_admission_requires_complete_authoritative_inventory(tmp_path, monkeypatch, state):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = durable_attempt_fixture(root, "a", final=state.endswith("final") or state == "omitted_failure",
+                                      launched=state not in {"started", "omitted_failure", "stale_final"})
+    if state == "stale_final":
+        campaign.publish_attempt({**receipt, "passed": True, "errors": []})
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: pytest.fail("incomplete inventory admitted a unit"))
+    assert campaign.execute(CASE, "fix", 256) is False
+    assert json.loads((root / (receipt["attempt_id"] + (".json" if receipt["status"] == "final" else ".started.json"))).read_text())["passed"] is False
+
+
+@pytest.mark.parametrize("lost", ["started", "manifest_only"])
+def test_reconcile_refuses_unattributable_inventory_instead_of_dropping_it(tmp_path, monkeypatch, lost):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = durable_attempt_fixture(root, "a", final=True)
+    campaign.publish_attempt(receipt)
+    if lost == "started":
+        (root / (receipt["attempt_id"] + ".started.json")).unlink()
+    else:
+        for suffix in (".started.json", ".launch.json", ".json"):
+            (root / (receipt["attempt_id"] + suffix)).unlink()
+    monkeypatch.setattr(campaign, "cleanup_unit", lambda *args: pytest.fail("unattributable unit must not be controlled"))
+    with pytest.raises(ValueError, match="inventory"):
+        campaign.reconcile()
+    assert json.loads((root / "manifest.json").read_text())["runs"] == [receipt]
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: pytest.fail("missing ownership record admitted a unit"))
+    assert campaign.execute(CASE, "fix", 256) is False
+
+
+@pytest.mark.parametrize("origin", ["execute", "reconcile"])
+def test_reconcile_retries_final_unresolved_cleanup_without_erasing_failure(tmp_path, monkeypatch, origin):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    receipt = durable_attempt_fixture(root, "a", final=origin == "execute")
+    unit = receipt["unit"]
+    start = capture_fixture(unit, "start")
+    (root / (receipt["attempt_id"] + ".start.limits.json")).write_text(json.dumps(start))
+    originals = {path.name: path.read_bytes() for path in root.glob("*.started.json")}
+    mount = tmp_path / "cgroup"
+    monkeypatch.setattr(campaign, "CGROUP_ROOT", mount)
+    group = mount / start["control_group"].lstrip("/")
+    group.mkdir(parents=True)
+    (group / "cgroup.events").write_text("populated 1\n")
+    state = {"LoadState": "loaded", "ActiveState": "active", "Job": "0",
+             "InvocationID": start["invocation_id"], "ControlGroup": start["control_group"]}
+    monkeypatch.setattr(campaign, "unit_state", lambda name: dict(state))
+    stopped = []
+    def stop(command, **kwargs):
+        assert command == ["systemctl", "--user", "stop", unit]
+        stopped.append(command)
+        if len(stopped) == 1: raise TimeoutError("transient fixture stop failure")
+        state.update(ActiveState="inactive")
+        (group / "cgroup.events").write_text("populated 0\n")
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(campaign.subprocess, "run", stop)
+    assert campaign.reconcile() == 1
+    first = json.loads((root / (receipt["attempt_id"] + ".json")).read_text())
+    assert not first["cleanup_verified"] and not first["passed"]
+    assert len(stopped) == 1
+    assert "reconcile_cleanup:TimeoutError" in first["errors"]
+    assert campaign.reconcile() == 1
+    final = json.loads((root / (receipt["attempt_id"] + ".json")).read_text())
+    assert len(stopped) == 2 and final["cleanup_verified"] is True
+    assert final["passed"] is False and final["errors"] == first["errors"]
+    assert final["failure_category"] == first["failure_category"]
+    if "finished_unix_ns" in first:
+        assert final["finished_unix_ns"] == first["finished_unix_ns"]
+    assert campaign.reconcile() == 1 and len(stopped) == 2
+    assert {path.name: path.read_bytes() for path in root.glob("*.started.json")} == originals
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["runs"] == [final] and not manifest["reports"][0]["passed"]
+    admitted = []
+    def next_unit(name):
+        admitted.append(name)
+        raise RuntimeError("fixture stops after admission, before launch")
+    monkeypatch.setattr(campaign, "unit_state", next_unit)
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    assert campaign.execute(CASE, "fix", 256) is False
+    assert len(admitted) == 1 and admitted[0] != unit
+
+
+def test_rebaseline_is_serialized_with_controller_lease(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    baseline_bytes = campaign.BASELINE.read_bytes()
+    snapshots = []
+    def snapshot(**kwargs):
+        snapshots.append(kwargs)
+        return snap(baseline_revision=kwargs["revision"], revision_reason=kwargs["reason"])
+    monkeypatch.setattr(campaign, "production_snapshot", snapshot)
+    with campaign.campaign_lease():
+        with pytest.raises(RuntimeError, match="controller"):
+            campaign.rebaseline("fixture must not mask active attempt drift")
+        assert not snapshots and campaign.BASELINE.read_bytes() == baseline_bytes
+        assert not list(root.glob("production-before-rev*.json"))
+    assert campaign.rebaseline("fixture after release") == 0
+    assert json.loads(campaign.BASELINE.read_text())["baseline_revision"] == 2
+    assert json.loads((root / "production-before-rev1.json").read_text()) == json.loads(baseline_bytes)
+    with campaign.campaign_lease(): pass
 
 
 def test_controller_forwards_explicit_provider_selection(tmp_path, monkeypatch):
