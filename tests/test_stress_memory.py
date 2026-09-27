@@ -1010,3 +1010,24 @@ def test_cleanup_deadline_retains_unresolved_identity(tmp_path, monkeypatch):
         child.kill()
         child.wait(timeout=2)
         for fd in descriptors.values(): s.os.close(fd)
+
+
+def test_shutdown_duration_survives_failure(monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    ticks = iter([10.0, 12.5])
+    monkeypatch.setattr(s.time, "monotonic", lambda: next(ticks))
+
+    def fail():
+        raise RuntimeError("shutdown fault")
+
+    obj = SimpleNamespace(
+        shutdown=fail, _disk_worker=None, _index_worker=None
+    )
+    receipt = {"errors": [], "admission_seconds": 1.0, "drain_seconds": 3.0}
+    s.close_provider(obj, receipt)
+    assert receipt["shutdown_seconds"] == 2.5
+    assert receipt["shutdown_failed"] is True
+    assert receipt["admission_seconds"] == 1.0
+    assert receipt["drain_seconds"] == 3.0
+    assert receipt["errors"]

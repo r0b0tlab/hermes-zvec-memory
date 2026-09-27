@@ -546,3 +546,19 @@ def test_soak_success_requires_full_requested_coverage(damage):
         raw["worker"]["restarts"] = []
     elif damage == "missed_removal": raw["worker"]["corpus_removed"] = False
     with pytest.raises(ValueError): tool().aggregate([raw])
+
+
+def test_shutdown_samples_and_recovery_remain_separate():
+    raw = report([.1])
+    raw["workers"][0]["shutdown_seconds"] = 2.5
+    raw["recovery"]["shutdown_seconds"] = .3
+    data = tool().aggregate([raw, report([.1])])
+    first, historical = data["runs"]
+    assert first["worker_shutdown_seconds"]["count"] == 1
+    assert first["worker_shutdown_seconds"]["mean"] == 2.5
+    assert first["recovery_shutdown_seconds"] == .3
+    assert historical["worker_shutdown_seconds"]["count"] == 0
+    assert historical["worker_shutdown_seconds"]["mean"] is None
+    assert historical["recovery_shutdown_seconds"] is None
+    csv = tool().render(data)["aggregate.csv"]
+    assert "worker_shutdown_p99_seconds" in csv and "recovery_shutdown_seconds" in csv

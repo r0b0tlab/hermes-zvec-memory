@@ -157,15 +157,32 @@ def initialize_provider(obj, run, session):
 
 
 def close_provider(obj, result):
-    if obj is not None:
-        try:
-            obj.shutdown()
-            result["live_threads_after_shutdown"] = [w._thread.name for w in
-                (obj._disk_worker, obj._index_worker) if w and w._thread.is_alive()]
-            if result["live_threads_after_shutdown"]:
-                result["errors"].append("provider threads alive after shutdown")
-        except Exception as exc:
-            result["errors"].append(f"shutdown: {exc!r}")
+    result["shutdown_seconds"] = None
+    result["shutdown_failed"] = False
+    if obj is None:
+        return
+
+    started = time.monotonic()
+    try:
+        obj.shutdown()
+    except Exception as exc:
+        result["shutdown_failed"] = True
+        result["errors"].append(f"shutdown: {exc!r}")
+    finally:
+        result["shutdown_seconds"] = time.monotonic() - started
+
+    try:
+        result["live_threads_after_shutdown"] = [
+            worker._thread.name
+            for worker in (obj._disk_worker, obj._index_worker)
+            if worker and worker._thread.is_alive()
+        ]
+        if result["live_threads_after_shutdown"]:
+            result["shutdown_failed"] = True
+            result["errors"].append("provider threads alive after shutdown")
+    except Exception as exc:
+        result["shutdown_failed"] = True
+        result["errors"].append(f"shutdown inspection: {exc!r}")
 
 
 def validate_acceptance(receipt, number, records):
