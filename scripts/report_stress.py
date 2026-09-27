@@ -122,6 +122,110 @@ def samples(report):
     return [s for w in report.get("workers", []) for s in w.get("samples", [])]
 
 
+def complete_native_queries(raw, workers, records):
+    """Independent expected source oracle; query keys alone are not identities."""
+    import hashlib
+    run_id = Path(raw["run"]).name
+    def text(worker, record, revised):
+        token = hashlib.sha256(f"{run_id}:{worker}:{record}".encode()).hexdigest()[:20]
+        adjective = "verified" if revised else "obsolete"
+        return f"For key stress{token}, the {adjective} answer is payload{token}."
+    wanted = [text(w, n, True) for w in range(workers) for n in range(records) if n % 2]
+    if not wanted:
+        wanted = [f"Explicit control fact for worker {w} in {run_id}." for w in range(workers)]
+    forbidden = [text(w, n, revised) for w in range(workers) for n in range(records)
+                 for revised in (False, True) if not revised or not n % 2]
+    recovery = raw["recovery"]
+    status = recovery["native_status"]["exit"]
+    if type(status) is not int or status != 0:
+        return False
+    for label, source, digest_name in (("queries", wanted, "expected_sha256"),
+                                        ("negative_queries", forbidden, "forbidden_sha256")):
+        selected = source[::max(1, len(source)//20)][:20]
+        expected = {(content.split(",", 1)[0].removeprefix("For key "),
+                     hashlib.sha256(content.encode()).hexdigest()) for content in selected}
+        rows = recovery[label]
+        if not isinstance(rows, list) or len(rows) != len(expected):
+            return False
+        observed = set()
+        for row in rows:
+            observed.add((row["key"], row[digest_name]))
+            response = row["response"]
+            if (not isinstance(response, dict) or response.get("error")
+                    or response.get("success") is False or number(row["chars"]) > 2000):
+                return False
+            if label == "queries" and row.get("hit") is not True:
+                return False
+            if label != "queries" and row.get("stale") is not False:
+                return False
+        if observed != expected:
+            return False
+    return True
+
+
+def complete_coverage(raw):
+    """Validate successful stress coverage, independently of its passed flag."""
+    try:
+        lane = raw["lane"]
+        workers = raw["workers"]
+        planned = count(raw["planned_callbacks"])
+        successful = count(raw["successful_callbacks"])
+        number(raw["elapsed_seconds"])
+        if not isinstance(workers, list) or any(not isinstance(w, dict) for w in workers):
+            return False
+
+        if lane == "load":
+            args = raw["arguments"]
+            nw, nr = count(args["workers"]), count(args["records"])
+            if not nw or not nr or len(workers) != nw:
+                return False
+            operations = [
+                (phase, record)
+                for phase in ("add", "replace", "remove")
+                for record in range(nr)
+                if phase != "remove" or record % 2 == 0
+            ]
+            if planned != successful or planned != nw * len(operations):
+                return False
+            by_id = {worker["worker"]: worker for worker in workers
+                     if type(worker.get("worker")) is int}
+            if set(by_id) != set(range(nw)):
+                return False
+            for ordinal in range(nw):
+                worker = by_id[ordinal]
+                observed = worker["samples"]
+                if (not isinstance(observed, list) or any(
+                        not isinstance(s, dict) or type(s.get("record")) is not int
+                        for s in observed)):
+                    return False
+                if count(worker["planned_callbacks"]) != len(operations):
+                    return False
+                if count(worker["successful_callbacks"]) != len(observed):
+                    return False
+                if [(s["phase"], s["record"]) for s in observed] != operations:
+                    return False
+                if any(s.get("accepted") is not True for s in observed):
+                    return False
+                for sample in observed:
+                    number(sample["seconds"])
+            recovery = raw["recovery"]
+            if recovery.get("inbox_empty") is not True:
+                return False
+            expected = nw * (nr // 2)
+            if count(recovery["mirror_records"]) != expected:
+                return False
+            if count(recovery["expected_mirror_records"]) != expected:
+                return False
+            if raw["mode"] == "native":
+                if not complete_native_queries(raw, nw, nr):
+                    return False
+            return True
+
+        return False
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def error_counts(report):
     counts = Counter()
     for section in [report, *report.get("workers", []), report.get("recovery", {})]:
@@ -163,7 +267,8 @@ def summarize(report, index):
                          for section in [*report.get("workers", []), report.get("recovery", {}),
                                          *report.get("iterations", [])])
     row["passed"] = (report.get("passed", report.get("pass")) is True and not errors
-                     and not nested_failure and (planned is None or successful == planned))
+                     and not nested_failure and (planned is None or successful == planned)
+                     and (report.get("lane") == "long_lived_soak" or complete_coverage(report)))
     row["callback_seconds"] = stats([s["seconds"] for s in samples(report)])
     row["callback_by_phase"] = phase_stats(samples(report))
     row["callback_by_worker"] = [
@@ -305,6 +410,8 @@ def adapt_report(raw):
             and {"planned_callbacks", "successful_callbacks", "elapsed_seconds", "workers"} <= raw.keys()
             and isinstance(raw["workers"], list)
             and all(isinstance(w, dict) and isinstance(w.get("samples"), list) for w in raw["workers"]))
+    if not soak and raw.get("passed", raw.get("pass")) is True:
+        supported = supported and complete_coverage(raw)
     if not supported:
         if raw.get("passed", raw.get("pass")) is True:
             raise ValueError("unsupported or incomplete receipt schema")

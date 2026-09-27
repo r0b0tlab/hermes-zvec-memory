@@ -18,11 +18,19 @@ def tool():
 
 
 def report(values, passed=True):
-    return {"lane": "load", "mode": "offline", "passed": passed,
-            "arguments": {"workers": 1, "records": 2, "seed_facts": 0, "timeout": 30},
-            "planned_callbacks": len(values), "successful_callbacks": len(values),
-            "elapsed_seconds": 2, "workers": [{"samples": [
-                {"phase": "add", "seconds": v} for v in values]}]}
+    # One record: add, replace, remove. Failed attempts may be partial.
+    if passed and values:
+        values = (values * 3)[:3]
+    steps = ("add", "replace", "remove")
+    return {"lane": "load", "mode": "offline", "passed": passed and bool(values),
+            "arguments": {"workers": 1, "records": 1, "seed_facts": 0, "timeout": 30},
+            "planned_callbacks": 3, "successful_callbacks": len(values),
+            "elapsed_seconds": 2, "workers": [{"worker": 0,
+                "planned_callbacks": 3, "successful_callbacks": len(values),
+                "samples": [{"phase": steps[i], "record": 0, "accepted": True, "seconds": v}
+                            for i, v in enumerate(values)]}],
+            "recovery": {"inbox_empty": True, "mirror_records": 0,
+                         "expected_mirror_records": 0, "errors": []}}
 
 
 def soak_report():
@@ -192,7 +200,7 @@ def test_sanitization_is_typed_allowlist_and_errors_are_counts():
     raw.update(run=secret, python=secret, plugin_sha=secret, host_sha="a" * 40,
                mode=secret, errors=[secret, {"category": "timeout", "message": secret}],
                artifact_bytes=20, peak_single_reaped_child_rss_kib=120,
-               callback_latency_seconds={"p99": 9999}, passed=True)
+               callback_latency_seconds={"p99": 9999}, passed=False)
     raw["workers"][0].update(control={"path": secret, "content": secret}, errors=[secret])
     raw["workers"][0]["samples"].append({"phase": secret, "seconds": .3, "text": secret})
     raw["recovery"] = {"queries": [{"key": secret, "hit": True, "seconds": .5, "chars": 42}],
@@ -210,7 +218,7 @@ def test_sanitization_is_typed_allowlist_and_errors_are_counts():
     assert row["query_hit_rate"] == 1
     assert row["query_chars"]["max"] == 42
     assert row["callback_by_phase"]["other"]["count"] == 1
-    assert row["callback_by_worker"][0]["callback_seconds"]["count"] == 2
+    assert row["callback_by_worker"][0]["callback_seconds"]["count"] == 4
     assert result["convergence_seconds"]["mean"] == 2
     assert result["artifact_bytes"] == 20
     assert result["peak_single_reaped_child_rss_kib"] == 120
@@ -219,6 +227,8 @@ def test_sanitization_is_typed_allowlist_and_errors_are_counts():
 @pytest.mark.parametrize("value", [True, -1, float("nan"), float("inf"), "0.1"])
 def test_invalid_numeric_samples_are_rejected_not_silently_dropped(value):
     with pytest.raises(ValueError, match="invalid numeric metric"):
+        tool().stats([value])
+    with pytest.raises(ValueError):
         tool().aggregate([report([value])])
 
 
@@ -289,6 +299,7 @@ def test_comparisons_require_matched_conditions_and_pool_retries():
     match = result["comparisons"][0]
     assert match["baseline_attempts"] == 2 and match["baseline_failed_attempts"] == 1
     assert match["callback_mean_delta_seconds"] == -1.5
+    fixed["passed"] = False  # mismatched/incomplete lane is an explicit failure
     fixed["arguments"]["workers"] = 2
     assert tool().aggregate([baseline, fixed], tags=[tags[0], tags[2]])["comparisons"] == []
     fixed["arguments"]["workers"] = 1
@@ -365,13 +376,13 @@ def test_export_refuses_existing_directory_and_sanitizes_failure(tmp_path, capsy
 
 def test_pooled_queries_phases_missing_metrics_and_versions():
     first, second = report([1]), report([3, 3, 3])
-    first["recovery"] = {"queries": [{"seconds": 1, "hit": True, "chars": 50}]}
-    second["recovery"] = {"queries": [{"seconds": 3, "hit": False, "chars": 10}] * 3}
+    first["recovery"].update(queries=[{"seconds": 1, "hit": True, "chars": 50}])
+    second["recovery"].update(queries=[{"seconds": 3, "hit": False, "chars": 10}] * 3)
     first["python"] = "3.11.16 (main, private-host)"
     data = tool().aggregate([first, second, {"passed": False}])
     assert data["query_seconds"]["mean"] == 2.5
     assert data["query_hit_rate"] == .25
-    assert data["callback_by_phase"]["add"]["mean"] == 2.5
+    assert data["callback_by_phase"]["add"]["mean"] == 2.0
     assert data["runs"][0]["python_version"] == "3.11.16"
     assert data["callbacks_per_second_including_recovery"] is None
     assert data["metric_reporting_attempts"]["successful_callbacks"] == 2
@@ -405,5 +416,81 @@ def test_zero_error_counts_are_not_failures_and_nested_failures_survive():
 def test_counts_cannot_be_fractional(key):
     raw = report([1])
     raw[key] = .5
-    with pytest.raises(ValueError, match="integer"):
+    with pytest.raises(ValueError):
         tool().aggregate([raw])
+
+
+@pytest.mark.parametrize("damage", [
+    "no_workers", "no_samples", "missing_sample", "duplicate_sample", "reordered_sample",
+    "unaccepted", "worker_count", "worker_id", "boolean_count", "no_recovery",
+    "pending_inbox", "wrong_mirror", "native_no_queries", "native_empty_negatives",
+])
+def test_success_requires_complete_observed_load_coverage(damage):
+    raw = report([.1, .2, .3])
+    worker = raw["workers"][0]
+    if damage == "no_workers": raw["workers"] = []
+    elif damage == "no_samples": worker["samples"] = []
+    elif damage == "missing_sample": worker["samples"].pop()
+    elif damage == "duplicate_sample": worker["samples"][1] = dict(worker["samples"][0])
+    elif damage == "reordered_sample": worker["samples"].reverse()
+    elif damage == "unaccepted": worker["samples"][0]["accepted"] = False
+    elif damage == "worker_count": worker["successful_callbacks"] = 2
+    elif damage == "worker_id": worker["worker"] = True
+    elif damage == "boolean_count": raw["arguments"]["workers"] = True
+    elif damage == "no_recovery": raw.pop("recovery")
+    elif damage == "pending_inbox": raw["recovery"]["inbox_empty"] = False
+    elif damage == "wrong_mirror": raw["recovery"]["mirror_records"] = 1
+    else:
+        raw["mode"] = "native"
+        raw["recovery"].update(native_status={"exit": 0}, queries=[], negative_queries=[])
+        if damage == "native_empty_negatives":
+            raw["recovery"]["queries"] = [{"hit": True, "chars": 1}]
+    if damage == "boolean_count":
+        with pytest.raises(ValueError):
+            tool().summarize(raw, 1)
+    else:
+        assert tool().summarize(raw, 1)["passed"] is False
+    with pytest.raises(ValueError, match="incomplete receipt"):
+        tool().aggregate([raw])
+
+
+def test_partial_failed_coverage_remains_an_attempt():
+    raw = report([.1], passed=False)
+    result = tool().aggregate([raw])
+    assert result["attempts"] == result["failed_attempts"] == 1
+    assert result["successful_callbacks"] == 1
+    assert result["unfulfilled_callbacks"] == 2
+
+
+def complete_native_report():
+    import hashlib
+    raw = report([.1, .2, .3])
+    raw.update(mode="native", run="/private/stress-fixture")
+    control = "Explicit control fact for worker 0 in stress-fixture."
+    token = hashlib.sha256(b"stress-fixture:0:0").hexdigest()[:20]
+    def digest(text): return hashlib.sha256(text.encode()).hexdigest()
+    raw["recovery"].update(native_status={"exit": 0}, queries=[{
+        "key": control, "hit": True, "chars": 0, "seconds": .1,
+        "expected_sha256": digest(control), "response": {"results": ""}}],
+        negative_queries=[{"key": "stress"+token, "stale": False, "chars": 0,
+                           "seconds": .1, "response": {"results": ""},
+                           "forbidden_sha256": digest(f"For key stress{token}, the {adjective} answer is payload{token}.")}
+                          for adjective in ("obsolete", "verified")])
+    return raw
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "duplicate", "wrong_key", "no_negative", "overflow", "native_error"])
+def test_native_coverage_requires_exact_selected_oracles(damage):
+    raw = complete_native_report()
+    negatives = raw["recovery"]["negative_queries"]
+    if damage == "missing": negatives.pop()
+    elif damage == "duplicate": negatives[1] = dict(negatives[0])
+    elif damage == "wrong_key": negatives[0]["key"] = "not-the-expected-key"
+    elif damage == "no_negative": negatives.clear()
+    elif damage == "overflow": negatives[0]["chars"] = 2001
+    elif damage == "native_error": negatives[0]["response"]["error"] = "failed"
+    if damage is None:
+        assert tool().aggregate([raw])["passed"] is True
+    else:
+        assert tool().summarize(raw, 1)["passed"] is False
+        with pytest.raises(ValueError): tool().aggregate([raw])

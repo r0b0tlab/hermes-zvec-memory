@@ -288,6 +288,7 @@ def native_queries(obj, wanted, result, forbidden=()):
         body = hit_body(text)
         hit = bool(re.match(r"(?:matchedBy=fts )?facts/[^\n]+:\d+", body)) and content in body
         result["queries"].append({"key": key, "hit": hit, "chars": len(text),
+                                  "expected_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                   "seconds": time.perf_counter()-start, "response": out})
         if out.get("error") or not hit or len(text) > 2000:
             result["errors"].append(f"native query failed: {key}")
@@ -302,6 +303,8 @@ def native_queries(obj, wanted, result, forbidden=()):
         text = out.get("results", "")
         stale = content in hit_body(text)
         result["negative_queries"].append({"key": key, "stale": stale, "response": out,
+                                           "chars": len(text),
+                                           "forbidden_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                            "seconds": time.perf_counter()-start})
         if stale or out.get("error") or len(text) > 2000:
             result["errors"].append(f"stale/failed negative native query: {key}")

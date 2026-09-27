@@ -846,3 +846,19 @@ def test_exact_oracle():
     assert s.validate_state(good | {"refresh_required": True}, wanted[:1])
     assert s.hit_body("query groups (1):\nQ1: answer\nhits: 0\n") == ""
     assert s.hit_body("query\n#1 facts/a.md:7\nanswer") == "facts/a.md:7\nanswer"
+
+
+def test_native_query_receipts_bind_each_oracle():
+    import hashlib
+    s = module()
+    wanted = s.expected("fixture", 1, 2)
+    forbidden = [s.fact("fixture", 0, 0, revised) for revised in (False, True)]
+    class Reader:
+        def handle_tool_call(self, name, args):
+            return json.dumps({"results": "#1 facts/a.md:1\n" + wanted[0]})
+    result = {"errors": [], "queries": []}
+    s.native_queries(Reader(), wanted, result, forbidden)
+    assert result["queries"][0]["expected_sha256"] == hashlib.sha256(wanted[0].encode()).hexdigest()
+    assert [q["forbidden_sha256"] for q in result["negative_queries"]] == [
+        hashlib.sha256(text.encode()).hexdigest() for text in forbidden]
+    assert all(q["chars"] == len(q["response"]["results"]) for q in result["negative_queries"])
