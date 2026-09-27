@@ -21,6 +21,9 @@ import tempfile
 import time
 import traceback
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import host_provenance
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/stress-runs"
 ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
@@ -703,8 +706,11 @@ def main(argv=None):
             report["zg_version"] = package["version"]
             if report["zg_version"] != "0.2.2":
                 raise RuntimeError("reviewed native engine version must be 0.2.2")
-        for key, repo in (("plugin_sha", ROOT), ("host_sha", HOST)):
-            report[key] = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=5).strip()
+        report["host_provenance"] = host_provenance(HOST)
+        if "git_sha" in report["host_provenance"]:
+            report["host_sha"] = report["host_provenance"]["git_sha"]
+        report["plugin_sha"] = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, timeout=5).strip()
         if args.lane == "load":
             load_campaign(run, args, report)
         else:
