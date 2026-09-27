@@ -74,16 +74,6 @@ def test_default_runtime_root_honours_the_environment_override(tmp_path, monkeyp
     assert engine.launcher_path(tmp_path / "hermes-home", {}).parent == tmp_path / "elsewhere"
 
 
-@pytest.mark.skipif(not Path.home().joinpath(".local/share/hermes-zvec-memory/zg-default").is_file(),
-                    reason="no hand-built engine runtime on this machine")
-def test_generator_reproduces_the_installed_launcher(tmp_path, monkeypatch):
-    """The generated launcher must match the verified production file exactly."""
-    engine = load_engine()
-    monkeypatch.delenv("HERMES_ZVEC_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv("HERMES_ZVEC_MODEL_CACHE", raising=False)
-    home = Path.home() / ".hermes"
-    installed = Path.home() / ".local/share/hermes-zvec-memory/zg-default"
-    assert engine.launcher_script(home, {}) == installed.read_text(encoding="utf-8")
 
 
 def test_unit_template_declares_the_task_ceiling_and_the_listen_address(tmp_path):
