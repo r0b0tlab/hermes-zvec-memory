@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 import shutil
 import sys
 
@@ -40,7 +41,7 @@ def test_native_two_processes_preserve_mirror_ownership(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("ZVEC_GREP_MODE", "direct")
     monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", os.environ["ZVEC_TEST_MODEL_CACHE"])
-    shutil.copytree(ROOT / "zvec-memory", home / "plugins/zvec-memory")
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", home / "plugins/zvec-memory")
     vault = home / "zvec-memory"
     vault.mkdir()
     (vault / "config.json").write_text(json.dumps({
@@ -91,7 +92,7 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
     monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", os.environ["ZVEC_TEST_MODEL_CACHE"])
     for key in ("ZVEC_GREP_API_KEY", "ZVEC_GREP_ENDPOINT", "ZVEC_GREP_HOME"):
         monkeypatch.delenv(key, raising=False)
-    shutil.copytree(ROOT / "zvec-memory", home / "plugins/zvec-memory")
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", home / "plugins/zvec-memory")
     vault = home / "zvec-memory"
     vault.mkdir()
     config = {"zg_bin": os.environ["ZVEC_TEST_BIN"], "reindex_min_seconds": 0,

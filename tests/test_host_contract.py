@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 import shutil
 import socket
 import subprocess
@@ -57,7 +58,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     destination = home / "plugins" / "zvec-memory"
-    shutil.copytree(REPO_ROOT / "zvec-memory", destination,
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", destination,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     discovery = importlib.import_module("plugins.memory")
     base = importlib.import_module("agent.memory_provider")

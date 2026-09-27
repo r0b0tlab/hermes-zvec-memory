@@ -201,3 +201,33 @@ def test_coordinator_records_and_forwards_selected_product(tmp_path, monkeypatch
     assert record["harness_identity"] == m.harness_identity(ROOT)
     assert record["host_provenance"]["kind"] == "installed_snapshot"
     assert "plugin_sha" not in record, "a non-Git product must not borrow the instrument's Git revision"
+
+
+def test_regression_loaders_and_native_copies_use_selected_product(tmp_path):
+    import os
+    import shutil
+    import sys
+    frozen = tmp_path/"frozen"
+    shutil.copytree(ROOT/"zvec-memory", frozen/"zvec-memory")
+    code = r"""import pathlib,sys,pytest
+root,source,work=map(pathlib.Path,sys.argv[1:])
+sys.path.insert(0,str(root/'tests'))
+import test_provider as p,test_engine as e,test_cli as c,test_hostio_equivalence as h,test_provider_native as n
+for module in (p._mod,e.load_engine(),c.load_cli(),h.hostio):
+ assert pathlib.Path(module.__file__).resolve().is_relative_to(source), module.__file__
+class Captured(Exception): pass
+def copy(src,dst,*a,**k):
+ assert pathlib.Path(src).resolve()==source/'zvec-memory', str(src)
+ raise Captured()
+for i,fn in enumerate((n.test_native_two_processes_preserve_mirror_ownership,n.test_real_host_provider_native_lifecycle)):
+ home=work/str(i);home.mkdir(parents=True)
+ with pytest.MonkeyPatch.context() as patch:
+  patch.setattr(n.shutil,'copytree',copy)
+  try: fn(home,patch)
+  except Captured: pass
+  else: raise AssertionError('copy boundary not exercised')
+"""
+    env = dict(os.environ, ZVEC_TEST_PROVIDER_ROOT=str(frozen))
+    result = subprocess.run([sys.executable,"-I","-B","-c",code,str(ROOT),str(frozen),str(tmp_path/"work")],
+                            env=env,capture_output=True,text=True,timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr

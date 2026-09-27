@@ -4,11 +4,12 @@ import json
 import os
 import sys
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "zvec-memory"
+PLUGIN = PROVIDER_ROOT / "zvec-memory"
 HOST = Path(os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent")))
 sys.path.insert(0, str(HOST))
 

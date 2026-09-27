@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 
 import pytest
 
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_cli():
-    spec = importlib.util.spec_from_file_location("zvec_cli", ROOT / "zvec-memory/cli.py")
+    spec = importlib.util.spec_from_file_location("zvec_cli", PROVIDER_ROOT / "zvec-memory/cli.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["zvec_cli"] = module
@@ -77,7 +78,7 @@ def test_cli_imports_neither_the_provider_nor_host_runtime_modules():
         "            raise RuntimeError('forbidden import: ' + name)\n"
         "        return None\n"
         "sys.meta_path.insert(0, Guard())\n"
-        f"spec = importlib.util.spec_from_file_location('zvec_cli', {str(ROOT / 'zvec-memory/cli.py')!r})\n"
+        f"spec = importlib.util.spec_from_file_location('zvec_cli', {str(PROVIDER_ROOT / 'zvec-memory/cli.py')!r})\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "sys.modules['zvec_cli'] = module\n"
         "spec.loader.exec_module(module)\n"
@@ -162,9 +163,9 @@ def test_unit_name_matches_the_engine_constant():
     import types
     cli = load_cli()
     package = types.ModuleType("zvec_engine_probe")
-    package.__path__ = [str(ROOT / "zvec-memory")]
+    package.__path__ = [str(PROVIDER_ROOT / "zvec-memory")]
     sys.modules["zvec_engine_probe"] = package
-    spec = importlib.util.spec_from_file_location("zvec_engine_probe.engine", ROOT / "zvec-memory/engine.py")
+    spec = importlib.util.spec_from_file_location("zvec_engine_probe.engine", PROVIDER_ROOT / "zvec-memory/engine.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

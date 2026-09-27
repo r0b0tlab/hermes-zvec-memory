@@ -13,13 +13,14 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
-PROVIDER_SRC = REPO_ROOT / "zvec-memory" / "__init__.py"
+PROVIDER_SRC = PROVIDER_ROOT / "zvec-memory" / "__init__.py"
 
 sys.path.insert(0, str(HERMES_AGENT_DIR))
 
