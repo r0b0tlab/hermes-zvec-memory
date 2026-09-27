@@ -416,7 +416,7 @@ def test_unit_state_queries_pending_job_evidence(monkeypatch):
     assert campaign.unit_state("fixture.service")["Job"] == "0"
 
 
-@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard", "product_identity", "harness_identity", "host_provenance", "baseline_revision", "baseline_bytes"])
+@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard", "product_identity", "harness_identity", "host_provenance", "baseline_revision", "baseline_bytes", "stale_attempt", "missing_attempt", "wrong_path", "wrong_lane", "wrong_mode", "wrong_iterations", "wrong_timeout", "extra_argument"])
 def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault):
     """Synthetic kernel/workload files test the real controller, not capacity."""
     source = tmp_path / "source"
@@ -440,13 +440,30 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
     monkeypatch.setattr(campaign, "unchanged", unchanged)
     monkeypatch.setattr(campaign, "unit_state", lambda unit: dict(state))
     monkeypatch.setattr(campaign, "output", lambda command: "/fixture" if command[0] == "systemctl" else "a"*40)
-    report_path = source / ".test-tools/stress-runs/stress-fixture/report.json"
+    from types import SimpleNamespace
+    monkeypatch.setattr(campaign.uuid, "uuid4", lambda: SimpleNamespace(hex="a"*32))
+    attempt_id = "hermes-zvec-stress-" + "a"*32
+    report_path = source / ".test-tools/stress-runs" / ("stress-" + attempt_id) / "report.json"
+    if fault == "wrong_path": report_path = report_path.parent.with_name("stress-stale") / "report.json"
     report_path.parent.mkdir(parents=True)
     raw = {"schema_version":1, "lane":"regression", "mode":"offline", "passed":True,
            "arguments":{"iterations":1}, "planned_iterations":1, "completed_iterations":1,
            "planned_callbacks":0,"successful_callbacks":0,"elapsed_seconds":1,"workers":[],
            "iterations":[{"number":0,"exit":0,"tests":3,"skipped":0,"failures":0,"errors":0,
                           "diagnostic_errors":[],"elapsed_seconds":.5}]}
+    raw["attempt_id"] = attempt_id
+    raw["run"] = str(report_path.parent)
+    raw["arguments"].update(lane="regression", mode="offline", shutdown_policy="immediate",
+                            workers=1, records=20, seed_facts=0, timeout=180, campaign_timeout=1800,
+                            recovery_timeout=120, worker=None, recover=False, run=None,
+                            provider_source=str(source), corpus_seed="zvec-controlled-corpus-v1")
+    if fault == "stale_attempt": raw["attempt_id"] = "hermes-zvec-stress-" + "b"*32
+    if fault == "missing_attempt": raw.pop("attempt_id")
+    if fault == "wrong_lane": raw["lane"] = "native-regression"
+    if fault == "wrong_mode": raw["mode"] = "native"
+    if fault == "wrong_iterations": raw["arguments"]["iterations"] = 2
+    if fault == "wrong_timeout": raw["arguments"]["timeout"] = 120
+    if fault == "extra_argument": raw["arguments"]["unplanned"] = True
     identities = {"product_identity":product_identity(source), "harness_identity":harness_identity(source),
                   "host_provenance":host_provenance(Path(campaign.os.environ["HERMES_AGENT_DIR"]))}
     raw.update(json.loads(json.dumps(identities)))
@@ -916,6 +933,7 @@ def test_controller_forwards_explicit_provider_selection(tmp_path, monkeypatch):
     unit = "hermes-zvec-stress-"+"a"*32+".service"
     command, _ = campaign.build_command(case,unit,256)
     assert "ZVEC_TEST_PROVIDER_ROOT="+str(frozen) in command
+    assert "ZVEC_CAMPAIGN_ATTEMPT_ID="+unit[:-8] in command
     (root/"production-before.json").write_text("{}")
     seen = []
     def execute(case, variant, tasks):
@@ -926,3 +944,26 @@ def test_controller_forwards_explicit_provider_selection(tmp_path, monkeypatch):
     label = next(iter(campaign.load_cases()))
     assert campaign.main(["--case",label,"--provider-source",str(frozen),"--output-dir",str(root)]) == 1
     assert seen == [label]
+
+
+@pytest.mark.parametrize("fault", [None,"attempt","path","lane","transport","duration","extra"])
+def test_soak_report_binding_uses_requested_workload(tmp_path, monkeypatch, fault):
+    from test_harness_support import fixture_product
+    root=fixture_product(tmp_path/"source")
+    monkeypatch.setattr(campaign,"ROOT",root)
+    attempt="hermes-zvec-stress-"+"a"*32
+    path=root/".test-tools/soak-runs"/("soak-"+attempt)/"report.json"
+    case={"script":"soak_memory.py","args":["--duration","60","--engine-restart-at","30"]}
+    raw={"attempt_id":attempt,"run":str(path.parent),"lane":"long_lived_soak","transport":"native_server_only",
+         "arguments":{"duration":60.0,"seed_facts":200,"sample_interval":10.0,"convergence_timeout":120.0,
+                      "engine_restart_at":30.0,"runtime_manifest":None,"provider_source":str(root)}}
+    if fault == "attempt":raw["attempt_id"]="hermes-zvec-stress-"+"b"*32
+    if fault == "path":path=path.parent.with_name("soak-stale")/"report.json"
+    if fault == "lane":raw["lane"]="regression"
+    if fault == "transport":raw["transport"]="direct"
+    if fault == "duration":raw["arguments"]["duration"]=1
+    if fault == "extra":raw["arguments"]["unplanned"]=True
+    if fault is None:
+        campaign.validate_workload_binding(case,{"attempt_id":attempt},path,raw)
+    else:
+        with pytest.raises(ValueError):campaign.validate_workload_binding(case,{"attempt_id":attempt},path,raw)

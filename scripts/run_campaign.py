@@ -224,7 +224,8 @@ def cleanup_unit(unit, capture):
 def workload_environment(unit, selected_source=None):
     root = HERE / (unit.removesuffix(".service") + ".work")
     home = root / "home"
-    return {"PATH":"/usr/bin:/bin", "HOME":str(home), "HERMES_HOME":str(home / "hermes"),
+    return {"ZVEC_CAMPAIGN_ATTEMPT_ID":unit.removesuffix(".service"),
+            "PATH":"/usr/bin:/bin", "HOME":str(home), "HERMES_HOME":str(home / "hermes"),
             "HERMES_AGENT_DIR":os.environ.get("HERMES_AGENT_DIR", str(Path.home()/".hermes/hermes-agent")),
             "XDG_CONFIG_HOME":str(home / "config"), "XDG_DATA_HOME":str(home / "data"),
             "XDG_CACHE_HOME":str(home / "cache"), "XDG_STATE_HOME":str(home / "state"),
@@ -465,6 +466,36 @@ def execute(case, variant, tasks):
         return receipt["passed"]
 
 
+def validate_workload_binding(case, receipt, path, raw):
+    """Bind evidence to the owned attempt and the same parser as its producer."""
+    if case["script"] == "stress_memory.py":
+        import stress_memory as workload
+        prefix = "stress"
+    else:
+        import soak_memory as workload
+        prefix = "soak"
+    expected_path = ROOT / ".test-tools" / (prefix + "-runs") / (prefix + "-" + receipt["attempt_id"]) / "report.json"
+    if path != expected_path.absolute() or path.resolve() != expected_path.absolute():
+        raise ValueError("workload report is not owned by this attempt")
+    if raw.get("attempt_id") != receipt["attempt_id"] or raw.get("run") != str(path.parent):
+        raise ValueError("workload attempt identity mismatch")
+    parser = workload.argument_parser()
+    parser.set_defaults(provider_source=str(provider_source(ROOT, case.get("provider_source"))))
+    expected = vars(parser.parse_args(case["args"]))
+    if prefix == "stress":
+        if expected["lane"] == "native-regression": expected["mode"] = "native"
+        expected["corpus_seed"] = workload.CORPUS_SEED
+        if raw.get("lane") != expected["lane"] or raw.get("mode") != expected["mode"]:
+            raise ValueError("workload lane or mode mismatch")
+    else:
+        expected.pop("worker_run")
+        if raw.get("lane") != "long_lived_soak" or raw.get("transport") != "native_server_only":
+            raise ValueError("workload lane or transport mismatch")
+    expected = {key: str(value) if isinstance(value, Path) else value for key, value in expected.items()}
+    if raw.get("arguments") != expected:
+        raise ValueError("reported workload differs from requested arguments")
+
+
 def execute_body(case, variant, tasks, receipt):
     receipt["launch_started"] = False
     receipt["cleanup_verified"] = True  # no process exists until launch admission
@@ -563,6 +594,7 @@ def execute_body(case, variant, tasks, receipt):
     receipt["report"] = str(path)
     from report_stress import adapt_report, summarize
     raw = json.loads(path.read_text())
+    validate_workload_binding(case, receipt, path, raw)
     valid = summarize(adapt_report(raw), 1)
     for key in ("product_identity", "harness_identity", "host_provenance"):
         if valid.get(key, {}).get("content_sha256") != receipt[key]["content_sha256"]:

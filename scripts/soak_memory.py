@@ -47,7 +47,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from harness_support import new_workload_run, provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
 from retrieval_evidence import capture_sources, cited_lines, response_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -782,7 +782,7 @@ def supervise(run, command, env, budget, interval):
     return report
 
 
-def main(argv=None):
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, default=60, help="active seconds, 1..1800 (default 60)")
     parser.add_argument("--seed-facts", type=int, default=200, help="fixed synthetic corpus, 0..1000")
@@ -793,6 +793,11 @@ def main(argv=None):
                         help="prepared private runtime manifest; default raw test package")
     parser.add_argument("--worker-run", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
+    return parser
+
+
+def main(argv=None):
+    parser = argument_parser()
     args = parser.parse_args(argv)
     if not (1 <= args.duration <= 1800 and 0 <= args.seed_facts <= 1000
             and .1 <= args.sample_interval <= 30 and 1 <= args.convergence_timeout <= 120
@@ -808,10 +813,9 @@ def main(argv=None):
         except (OSError, ValueError, TypeError):
             parser.error("refusing non-owned worker environment")
         return worker(run, args, env)
-    RUNS.mkdir(parents=True, exist_ok=True)
-    run = Path(tempfile.mkdtemp(prefix="soak-", dir=RUNS)).resolve()
+    run, attempt_id = new_workload_run(RUNS, "soak")
     run.chmod(0o700)
-    report = {"schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
+    report = {"attempt_id": attempt_id, "run":str(run), "schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
               "passed": False, "errors": [], "runtime": runtime_metadata}
     try:
         if not Path(runtime[0]).is_file() or not (HOST / "agent/memory_provider.py").is_file():

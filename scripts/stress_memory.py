@@ -22,7 +22,7 @@ import time
 import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from harness_support import new_workload_run, provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
 from retrieval_evidence import capture_sources, cited_lines, response_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -761,7 +761,7 @@ def interrupted(signum, frame):
     raise RuntimeError(reason)
 
 
-def main(argv=None):
+def argument_parser():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--lane", choices=["regression", "native-regression", "load"], default="regression")
     ap.add_argument("--mode", choices=["offline", "native"], default="offline")
@@ -778,6 +778,11 @@ def main(argv=None):
     ap.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--run", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
+    return ap
+
+
+def main(argv=None):
+    ap = argument_parser()
     args = ap.parse_args(argv)
     if not (1 <= args.workers <= 8 and 1 <= args.records <= 1000 and 0 <= args.seed_facts <= 10000
             and 1 <= args.iterations <= 500 and 1 <= args.timeout <= 1800
@@ -808,11 +813,10 @@ def main(argv=None):
         ap.error("regression is offline; choose native-regression for native evidence")
     if args.lane == "native-regression":
         args.mode = "native"
-    RUNS.mkdir(parents=True, exist_ok=True)
-    run = Path(tempfile.mkdtemp(prefix="stress-", dir=RUNS))
+    run, attempt_id = new_workload_run(RUNS, "stress")
     prepare_home(run)
     write_json(run / "OWNER.json", {"kind": "zvec-stress", "repo": str(ROOT)})
-    report = {"lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
+    report = {"attempt_id": attempt_id, "lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
               "shutdown_policy": args.shutdown_policy,
               "arguments": {**vars(args), "corpus_seed": CORPUS_SEED}, "python": sys.version,
               "evidence": "offline engine mock; NOT native evidence" if args.mode == "offline" else "native direct engine"}

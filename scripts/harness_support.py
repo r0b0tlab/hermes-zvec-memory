@@ -143,3 +143,22 @@ def stop_direct(child, timeout=2):
             "direct-child cleanup incomplete: "
             + ",".join(type(exc).__name__ for exc in errors)
         )
+
+
+def new_workload_run(runs, prefix):
+    """Create one exclusive output directory, optionally bound to a controller."""
+    import os
+    import tempfile
+    attempt = os.environ.get("ZVEC_CAMPAIGN_ATTEMPT_ID")
+    if attempt is not None and not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}", attempt):
+        raise ValueError("invalid campaign attempt identity")
+    runs = Path(runs)
+    runs.mkdir(parents=True, exist_ok=True)
+    if runs.is_symlink() or runs.absolute() != runs.resolve():
+        raise ValueError("aliased workload output root")
+    if attempt is None:
+        run = Path(tempfile.mkdtemp(prefix=prefix + "-", dir=runs))
+    else:
+        run = runs / (prefix + "-" + attempt)
+        run.mkdir(mode=0o700)  # refusal on reuse, even an apparently empty directory
+    return run, attempt

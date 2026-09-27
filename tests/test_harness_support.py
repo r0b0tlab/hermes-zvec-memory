@@ -157,6 +157,8 @@ def test_coordinator_records_and_forwards_selected_product(tmp_path, monkeypatch
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     monkeypatch.setattr(m, "HERMES_AGENT_DIR" if script == "measure_recall" else "HOST", host)
     calls = []
+    attempt_id = "hermes-zvec-stress-" + "a"*32
+    if script != "measure_recall": monkeypatch.setenv("ZVEC_CAMPAIGN_ATTEMPT_ID", attempt_id)
     if script == "stress_memory":
         monkeypatch.setattr(m,"RUNS",tmp_path/"runs")
         def load(run, args, report):
@@ -196,6 +198,9 @@ def test_coordinator_records_and_forwards_selected_product(tmp_path, monkeypatch
         output = tmp_path/"benchmark.json"
         assert m.main(["--output",str(output),"--provider-source",str(frozen)]) == 1
         record = json.loads(output.read_text())["provenance"]
+    if script != "measure_recall":
+        assert record["attempt_id"] == attempt_id
+        assert Path(record["run"]).name == script.split("_")[0] + "-" + attempt_id
     assert calls == ["work"]
     assert record["product_identity"] == m.product_identity(frozen)
     assert record["harness_identity"] == m.harness_identity(ROOT)
@@ -231,3 +236,26 @@ for i,fn in enumerate((n.test_native_two_processes_preserve_mirror_ownership,n.t
     result = subprocess.run([sys.executable,"-I","-B","-c",code,str(ROOT),str(frozen),str(tmp_path/"work")],
                             env=env,capture_output=True,text=True,timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("attempt", ["../escape", "", "hermes-zvec-stress-"+"A"*32])
+def test_controlled_run_rejects_invalid_attempt_before_write(tmp_path, monkeypatch, attempt):
+    from harness_support import new_workload_run
+    monkeypatch.setenv("ZVEC_CAMPAIGN_ATTEMPT_ID", attempt)
+    runs = tmp_path / "runs"
+    with pytest.raises(ValueError): new_workload_run(runs, "stress")
+    assert not runs.exists()
+
+
+def test_controlled_run_cannot_reuse_or_alias_output(tmp_path, monkeypatch):
+    from harness_support import new_workload_run
+    attempt = "hermes-zvec-stress-"+"a"*32
+    monkeypatch.setenv("ZVEC_CAMPAIGN_ATTEMPT_ID", attempt)
+    runs=tmp_path/"runs"
+    run, identity = new_workload_run(runs, "stress")
+    assert identity == attempt and run == runs/("stress-"+attempt)
+    (run/"report.json").write_text("prior evidence")
+    with pytest.raises(FileExistsError): new_workload_run(runs,"stress")
+    assert (run/"report.json").read_text() == "prior evidence"
+    alias=tmp_path/"alias";alias.symlink_to(runs,target_is_directory=True)
+    with pytest.raises(ValueError):new_workload_run(alias,"stress")
