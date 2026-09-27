@@ -23,6 +23,7 @@ stdout prints the same record followed by PASS/FAIL. Exit status is 0/1.
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -110,10 +111,48 @@ def pct(xs, q):
 
 
 def result_evidence(body):
-    """Exclude zg's echoed input from recall-quality evidence."""
-    if "query groups (" in body:
-        return body.partition("\n#1 ")[2]
-    return body
+    """Only exact numbered lines from this benchmark's cited fixture files."""
+    if not isinstance(body, str):
+        return ""
+
+    sources = {
+        f"facts/fact-{i:02d}.md": (
+            f"---\ncategory: {category}\ntags: {tags}\n---\n\n{text}\n"
+        ).split("\n")
+        for i, (category, text, tags) in enumerate(FACTS)
+    }
+
+    # Split on every ranked section, including malformed ones, so a malformed
+    # next hit cannot become prose belonging to the preceding valid hit.
+    chunks = []
+    for section in re.split(r"(?m)(?=^#\d+ )", body):
+        header = re.match(
+            r"^#([1-5]) (?:matchedBy=\S+ )?"
+            r"(facts/fact-\d{2}\.md):([1-9]\d*)"
+            r"(?:-([1-9]\d*))?[^\n]*\n",
+            section,
+        )
+        if not header:
+            continue
+        filename = header.group(2)
+        lines = sources.get(filename)
+        start = int(header.group(3))
+        end = int(header.group(4) or header.group(3))
+        if lines is None or not 1 <= start <= end <= len(lines):
+            continue
+
+        content = "\n" + section[header.end():]
+        _, marker, source = content.partition("\nsource:\n")
+        if not marker:
+            continue
+        for line in source.splitlines():
+            match = re.fullmatch(r"([1-9]\d*)\t(.*)", line)
+            if not match:
+                continue
+            number, text = int(match.group(1)), match.group(2)
+            if start <= number <= end and text == lines[number - 1]:
+                chunks.append(text)
+    return "\n".join(chunks)
 
 
 def run_set(p, p_full, queries):
