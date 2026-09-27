@@ -262,7 +262,7 @@ def build_command(case, unit, tasks):
                "--working-directory=" + str(ROOT), "/usr/bin/env", "-i",
                *[f"{key}={value}" for key,value in sorted(env.items())],
                "/usr/bin/unshare", "--user", "--map-root-user", "--net", "--",
-               "/bin/sh", "-ec", '/usr/bin/ip link set lo up; exec "$@"', "zvec-isolated",
+               "/bin/sh", "-ec", '/usr/bin/ip link set lo up; exec /usr/bin/env -u PWD -u SHLVL -u _ "$@"', "zvec-isolated",
                str(ROOT / ".venv/bin/python"), "-I", "-B",
                str(ROOT / "scripts" / case["script"]), *case["args"]]
     limits = {"memory_bytes": 2147483648, "swap_bytes": 0, "cpu_quota_percent": 200,

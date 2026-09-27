@@ -599,3 +599,15 @@ def test_production_snapshot_never_invokes_mutating_host_cli(tmp_path, monkeypat
     result = campaign.production_snapshot()
     assert result["provider"] == "zvec-memory"
     assert len(commands) == 1
+
+
+def test_namespace_shell_does_not_expand_python_environment(tmp_path, monkeypatch):
+    initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-"+"a"*32+".service"
+    case = {**CASE,"args":[]}
+    command, _ = campaign.build_command(case, unit, 256)
+    shell = command[command.index("/bin/sh"):]
+    shell = shell[:-1] + ["-c", "import json,os;print(json.dumps(sorted(os.environ)))"]
+    result = subprocess.run(shell, env=campaign.workload_environment(unit), capture_output=True, text=True, timeout=3)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == sorted(campaign.workload_environment(unit))
