@@ -41,6 +41,9 @@ import traceback
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import host_provenance
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
 ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
@@ -724,15 +727,22 @@ def main(argv=None):
                    "--convergence-timeout", str(args.convergence_timeout)]
         if args.engine_restart_at is not None:
             command += ["--engine-restart-at", str(args.engine_restart_at)]
-        report = supervise(run, command, env, args.duration + 240, args.sample_interval)
+        # Resolve actual host/runtime provenance before admitting any workload.
+        provenance = {"host_provenance": host_provenance(HOST),
+                      "plugin_sha": subprocess.check_output(
+                          ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                          text=True, timeout=5).strip(),
+                      "zg_version": json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]}
+        if "git_sha" in provenance["host_provenance"]:
+            provenance["host_sha"] = provenance["host_provenance"]["git_sha"]
+        report.update(provenance)
+        report = {**report, **supervise(run, command, env, args.duration + 240, args.sample_interval)}
         report["runtime"] = runtime_metadata
         # argparse Path values are not JSON; the receipt stays serializable.
         report["arguments"] = {k: (str(v) if isinstance(v, Path) else v)
                                for k, v in vars(args).items() if k != "worker_run"}
         report["python"] = sys.version.split()[0]
-        for name, path in (("plugin_sha", ROOT), ("host_sha", HOST)):
-            report[name] = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, timeout=5).strip()
-        report["zg_version"] = json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]
+
     except BaseException as exc:
         report["passed"] = False
         report["errors"].append("preflight_exception:" + type(exc).__name__)

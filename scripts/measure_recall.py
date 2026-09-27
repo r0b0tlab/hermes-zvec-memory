@@ -30,6 +30,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import host_provenance
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
@@ -285,11 +288,13 @@ def main(argv=None):
                 for key, argv in (
                     ("plugin_sha", ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]),
                     ("plugin_status", ["git", "-C", str(REPO_ROOT), "status", "--porcelain"]),
-                    ("hermes_sha", ["git", "-C", str(HERMES_AGENT_DIR), "rev-parse", "HEAD"]),
                     ("node_version", ["node", "--version"]),
                     ("zg_version", [args.zg_bin, "--version"]),
                 ):
                     record["provenance"][key] = command(argv).stdout.strip()
+                record["provenance"]["host_provenance"] = host_provenance(HERMES_AGENT_DIR)
+                if "git_sha" in record["provenance"]["host_provenance"]:
+                    record["provenance"]["hermes_sha"] = record["provenance"]["host_provenance"]["git_sha"]
                 provider_class = load_provider()
                 vault = Path(directory) / "vault"
                 facts = vault / "facts"

@@ -164,3 +164,20 @@ def test_timeout_preserves_raw_command_evidence(tmp_path, monkeypatch):
     assert record["errors"][0].get("stdout") == "partial output"
     assert record["errors"][0]["stderr"] == "actual error"
     assert not record["gates"]["passed"]
+
+
+def test_installed_snapshot_provenance_precedes_provider(tmp_path, monkeypatch):
+    from test_harness_support import fixture_host
+    root = fixture_host(tmp_path / "selected-host")
+    monkeypatch.setattr(benchmark, "HERMES_AGENT_DIR", root)
+    monkeypatch.setattr(benchmark.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout="fixture", stderr=""))
+    def stop():
+        raise RuntimeError("stop at provider boundary")
+    monkeypatch.setattr(benchmark, "load_provider", stop)
+    output = tmp_path / "receipt.json"
+    assert benchmark.main(["--output", str(output)]) == 1
+    provenance = json.loads(output.read_text())["provenance"]
+    assert provenance["host_provenance"]["kind"] == "installed_snapshot"
+    assert "hermes_sha" not in provenance
+    assert benchmark.HERMES_AGENT_DIR == root

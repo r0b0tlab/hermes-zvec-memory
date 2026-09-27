@@ -331,9 +331,8 @@ def test_soak_receipt_records_the_selected_runtime(tmp_path, monkeypatch):
     engine.write_text("#!/usr/bin/env node\n")
     engine.chmod(0o755)
     (tmp_path / "engine/package.json").write_text(json.dumps({"version": "0.2.2"}))
-    host = tmp_path / "repo/agent"
-    host.mkdir(parents=True)
-    (host / "memory_provider.py").write_text("")
+    from test_harness_support import fixture_host
+    fixture_host(tmp_path / "repo")
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
@@ -365,8 +364,8 @@ def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch)
         "entrypoint": str(engine),
         "requested_native_threads": {"queryThreads": 1, "optimizeThreads": 1},
         "observed_total_threads": 61, "source_sha256": "pin", "patched_sha256": "patched"}))
-    (repo / "agent").mkdir(parents=True)
-    (repo / "agent/memory_provider.py").write_text("")
+    from test_harness_support import fixture_host
+    fixture_host(repo)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
                     "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
@@ -385,3 +384,37 @@ def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch)
     assert report["runtime"]["observed_total_threads"] == 61
     assert report["arguments"]["runtime_manifest"] == str(manifest)
     assert json.loads((run / "zg-runtime.json").read_text())["entrypoint"] == str(engine)
+
+
+@pytest.mark.parametrize("valid_package", [False, True])
+def test_installed_snapshot_provenance_precedes_soak_work(tmp_path, monkeypatch, capsys, valid_package):
+    from test_harness_support import fixture_host
+    root = fixture_host(tmp_path / "selected-host")
+    package = tmp_path / "engine"
+    entry = package / "dist/cli/index.js"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("// native boundary is never executed here\n")
+    (package / "package.json").write_text(json.dumps(
+        {"version": "0.2.2"} if valid_package else {}))
+    monkeypatch.setattr(soak, "HOST", root)
+    monkeypatch.setattr(soak, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(soak, "runtime_command", lambda *a: ([str(entry)], {"kind": "fixture"}))
+    calls = []
+    monkeypatch.setattr(soak.subprocess, "check_output",
+                        lambda *a, **k: calls.append("plugin-provenance") or "a" * 40)
+    def work(*args):
+        calls.append("worker")
+        assert calls[:-1] == ["plugin-provenance"], "provenance must precede executed work"
+        return {"passed": True, "errors": [], "worker": {"coverage": "retained"}}
+    monkeypatch.setattr(soak, "supervise", work)
+    code = soak.main(["--duration", "1"])
+    result = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    if valid_package:
+        assert code == 0, result
+        assert result["host_provenance"]["kind"] == "installed_snapshot"
+        assert "host_sha" not in result
+        assert result["worker"]["coverage"] == "retained"
+        assert calls == ["plugin-provenance", "worker"]
+    else:
+        assert code == 1 and "worker" not in calls
+    assert soak.HOST == root
