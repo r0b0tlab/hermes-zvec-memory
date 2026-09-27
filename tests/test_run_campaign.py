@@ -437,6 +437,10 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
     else:
         assert final["errors"] and not manifest["reports"][0]["passed"]
     if fault == "timeout": assert final["failure_category"] == "timeout"
+    if fault in {"report_json", "report_coverage"}:
+        assert "path" not in manifest["reports"][0]
+        assert final["report"] == str(report_path), "private failed source must remain attributable"
+
 
 
 @pytest.mark.parametrize("fault", ["none", "manifest_final", "receipt_final"])
@@ -473,3 +477,85 @@ def test_attempt_is_published_before_work_and_finalization_cannot_hide_failure(t
             assert data["passed"] is False
             assert any("manifest" in error for error in data["errors"])
         else: assert not final.exists()
+
+
+@pytest.mark.parametrize("manifest_damage", ["missing", "corrupt", "valid"])
+def test_reconcile_sigkilled_controller_preserves_interrupted_attempt(tmp_path, monkeypatch, manifest_damage):
+    import time
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a"*32 + ".service"
+    code = """import importlib.util,json,pathlib,signal,sys
+spec=importlib.util.spec_from_file_location('campaign_crash',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.HERE=pathlib.Path(sys.argv[2])
+case=json.loads(sys.argv[4])
+with m.campaign_lease(), m.attempt_record(case,'fix',256,sys.argv[3]):
+ (m.HERE/'entered').write_text('ready')
+ signal.pause()
+"""
+    child = subprocess.Popen([sys.executable,"-I","-B","-c",code,str(ROOT/"scripts/run_campaign.py"),str(root),unit,json.dumps(CASE)],
+                             stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 3
+        while not (root/"entered").exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert (root/"entered").exists(), "child must enter durable lifecycle before crash injection"
+        child.kill()
+        child.wait(timeout=2)
+    finally:
+        if child.poll() is None: child.kill()
+        child.wait(timeout=2)
+        child.stderr.close()
+    manifest = root/"manifest.json"
+    if manifest_damage == "missing": manifest.unlink()
+    if manifest_damage == "corrupt": manifest.write_text("retained corrupt fixture")
+    monkeypatch.setattr(campaign.subprocess,"run",lambda *a,**k: pytest.fail("metadata-only orphan must not launch anything"))
+    assert campaign.reconcile() == 1
+    assert campaign.reconcile() == 1
+    data = json.loads(manifest.read_text())
+    assert len(data["runs"]) == len(data["reports"]) == 1
+    final = data["runs"][0]
+    assert final["passed"] is False and final["failure_category"] == "interrupted"
+    assert final["cleanup_verified"] is True  # durable launch boundary was never reached
+    assert final["production_unchanged"] is False  # no invented production recheck
+    assert (root/(unit[:-8]+".started.json")).exists()
+    assert (root/(unit[:-8]+".json")).exists()
+    if manifest_damage == "corrupt":
+        assert any(path.read_text() == "retained corrupt fixture" for path in root.glob("manifest.corrupt-*.json"))
+
+
+def test_launch_requires_durable_boundary(tmp_path, monkeypatch):
+    initialize_private_campaign(tmp_path, monkeypatch)
+    monkeypatch.setattr(campaign, "unchanged", lambda: [])
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: {"LoadState":"not-found"})
+    monkeypatch.setattr(campaign, "output", lambda command: "a"*40)
+    real_atomic = campaign.atomic
+    def atomic(path, data):
+        if path.name.endswith(".launch.json"): raise OSError("launch record write failed")
+        return real_atomic(path, data)
+    monkeypatch.setattr(campaign, "atomic", atomic)
+    monkeypatch.setattr(campaign.subprocess, "run", lambda *a, **k: pytest.fail("launch before durable record"))
+    assert campaign.execute(CASE, "fix", 256) is False
+    final = json.loads((campaign.HERE/"manifest.json").read_text())["runs"][0]
+    assert not final["launch_started"] and final["cleanup_verified"]
+
+
+def test_reconcile_cli_repairs_missing_manifest_without_work(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    (root/"manifest.json").unlink()
+    monkeypatch.setattr(campaign.subprocess,"run",lambda *a,**k: pytest.fail("unexpected launch"))
+    assert campaign.main(["--reconcile","--output-dir",str(root)]) == 0
+    assert json.loads((root/"manifest.json").read_text())["runs"] == []
+
+
+def test_unfinished_or_unverified_cleanup_refuses_more_load(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-"+"a"*32+".service"
+    with campaign.attempt_record(CASE,"fix",256,unit) as receipt:
+        receipt.update(launch_started=True, cleanup_verified=False)
+    monkeypatch.setattr(campaign,"unchanged",lambda: [])
+    monkeypatch.setattr(campaign,"unit_state",lambda unit: pytest.fail("unresolved ownership admitted new unit"))
+    assert campaign.execute(CASE,"fix",256) is False
+    manifest = json.loads((root/"manifest.json").read_text())
+    assert len(manifest["runs"]) == 2
+    assert not any(row["passed"] for row in manifest["runs"])

@@ -280,8 +280,8 @@ def manifest_entry(case, tasks, cgroup, report=None, exit_code=None, source_sha=
 
 
 @contextmanager
-def locked_file(name):
-    select_output(HERE)
+def locked_file(name, require_manifest=True):
+    select_output(HERE, require_manifest=require_manifest)
     fd = os.open(HERE / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         try:
@@ -294,14 +294,14 @@ def locked_file(name):
 
 
 @contextmanager
-def campaign_lease():
-    with locked_file(".controller.lock"):
+def campaign_lease(require_manifest=True):
+    with locked_file(".controller.lock", require_manifest=require_manifest):
         yield
 
 
 def publish_attempt(receipt):
     entry = manifest_entry(receipt["case"], receipt["tasks"], receipt.get("cgroup", {}),
-                           receipt.get("report"), receipt.get("exit_code"), receipt.get("source_sha", ""))
+                           receipt.get("report") if receipt.get("report_validated") else None, receipt.get("exit_code"), receipt.get("source_sha", ""))
     entry["attempt_id"] = receipt["attempt_id"]
     entry["tags"]["variant"] = receipt["variant"]
     entry["passed"] = receipt["passed"] is True
@@ -323,7 +323,7 @@ def attempt_record(case, variant, tasks, unit):
     if not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}\.service", unit):
         raise ValueError("invalid owned attempt unit")
     stamp = unit.removesuffix(".service")
-    receipt = {"schema_version": 1, "attempt_id": stamp, "unit": unit,
+    receipt = {"schema_version": 2, "attempt_id": stamp, "unit": unit,
                "label": case["label"], "case": dict(case), "variant": variant,
                "tasks": tasks, "passed": False, "status": "started", "errors": [],
                "cleanup_verified": False, "production_unchanged": False,
@@ -397,6 +397,11 @@ def execute_body(case, variant, tasks, receipt):
     differences = unchanged()
     if differences:
         raise RuntimeError("production baseline changed")
+    previous = json.loads((HERE / "manifest.json").read_text())["runs"]
+    if any(row.get("attempt_id") != receipt["attempt_id"] and
+           (row.get("status") == "started" or
+            (row.get("launch_started") and row.get("cleanup_verified") is not True)) for row in previous):
+        raise RuntimeError("unfinished ownership requires explicit reconciliation")
     unit = receipt["unit"]
     if unit_state(unit)["LoadState"] != "not-found":
         raise RuntimeError("refusing an existing attempt unit")
@@ -408,6 +413,7 @@ def execute_body(case, variant, tasks, receipt):
     cancelled = None
     try:
         with logfile.open("x") as stream:
+            atomic(HERE / (receipt["attempt_id"] + ".launch.json"), {**receipt, "launch_started": True})
             receipt["launch_started"] = True
             receipt["cleanup_verified"] = False
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
@@ -464,6 +470,7 @@ def execute_body(case, variant, tasks, receipt):
     from report_stress import adapt_report, summarize
     raw = json.loads(path.read_text())
     valid = summarize(adapt_report(raw), 1)
+    receipt["report_validated"] = True
     receipt["harness_passed"] = pointer.get("passed") is True and valid["passed"] is True
     if not receipt["harness_passed"]:
         receipt["errors"].append("workload_coverage_failed")
@@ -505,7 +512,7 @@ def load_cases(path=None):
     return result
 
 
-def select_output(path, initialize=False):
+def select_output(path, initialize=False, require_manifest=True):
     candidate = Path(path).expanduser().absolute()
     if candidate.is_symlink() or candidate.resolve() != candidate:
         raise ValueError("aliased campaign output")
@@ -522,10 +529,81 @@ def select_output(path, initialize=False):
             raise ValueError("aliased campaign metadata")
     if json.loads((candidate / "OWNER.json").read_text()) != owner:
         raise ValueError("campaign owner mismatch")
+    if not require_manifest:
+        return candidate
     manifest = json.loads((candidate / "manifest.json").read_text())
     if not isinstance(manifest, dict) or any(not isinstance(manifest.get(key), list) for key in ("runs", "reports")):
         raise ValueError("invalid campaign manifest")
     return candidate
+
+
+def reconcile():
+    """Recover accounting from owned records; never rerun or green an orphan."""
+    with campaign_lease(require_manifest=False):
+        records = []
+        for path in sorted(HERE.glob("*.started.json")):
+            stem = path.name.removesuffix(".started.json")
+            unit = stem + ".service"
+            if not re.fullmatch(r"hermes-zvec-stress-[a-f0-9]{32}\.service", unit) or path.is_symlink():
+                raise ValueError("unattributable started record")
+            initial = json.loads(path.read_text())
+            if (not isinstance(initial, dict) or initial.get("attempt_id") != stem
+                    or initial.get("unit") != unit or initial.get("status") != "started"
+                    or type(initial.get("schema_version")) is not int
+                    or initial["schema_version"] not in {1, 2}
+                    or initial.get("variant") not in {"baseline", "fix"}
+                    or type(initial.get("tasks")) is not int or not MIN_TASKS <= initial["tasks"] <= MAX_TASKS
+                    or not isinstance(initial.get("case"), dict)
+                    or initial["case"].get("label") != initial.get("label")):
+                raise ValueError("invalid started record")
+            final_path = HERE / (stem + ".json")
+            launch_path = HERE / (stem + ".launch.json")
+            if final_path.is_symlink() or launch_path.is_symlink():
+                raise ValueError("aliased attempt record")
+            if final_path.exists():
+                receipt = json.loads(final_path.read_text())
+                if (not isinstance(receipt, dict) or receipt.get("status") != "final"
+                        or type(receipt.get("passed")) is not bool
+                        or any(receipt.get(k) != initial[k] for k in ("attempt_id", "unit", "case", "variant", "tasks"))):
+                    raise ValueError("unattributable final record")
+            else:
+                receipt = dict(initial)
+                if launch_path.exists():
+                    launch = json.loads(launch_path.read_text())
+                    if (not isinstance(launch, dict) or launch.get("launch_started") is not True
+                            or any(launch.get(k) != initial[k] for k in ("attempt_id", "unit", "case", "variant", "tasks"))):
+                        raise ValueError("unattributable launch record")
+                    receipt.update(launch)
+                receipt.update(status="final", passed=False, failure_category="interrupted",
+                               errors=["unfinished_controller_attempt"], production_unchanged=False,
+                               resources_verified=False, finished_unix_ns=time.time_ns(),
+                               cleanup_verified=initial["schema_version"] == 2 and not launch_path.exists())
+                if launch_path.exists():
+                    try:
+                        first = read_capture(unit, "start")
+                        receipt["start_capture"] = first
+                        receipt["cleanup_verified"] = cleanup_unit(unit, first)
+                    except BaseException as exc:
+                        receipt["errors"].append("reconcile_cleanup:" + type(exc).__name__)
+                atomic(final_path, receipt)
+            records.append(receipt)
+        path = HERE / "manifest.json"
+        try:
+            current = json.loads(path.read_text())
+            if not isinstance(current, dict) or any(not isinstance(current.get(k), list) for k in ("runs", "reports")):
+                raise ValueError("invalid manifest")
+        except (FileNotFoundError, ValueError):
+            if path.exists():
+                backup = HERE / ("manifest.corrupt-" + uuid.uuid4().hex + ".json")
+                with backup.open("xb") as stream:
+                    stream.write(path.read_bytes())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            atomic(path, {"schema_version":1,"runs":[],"reports":[],"status":"reconciled"})
+        for receipt in records:
+            publish_attempt(receipt)
+        manifest = json.loads(path.read_text())
+        return int(any(row.get("passed") is not True for row in manifest["runs"]))
 
 
 def rebaseline(reason):
@@ -550,10 +628,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--variant", choices=["baseline", "fix"], default="fix")
-    parser.add_argument("--tasks", type=int, choices=range(MIN_TASKS, MAX_TASKS + 1),
+    parser.add_argument("--tasks", type=int, choices=range(MIN_TASKS, MAX_TASKS + 1), metavar="64..4096",
                         default=DEFAULT_TASKS, help="cgroup task ceiling (64..4096)")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--init", action="store_true")
+    parser.add_argument("--reconcile", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--snapshot-production", action="store_true",
                         help="re-record the production baseline (requires --reason)")
@@ -563,7 +642,7 @@ def main(argv=None):
         cases = load_cases()
     except (OSError, ValueError, TypeError):
         parser.error("invalid or missing tracked campaign definitions")
-    if sum((args.list, args.init, args.snapshot_production, bool(args.case))) != 1:
+    if sum((args.list, args.init, args.reconcile, args.snapshot_production, bool(args.case))) != 1:
         parser.error("select exactly one operation")
     if args.list:
         print("\n".join(cases))
@@ -573,12 +652,14 @@ def main(argv=None):
     if args.output_dir is None:
         parser.error("--output-dir is required")
     try:
-        selected = select_output(args.output_dir, initialize=args.init)
+        selected = select_output(args.output_dir, initialize=args.init, require_manifest=not args.reconcile)
     except (OSError, ValueError, TypeError):
         parser.error("missing, invalid, or already existing campaign output")
     HERE, BASELINE = selected, selected / "production-before.json"
     if args.init:
         return 0
+    if args.reconcile:
+        return reconcile()
     if args.snapshot_production:
         if not args.reason:
             parser.error("--snapshot-production requires --reason")
