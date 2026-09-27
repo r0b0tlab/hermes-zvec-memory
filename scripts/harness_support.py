@@ -57,3 +57,24 @@ def host_provenance(root):
         else f"installed-snapshot:sha256:{digest}"
     )
     return result
+
+
+def stop_direct(child, timeout=2):
+    """Only the unreaped Popen retained by its sole owning parent."""
+    errors = []
+    try:
+        if child.returncode is None:
+            child.kill()
+    except ProcessLookupError:
+        pass
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        child.wait(timeout=timeout)
+    except BaseException as exc:
+        errors.append(exc)
+    if errors:
+        raise RuntimeError(
+            "direct-child cleanup incomplete: "
+            + ",".join(type(exc).__name__ for exc in errors)
+        )

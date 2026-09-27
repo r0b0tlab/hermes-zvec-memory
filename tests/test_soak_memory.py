@@ -418,3 +418,35 @@ def test_installed_snapshot_provenance_precedes_soak_work(tmp_path, monkeypatch,
     else:
         assert code == 1 and "worker" not in calls
     assert soak.HOST == root
+
+
+@pytest.mark.parametrize("boundary", ["supervisor", "daemon"])
+def test_tree_creation_failure_retains_child_ownership(tmp_path, monkeypatch, boundary):
+    created = []
+    popen = subprocess.Popen
+    def spawn(*args, **kwargs):
+        child = popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                      start_new_session=True)
+        created.append(child)
+        return child
+    def fail(*args): raise RuntimeError("injected tree acquisition failure")
+    monkeypatch.setattr(soak.subprocess, "Popen", spawn)
+    monkeypatch.setattr(soak, "ProcessTree", fail)
+    stranger = popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        env = soak.environment(tmp_path, 23456)
+        if boundary == "supervisor":
+            result = soak.supervise(tmp_path, ["unused"], env, budget=.1, interval=.05)
+            assert result["passed"] is False
+        else:
+            daemon = soak.Daemon(tmp_path, env)
+            with pytest.raises(RuntimeError, match="tree acquisition"):
+                daemon.start(time.monotonic() + 1)
+            assert daemon.log.closed
+        assert len(created) == 1 and created[0].returncode is not None
+        assert not Path(f"/proc/{created[0].pid}").exists()
+        assert stranger.poll() is None
+    finally:
+        for child in [*created, stranger]:
+            if child.poll() is None: child.kill()
+            child.wait(timeout=2)

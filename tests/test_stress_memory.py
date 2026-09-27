@@ -877,3 +877,39 @@ def test_regression_receipts_separate_junit_and_diagnostics(tmp_path, monkeypatc
     row = result["iterations"][0]
     assert row["errors"] == 0
     assert row["diagnostic_errors"] == []
+
+
+def test_post_spawn_tracking_failure_is_owned(tmp_path, monkeypatch):
+    s = module()
+    created = []
+    real_popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        created.append(child)
+        return child
+
+    def fail_tracking(child):
+        raise RuntimeError("injected identity acquisition failure")
+
+    monkeypatch.setattr(s.subprocess, "Popen", spawn)
+    monkeypatch.setattr(s, "track_child", fail_tracking)
+    stranger = real_popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="identity acquisition"):
+            s.run_command(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                s.environment(tmp_path, ROOT), tmp_path / "child.log", 1,
+            )
+        assert len(created) == 1
+        assert created[0].returncode is not None
+        assert not Path(f"/proc/{created[0].pid}").exists()
+        assert stranger.poll() is None
+    finally:
+        for child in [*created, stranger]:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=2)

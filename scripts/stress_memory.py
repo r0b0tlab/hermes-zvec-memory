@@ -22,7 +22,7 @@ import time
 import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import host_provenance
+from harness_support import host_provenance, stop_direct
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/stress-runs"
@@ -483,17 +483,23 @@ def cleanup_owned(child, deadline=None):
 def run_command(command, env, logfile, timeout):
     enable_subreaper()
     with logfile.open("w") as log:
-        child = track_child(subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
-                                 stderr=subprocess.STDOUT, start_new_session=True))
-        deadline = time.monotonic() + timeout
+        deadline = None
+        child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
         try:
+            track_child(child)
+            deadline = time.monotonic() + timeout
             while poll_owned(child) is None:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(.01)
             rc = child.returncode if child.returncode is not None else 124
         finally:
-            leftover = cleanup_owned(child, deadline if child.returncode == 0 else None)
+            if getattr(child, "_stress_handles", None):
+                leftover = cleanup_owned(child, deadline if child.returncode == 0 else None)
+            else:
+                stop_direct(child)
+                leftover = False
         return rc or (125 if leftover else 0)
 
 

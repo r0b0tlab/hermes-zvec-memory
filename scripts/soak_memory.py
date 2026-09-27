@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_support import host_provenance
+from harness_support import host_provenance, stop_direct
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
@@ -291,40 +291,60 @@ class Daemon:
         url = self.env["ZVEC_GREP_SERVER_URL"]
         listen = url.removeprefix("http://").removesuffix("/mcp")
         self.log = (self.run / f"daemon-{self.generation}.private.log").open("w")
-        self.process = subprocess.Popen([str(selected_entrypoint(self.run)), "server", "run",
-            "--listen", listen, "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
-            cwd=self.run, env=self.env, stdout=self.log, stderr=subprocess.STDOUT,
-            start_new_session=True)
-        self.tree = ProcessTree(self.process.pid)
-        token = Path(self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]).read_text().strip()
-        lock = Path(self.env["ZVEC_GREP_HOME"]) / "daemon/instance.lock"
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise RuntimeError("owned_daemon_exited_during_startup")
+        self.tree = None
+        try:
+            self.process = subprocess.Popen([str(selected_entrypoint(self.run)), "server", "run",
+                "--listen", listen, "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
+                cwd=self.run, env=self.env, stdout=self.log, stderr=subprocess.STDOUT,
+                start_new_session=True)
+            self.tree = ProcessTree(self.process.pid)
+            token = Path(self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]).read_text().strip()
+            lock = Path(self.env["ZVEC_GREP_HOME"]) / "daemon/instance.lock"
+            while time.monotonic() < deadline:
+                if self.process.poll() is not None:
+                    raise RuntimeError("owned_daemon_exited_during_startup")
+                try:
+                    record = json.loads(lock.read_text())
+                    if ready_identity(record, self.process.pid, url):
+                        if http_status(url.replace("/mcp", "/healthz")) == 200:
+                            unauth, auth = http_status(url), http_status(url, token)
+                            if unauth != 401 or auth not in (200, 400, 405, 406):
+                                raise RuntimeError("daemon_authentication_gate_failed")
+                            if record["instanceToken"] == self.instance_token:
+                                raise RuntimeError("daemon_instance_identity_reused")
+                            self.instance_token = record["instanceToken"]
+                            return {"pid": self.process.pid, "generation": self.generation,
+                                    "unauthenticated_status": unauth, "authenticated_status": auth,
+                                    "ready_monotonic_seconds": time.monotonic()}
+                except (OSError, ValueError, urllib.error.URLError):
+                    pass
+                time.sleep(.05)
+            raise TimeoutError("owned_daemon_readiness_timeout")
+        except BaseException as exc:
             try:
-                record = json.loads(lock.read_text())
-                if ready_identity(record, self.process.pid, url):
-                    if http_status(url.replace("/mcp", "/healthz")) == 200:
-                        unauth, auth = http_status(url), http_status(url, token)
-                        if unauth != 401 or auth not in (200, 400, 405, 406):
-                            raise RuntimeError("daemon_authentication_gate_failed")
-                        if record["instanceToken"] == self.instance_token:
-                            raise RuntimeError("daemon_instance_identity_reused")
-                        self.instance_token = record["instanceToken"]
-                        return {"pid": self.process.pid, "generation": self.generation,
-                                "unauthenticated_status": unauth, "authenticated_status": auth,
-                                "ready_monotonic_seconds": time.monotonic()}
-            except (OSError, ValueError, urllib.error.URLError):
-                pass
-            time.sleep(.05)
-        raise TimeoutError("owned_daemon_readiness_timeout")
+                self.stop()
+            except BaseException as cleanup:
+                exc.add_note("daemon cleanup: " + type(cleanup).__name__)
+            raise
 
     def stop(self):
-        remaining = self.tree.stop() if self.tree else []
-        if self.process:
-            self.process.wait(timeout=2)
-        if self.log:
-            self.log.close()
+        remaining, errors = [], []
+        try:
+            if self.tree:
+                remaining = self.tree.stop()
+        except BaseException as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            try:
+                if self.process:
+                    stop_direct(self.process)
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+            finally:
+                if self.log:
+                    self.log.close()
+        if errors:
+            raise RuntimeError("daemon cleanup incomplete: " + ",".join(errors))
         return remaining
 
     def restart(self, deadline):
@@ -635,11 +655,12 @@ def supervise(run, command, env, budget, interval):
                 report["errors"].append("tree_cleanup_exception:" + type(exc).__name__)
         if child:
             try:
-                report["worker_exit"] = child.wait(timeout=2)
+                stop_direct(child)
+                report["worker_exit"] = child.returncode
                 if child.returncode:
                     report["errors"].append("worker_nonzero_exit")
-            except subprocess.TimeoutExpired:
-                report["errors"].append("worker_reap_timeout")
+            except BaseException as exc:
+                report["errors"].append("worker_cleanup_exception:" + type(exc).__name__)
         try:
             report["worker"] = json.loads((run / "worker.json").read_text())
             if not report["worker"].get("passed"):
