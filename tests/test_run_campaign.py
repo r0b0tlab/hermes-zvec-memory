@@ -61,7 +61,7 @@ def test_command_runs_the_named_script_under_the_venv():
     assert command[1] == "--user"
     assert command[-len(CASE["args"]):] == CASE["args"]
     head = command[:-len(CASE["args"])]
-    assert head[-2] == str(ROOT / ".venv/bin/python")
+    assert head[-4:-1] == [str(ROOT / ".venv/bin/python"), "-I", "-B"]
     assert head[-1] == str(ROOT / "scripts" / CASE["script"])
     assert "--unit=hermes-zvec-stress-deadbeef0002.service" in command
     assert any(part.startswith("ExecStopPost=") for part in command)
@@ -559,3 +559,43 @@ def test_unfinished_or_unverified_cleanup_refuses_more_load(tmp_path, monkeypatc
     manifest = json.loads((root/"manifest.json").read_text())
     assert len(manifest["runs"]) == 2
     assert not any(row["passed"] for row in manifest["runs"])
+
+
+def test_controller_command_has_original_spawn_isolation(tmp_path, monkeypatch):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "poison")
+    monkeypatch.setenv("NODE_OPTIONS", "poison")
+    monkeypatch.setenv("PYTHONPATH", "poison")
+    monkeypatch.setenv("HTTP_PROXY", "poison")
+    monkeypatch.setenv("ZVEC_GREP_SERVER_URL", "http://127.0.0.1:17999/mcp")
+    unit = "hermes-zvec-stress-"+"a"*32+".service"
+    command, _ = campaign.build_command(CASE, unit, 256)
+    assert "NoNewPrivileges=yes" in command and "Restart=no" in command
+    assert "/usr/bin/unshare" in command and "--net" in command
+    assert "/usr/bin/env" in command and "-i" in command
+    assert command[command.index(str(campaign.ROOT/".venv/bin/python"))+1:][:2] == ["-I","-B"]
+    assert not any("poison" in argument for argument in command)
+    env = campaign.workload_environment(unit)
+    assert not {"OPENAI_API_KEY","PYTHONPATH","NODE_OPTIONS","HTTP_PROXY","ZVEC_GREP_SERVER_URL"} & env.keys()
+    for key in ("HOME","HERMES_HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_CACHE_HOME","XDG_STATE_HOME","TMPDIR"):
+        assert Path(env[key]).is_relative_to(root)
+    assert env["HERMES_AGENT_DIR"] == campaign.os.environ["HERMES_AGENT_DIR"]
+    assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert any(value.startswith("UnsetEnvironment=") and "LD_PRELOAD" in value for value in command)
+
+
+def test_production_snapshot_never_invokes_mutating_host_cli(tmp_path, monkeypatch):
+    config = tmp_path/"config.yaml"
+    config.write_text("memory:\n  provider: zvec-memory\nplugins: {}\n")
+    monkeypatch.setattr(campaign,"CONFIG_PATH",config)
+    monkeypatch.setattr(campaign,"watched_files",lambda: [config])
+    commands = []
+    def output(command):
+        commands.append(command)
+        assert command[0] == "systemctl", "snapshot must not invoke host CLI"
+        return "ActiveState=active\nMainPID=42"
+    monkeypatch.setattr(campaign,"output",output)
+    result = campaign.production_snapshot()
+    assert result["provider"] == "zvec-memory"
+    assert len(commands) == 1

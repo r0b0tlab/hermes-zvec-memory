@@ -74,7 +74,7 @@ def production_snapshot(revision=None, reason=None):
         "files": {str(path): sha256(path) for path in watched_files() if Path(path).exists()},
         "service": output(["systemctl", "--user", "show", "hermes-zvec-memory.service",
                            "-p", "MainPID", "-p", "ActiveState"]),
-        "provider": output(["hermes", "config", "get", "memory.provider"]),
+        "provider": parsed.get("memory", {}).get("provider"),
         "memory_config": {key: parsed.get(key) for key in WATCHED_CONFIG_SECTIONS},
         "config_sha256": sha256(CONFIG_PATH),
     }
@@ -218,12 +218,29 @@ def cleanup_unit(unit, capture):
     return group_empty(group)
 
 
+def workload_environment(unit):
+    root = HERE / (unit.removesuffix(".service") + ".work")
+    home = root / "home"
+    return {"PATH":"/usr/bin:/bin", "HOME":str(home), "HERMES_HOME":str(home / "hermes"),
+            "HERMES_AGENT_DIR":os.environ.get("HERMES_AGENT_DIR", str(Path.home()/".hermes/hermes-agent")),
+            "XDG_CONFIG_HOME":str(home / "config"), "XDG_DATA_HOME":str(home / "data"),
+            "XDG_CACHE_HOME":str(home / "cache"), "XDG_STATE_HOME":str(home / "state"),
+            "TMPDIR":str(root / "tmp"), "ZVEC_TEST_ROOT":str(root),
+            "HERMES_ZVEC_RUNTIME_DIR":str(root / "runtime"), "HERMES_ZVEC_MODEL_CACHE":str(root / "models"),
+            "ZVEC_GREP_HOME":str(root / "zg-state"), "ZVEC_GREP_MODEL_CACHE":str(ROOT / ".test-tools/models"),
+            "ZVEC_TEST_MODEL_CACHE":str(ROOT / ".test-tools/models"),
+            "ZVEC_TEST_NODE_MODULES":str(ROOT / ".test-tools/node_modules"),
+            "HF_HUB_OFFLINE":"1", "TRANSFORMERS_OFFLINE":"1", "PYTHONDONTWRITEBYTECODE":"1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD":"1", "LANG":"C.UTF-8", "TZ":"UTC"}
+
+
 def build_command(case, unit, tasks):
     """Return (systemd-run argv, limits receipt) for one case."""
     assert case["script"] in SCRIPTS, case["script"]
     assert all(isinstance(x, str) for x in case["args"])
     assert unit.endswith(".service"), unit
     limit = int(case["timeout_s"])
+    env = workload_environment(unit)
     def capture_command(phase):
         path = HERE / (unit.removesuffix(".service") + f".{phase}.limits.json")
         # systemd Exec*= uses its own quoting and specifiers, not a shell.
@@ -236,12 +253,17 @@ def build_command(case, unit, tasks):
                "--service-type=exec", "--wait", "--pipe", "-p", "MemoryMax=2G",
                "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%",
                "-p", "CPUQuotaPeriodSec=100ms", "-p", "TasksMax=" + str(tasks),
-               "-p", "KillMode=control-group",
+               "-p", "KillMode=control-group", "-p", "NoNewPrivileges=yes", "-p", "Restart=no",
+               "-p", "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT LD_PROFILE GCONV_PATH LOCPATH PYTHONPATH PYTHONHOME PYTHONSTARTUP NODE_OPTIONS BASH_ENV ENV",
                "-p", "MemoryAccounting=yes", "-p", "CPUAccounting=yes",
                "-p", "ExecStartPre=" + capture_command("start"),
                "-p", "ExecStopPost=" + capture_command("stop"),
-               "-p", "RuntimeMaxSec=" + str(limit), "-p", "TimeoutStopSec=10",
-               "--working-directory=" + str(ROOT), str(ROOT / ".venv/bin/python"),
+               "-p", "RuntimeMaxSec=" + str(limit), "-p", "TimeoutStartSec=20", "-p", "TimeoutStopSec=10",
+               "--working-directory=" + str(ROOT), "/usr/bin/env", "-i",
+               *[f"{key}={value}" for key,value in sorted(env.items())],
+               "/usr/bin/unshare", "--user", "--map-root-user", "--net", "--",
+               "/bin/sh", "-ec", '/usr/bin/ip link set lo up; exec "$@"', "zvec-isolated",
+               str(ROOT / ".venv/bin/python"), "-I", "-B",
                str(ROOT / "scripts" / case["script"]), *case["args"]]
     limits = {"memory_bytes": 2147483648, "swap_bytes": 0, "cpu_quota_percent": 200,
               "tasks": int(tasks), "runtime_seconds": limit}
@@ -406,6 +428,12 @@ def execute_body(case, variant, tasks, receipt):
     if unit_state(unit)["LoadState"] != "not-found":
         raise RuntimeError("refusing an existing attempt unit")
     logfile = HERE / (receipt["attempt_id"] + ".private.log")
+    env = workload_environment(unit)
+    private = Path(env["ZVEC_TEST_ROOT"])
+    private.mkdir(mode=0o700)
+    for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                "TMPDIR", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE", "ZVEC_GREP_HOME"):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
     command, limits = build_command(case, unit, tasks)
     receipt.update({"limits": limits,
                     "source_sha": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])})
