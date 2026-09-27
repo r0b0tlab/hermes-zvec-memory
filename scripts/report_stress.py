@@ -296,6 +296,20 @@ def summarize(report, index):
         value = report.get(key)
         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
             row[key] = value
+    for key in ("product_identity", "harness_identity", "host_provenance"):
+        if key not in report:
+            continue
+        identity = report[key]
+        if (not isinstance(identity, dict) or not isinstance(identity.get("content_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", identity["content_sha256"])):
+            raise ValueError("invalid source fingerprint")
+        row[key] = {"kind":enum(identity.get("kind"), {"git", "source_snapshot", "installed_snapshot"}),
+                    "content_sha256":identity["content_sha256"]}
+        sha = identity.get("git_sha")
+        if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+            row[key]["git_sha"] = sha
+        if type(identity.get("dirty")) is bool:
+            row[key]["dirty"] = identity["dirty"]
     if report.get("lane") in {"regression", "native-regression"}:
         for key in ("planned_iterations", "completed_iterations"):
             if key in report:
@@ -362,20 +376,33 @@ def comparisons(reports, rows, tags):
     for i, (raw, row, tag) in enumerate(zip(reports, rows, tags)):
         variant = enum(tag.get("variant"), {"baseline", "fix"})
         args = raw.get("arguments", {})
-        if (variant == "unknown" or not tag.get("scenario") or "host_sha" not in row
+        if (variant == "unknown" or not tag.get("scenario")
                 or row["lane"] == "unknown" or row["mode"] == "unknown"
                 or not {"workers", "records", "seed_facts", "timeout"} <= args.keys()):
             continue
         # Compare even unknown conditions privately; don't silently ignore them.
-        conditions = {k: v for k, v in args.items() if k not in {"run", "worker", "recover"}}
+        identity_keys = {"product_identity", "harness_identity", "host_provenance"}
+        modern = bool(identity_keys & row.keys())
+        excluded = {"run", "worker", "recover"}
+        if modern:
+            if not identity_keys <= row.keys():
+                continue
+            source_context = [row["host_provenance"]["content_sha256"], row["harness_identity"]["content_sha256"]]
+            excluded.add("provider_source")  # differing products are the paired variable
+        elif "host_sha" in row:
+            source_context = [row["host_sha"]]
+        else:
+            continue
+        conditions = {k: v for k, v in args.items() if k not in excluded}
         context = {k: v for k, v in tag.items() if k not in {"variant", "failure_category"}}
-        key = json.dumps([row["lane"], row["mode"], row["host_sha"], conditions, context], sort_keys=True)
+        key = json.dumps([row["lane"], row["mode"], source_context, conditions, context], sort_keys=True)
         groups[key][variant].append(i)
     result = []
-    for group in groups.values():
+    for signature, group in groups.items():
         if not group["baseline"] or not group["fix"]:
             continue
-        item: dict = {"comparison": len(result) + 1}
+        item: dict = {"comparison": len(result) + 1,
+                      "identity_basis": "content_fingerprints" if len(json.loads(signature)[2]) == 2 else "legacy_git_only"}
         means = {}
         for variant, indices in group.items():
             item[variant + "_attempts"] = len(indices)
@@ -628,7 +655,8 @@ def render(data):
               "convergence_seconds", "worker_admission_p99_seconds", "worker_drain_p99_seconds",
               "worker_shutdown_p99_seconds", "recovery_shutdown_seconds",
               "shutdown_policy", "query_hit_rate", "artifact_bytes",
-              "peak_single_reaped_child_rss_kib", "error_counts", "plugin_sha", "source_sha", "host_sha"]
+              "peak_single_reaped_child_rss_kib", "error_counts", "plugin_sha", "source_sha", "host_sha",
+              "product_content_sha256", "harness_content_sha256", "host_content_sha256"]
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
@@ -657,13 +685,16 @@ def render(data):
         flat["worker_shutdown_p99_seconds"] = row["worker_shutdown_seconds"]["p99"]
         flat["shutdown_policy"] = row["arguments"].get("shutdown_policy")
         flat["error_counts"] = json.dumps(row["error_counts"], sort_keys=True)
+        for name, field in (("product", "product_identity"), ("harness", "harness_identity"), ("host", "host_provenance")):
+            flat[name + "_content_sha256"] = row.get(field, {}).get("content_sha256")
         writer.writerow(flat)
         lines.append("| " + " | ".join(str(flat[k]) for k in (
             "attempt", "scenario", "variant", "lane", "mode", "passed",
             "successful_callbacks", "callback_p99_seconds", "error_counts")) + " |")
     lines.extend(["", "## Matched baseline/fix comparisons", "",
                   "Deltas are fix minus baseline; they are descriptive, not causal claims.",
-                  "Matching requires scenario/context tags, host SHA, lane, mode, and full workload arguments.",
+                  "New receipts match host and harness content fingerprints, lane, mode, workload (except selected product path), and context tags.",
+                  "Legacy Git-only comparisons are labelled and are not repaired-instrument evidence.",
                   "Machine/cache/environment equality must be supplied in context tags when they vary.",
                   "Missing required conditions produce no comparison.", "",
                   "```json", json.dumps(data["comparisons"], indent=2, allow_nan=False), "```", ""])

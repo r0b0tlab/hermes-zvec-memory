@@ -287,7 +287,9 @@ def test_execute_retains_failure_and_runs_post_guard(tmp_path, monkeypatch, faul
         return ["fixture-never-executed"], {"runtime_seconds": 1, "tasks":256, "memory_bytes":2147483648,
                                             "swap_bytes":0, "cpu_quota_percent":200}
     monkeypatch.setattr(campaign, "build_command", build)
+    original_run = campaign.subprocess.run
     def spawn(*args, **kwargs):
+        if args[0][0] == "git": return original_run(*args, **kwargs)
         if fault == "interrupt": raise KeyboardInterrupt()
         raise OSError("injected pre-spawn failure")
     monkeypatch.setattr(campaign.subprocess, "run", spawn)
@@ -372,11 +374,13 @@ def test_cleanup_uses_recorded_group_and_rechecks_unit_identity(tmp_path, monkey
         if state in {"reused_identity", "missing_population"}: assert not stopped
 
 
-@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard"])
+@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard", "product_identity", "harness_identity", "host_provenance"])
 def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault):
     """Synthetic kernel/workload files test the real controller, not capacity."""
     source = tmp_path / "source"
-    source.mkdir()
+    from test_harness_support import fixture_product
+    from harness_support import product_identity, harness_identity, host_provenance
+    fixture_product(source)
     monkeypatch.setattr(campaign, "ROOT", source)
     root = initialize_private_campaign(tmp_path, monkeypatch)
     mount = tmp_path / "cgroup"
@@ -398,9 +402,15 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
            "planned_callbacks":0,"successful_callbacks":0,"elapsed_seconds":1,"workers":[],
            "iterations":[{"number":0,"exit":0,"tests":3,"skipped":0,"failures":0,"errors":0,
                           "diagnostic_errors":[],"elapsed_seconds":.5}]}
+    identities = {"product_identity":product_identity(source), "harness_identity":harness_identity(source),
+                  "host_provenance":host_provenance(Path(campaign.os.environ["HERMES_AGENT_DIR"]))}
+    raw.update(json.loads(json.dumps(identities)))
+    if fault in identities: raw[fault]["content_sha256"] = "0"*64
     if fault == "report_coverage": raw["iterations"][0]["tests"] = 0
     report_path.write_text("broken" if fault == "report_json" else json.dumps(raw))
+    original_run = campaign.subprocess.run
     def launch(command, **kwargs):
+        if command[0] == "git": return original_run(command, **kwargs)
         calls.append(command)
         assert command[0] == "systemd-run", "no unrelated process may be controlled"
         unit = next(x.removeprefix("--unit=") for x in command if x.startswith("--unit="))
@@ -433,6 +443,7 @@ def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault
     assert len(manifest["runs"]) == len(manifest["reports"]) == len(calls) == 1
     assert len(checks) == 2
     if fault is None:
+        assert all(final[key] == value for key,value in identities.items())
         assert final["cleanup_verified"] and final["resources_verified"] and final["production_unchanged"]
     else:
         assert final["errors"] and not manifest["reports"][0]["passed"]
@@ -534,7 +545,11 @@ def test_launch_requires_durable_boundary(tmp_path, monkeypatch):
         if path.name.endswith(".launch.json"): raise OSError("launch record write failed")
         return real_atomic(path, data)
     monkeypatch.setattr(campaign, "atomic", atomic)
-    monkeypatch.setattr(campaign.subprocess, "run", lambda *a, **k: pytest.fail("launch before durable record"))
+    original_run = campaign.subprocess.run
+    def refuse_work(command, **kwargs):
+        if command[0] == "git": return original_run(command, **kwargs)
+        pytest.fail("launch before durable record")
+    monkeypatch.setattr(campaign.subprocess, "run", refuse_work)
     assert campaign.execute(CASE, "fix", 256) is False
     final = json.loads((campaign.HERE/"manifest.json").read_text())["runs"][0]
     assert not final["launch_started"] and final["cleanup_verified"]
@@ -611,3 +626,23 @@ def test_namespace_shell_does_not_expand_python_environment(tmp_path, monkeypatc
     result = subprocess.run(shell, env=campaign.workload_environment(unit), capture_output=True, text=True, timeout=3)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == sorted(campaign.workload_environment(unit))
+
+
+def test_controller_forwards_explicit_provider_selection(tmp_path, monkeypatch):
+    from test_harness_support import fixture_product
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    frozen = fixture_product(tmp_path/"frozen")
+    case = {**CASE,"provider_source":str(frozen)}
+    unit = "hermes-zvec-stress-"+"a"*32+".service"
+    command, _ = campaign.build_command(case,unit,256)
+    assert "ZVEC_TEST_PROVIDER_ROOT="+str(frozen) in command
+    (root/"production-before.json").write_text("{}")
+    seen = []
+    def execute(case, variant, tasks):
+        assert case["provider_source"] == str(frozen)
+        seen.append(case["label"])
+        return False
+    monkeypatch.setattr(campaign,"execute",execute)
+    label = next(iter(campaign.load_cases()))
+    assert campaign.main(["--case",label,"--provider-source",str(frozen),"--output-dir",str(root)]) == 1
+    assert seen == [label]

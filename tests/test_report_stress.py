@@ -562,3 +562,33 @@ def test_shutdown_samples_and_recovery_remain_separate():
     assert historical["recovery_shutdown_seconds"] is None
     csv = tool().render(data)["aggregate.csv"]
     assert "worker_shutdown_p99_seconds" in csv and "recovery_shutdown_seconds" in csv
+
+
+def test_comparison_binds_instrument_and_installed_host_not_product_path():
+    import json
+    baseline, fixed = report([2]), report([1])
+    for raw, source in ((baseline,"a"),(fixed,"b")):
+        raw["arguments"]["provider_source"] = "/private/"+source
+        raw["product_identity"] = {"kind":"source_snapshot","content_sha256":source*64,
+                                   "files":{"/private/secret":"not public"}}
+        raw["harness_identity"] = {"kind":"source_snapshot","content_sha256":"c"*64}
+        raw["host_provenance"] = {"kind":"installed_snapshot","content_sha256":"d"*64}
+    tags = [{"scenario":"same","variant":"baseline"},{"scenario":"same","variant":"fix"}]
+    result = tool().aggregate([baseline,fixed],tags=tags)
+    assert len(result["comparisons"]) == 1
+    assert result["comparisons"][0]["identity_basis"] == "content_fingerprints"
+    import csv, io
+    rendered = tool().render(result)
+    rows = list(csv.DictReader(io.StringIO(rendered["aggregate.csv"])))
+    assert rows[0]["product_content_sha256"] == "a"*64
+    assert rows[1]["harness_content_sha256"] == "c"*64
+    assert rows[1]["host_content_sha256"] == "d"*64
+    assert "harness content fingerprints" in rendered["aggregate.md"]
+    assert result["runs"][0]["product_identity"]["content_sha256"] == "a"*64
+    assert result["runs"][1]["product_identity"]["content_sha256"] == "b"*64
+    assert "/private" not in json.dumps(result) and "not public" not in json.dumps(result)
+    fixed["harness_identity"]["content_sha256"] = "e"*64
+    assert tool().aggregate([baseline,fixed],tags=tags)["comparisons"] == []
+    fixed["harness_identity"]["content_sha256"] = "c"*64
+    fixed["host_provenance"]["content_sha256"] = "f"*64
+    assert tool().aggregate([baseline,fixed],tags=tags)["comparisons"] == []

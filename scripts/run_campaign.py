@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture_limits import limits_match
+from harness_support import provider_source, product_identity, harness_identity, host_provenance
 import subprocess
 import time
 import tempfile
@@ -218,7 +219,7 @@ def cleanup_unit(unit, capture):
     return group_empty(group)
 
 
-def workload_environment(unit):
+def workload_environment(unit, selected_source=None):
     root = HERE / (unit.removesuffix(".service") + ".work")
     home = root / "home"
     return {"PATH":"/usr/bin:/bin", "HOME":str(home), "HERMES_HOME":str(home / "hermes"),
@@ -230,6 +231,7 @@ def workload_environment(unit):
             "ZVEC_GREP_HOME":str(root / "zg-state"), "ZVEC_GREP_MODEL_CACHE":str(ROOT / ".test-tools/models"),
             "ZVEC_TEST_MODEL_CACHE":str(ROOT / ".test-tools/models"),
             "ZVEC_TEST_NODE_MODULES":str(ROOT / ".test-tools/node_modules"),
+            "ZVEC_TEST_PROVIDER_ROOT":str(selected_source if selected_source is not None else os.environ.get("ZVEC_TEST_PROVIDER_ROOT", ROOT)),
             "HF_HUB_OFFLINE":"1", "TRANSFORMERS_OFFLINE":"1", "PYTHONDONTWRITEBYTECODE":"1",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD":"1", "LANG":"C.UTF-8", "TZ":"UTC"}
 
@@ -240,7 +242,7 @@ def build_command(case, unit, tasks):
     assert all(isinstance(x, str) for x in case["args"])
     assert unit.endswith(".service"), unit
     limit = int(case["timeout_s"])
-    env = workload_environment(unit)
+    env = workload_environment(unit, case.get("provider_source"))
     def capture_command(phase):
         path = HERE / (unit.removesuffix(".service") + f".{phase}.limits.json")
         # systemd Exec*= uses its own quoting and specifiers, not a shell.
@@ -324,6 +326,9 @@ def campaign_lease(require_manifest=True):
 def publish_attempt(receipt):
     entry = manifest_entry(receipt["case"], receipt["tasks"], receipt.get("cgroup", {}),
                            receipt.get("report") if receipt.get("report_validated") else None, receipt.get("exit_code"), receipt.get("source_sha", ""))
+    for key in ("product_identity", "harness_identity", "host_provenance"):
+        if key in receipt:
+            entry["metadata"][key] = receipt[key]
     entry["attempt_id"] = receipt["attempt_id"]
     entry["tags"]["variant"] = receipt["variant"]
     entry["passed"] = receipt["passed"] is True
@@ -428,15 +433,18 @@ def execute_body(case, variant, tasks, receipt):
     if unit_state(unit)["LoadState"] != "not-found":
         raise RuntimeError("refusing an existing attempt unit")
     logfile = HERE / (receipt["attempt_id"] + ".private.log")
-    env = workload_environment(unit)
+    env = workload_environment(unit, case.get("provider_source"))
     private = Path(env["ZVEC_TEST_ROOT"])
     private.mkdir(mode=0o700)
     for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
                 "TMPDIR", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE", "ZVEC_GREP_HOME"):
         Path(env[key]).mkdir(parents=True, exist_ok=True)
     command, limits = build_command(case, unit, tasks)
-    receipt.update({"limits": limits,
-                    "source_sha": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])})
+    receipt["limits"] = limits
+    receipt["product_identity"] = product_identity(provider_source(ROOT, case.get("provider_source")))
+    receipt["harness_identity"] = harness_identity(ROOT)
+    receipt["host_provenance"] = host_provenance(Path(env["HERMES_AGENT_DIR"]))
+    receipt["source_sha"] = receipt["harness_identity"].get("git_sha")
     print("START " + case["label"] + " " + unit + " tasks=" + str(tasks), flush=True)
     cancelled = None
     try:
@@ -498,6 +506,9 @@ def execute_body(case, variant, tasks, receipt):
     from report_stress import adapt_report, summarize
     raw = json.loads(path.read_text())
     valid = summarize(adapt_report(raw), 1)
+    for key in ("product_identity", "harness_identity", "host_provenance"):
+        if valid.get(key, {}).get("content_sha256") != receipt[key]["content_sha256"]:
+            raise ValueError("workload source fingerprint mismatch")
     receipt["report_validated"] = True
     receipt["harness_passed"] = pointer.get("passed") is True and valid["passed"] is True
     if not receipt["harness_passed"]:
@@ -665,6 +676,7 @@ def main(argv=None):
     parser.add_argument("--snapshot-production", action="store_true",
                         help="re-record the production baseline (requires --reason)")
     parser.add_argument("--reason", help="why the production baseline is being re-recorded")
+    parser.add_argument("--provider-source", type=Path, help="explicit measured product checkout or snapshot")
     args = parser.parse_args(argv)
     try:
         cases = load_cases()
@@ -695,7 +707,10 @@ def main(argv=None):
     if not BASELINE.is_file() or BASELINE.is_symlink():
         parser.error("record an explicit production baseline before launch")
     for label in args.case:
-        if not execute(cases[label], args.variant, args.tasks):
+        case = dict(cases[label])
+        if args.provider_source is not None:
+            case["provider_source"] = str(args.provider_source.expanduser().resolve())
+        if not execute(case, args.variant, args.tasks):
             return 1
     return 0
 
