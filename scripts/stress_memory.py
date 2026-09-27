@@ -619,7 +619,7 @@ def regression_campaign(run, args, report):
             env.update(ZVEC_RUN_NATIVE="1", ZVEC_TEST_BIN=str(ZG),
                        ZVEC_TEST_MODEL_CACHE=str(ROOT / ".test-tools/models"))
         began = time.monotonic()
-        receipt = {"number": i, "errors": []}
+        receipt = {"number": i, "diagnostic_errors": []}
         try:
             receipt["exit"] = run_command(cmd, env, root / "pytest.log", args.timeout)
             if receipt["exit"]:
@@ -627,14 +627,14 @@ def regression_campaign(run, args, report):
             receipt.update(read_junit(xml))
             report["completed_iterations"] += 1
         except Exception as exc:
-            receipt["errors"].append(repr(exc))
+            receipt["diagnostic_errors"].append(repr(exc))
             receipt["traceback"] = traceback.format_exc()
             report["errors"].append(f"iteration {i}: {exc!r}")
         finally:
             receipt["elapsed_seconds"] = time.monotonic()-began
             write_json(root / "receipt.json", receipt)
             report["iterations"].append(receipt)
-        if receipt["errors"]:
+        if receipt["diagnostic_errors"]:
             break
 
 

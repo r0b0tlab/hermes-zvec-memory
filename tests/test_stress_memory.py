@@ -114,7 +114,7 @@ def test_regression_error_retains_private_traceback(tmp_path, monkeypatch, missi
     receipt = json.loads((tmp_path / "iteration-0/receipt.json").read_text())
     assert report["completed_iterations"] == 0
     assert len(report["iterations"]) == 1
-    assert receipt["errors"]
+    assert receipt["diagnostic_errors"]
     assert "Traceback (most recent call last)" in receipt["traceback"]
     assert "FileNotFoundError" in receipt["traceback"]
     assert ("junit.xml" if missing_junit else "/proc/private-sentinel/task") in receipt["traceback"]
@@ -862,3 +862,18 @@ def test_native_query_receipts_bind_each_oracle():
     assert [q["forbidden_sha256"] for q in result["negative_queries"]] == [
         hashlib.sha256(text.encode()).hexdigest() for text in forbidden]
     assert all(q["chars"] == len(q["response"]["results"]) for q in result["negative_queries"])
+
+
+def test_regression_receipts_separate_junit_and_diagnostics(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    def command(cmd, *args):
+        Path(cmd[cmd.index("--junitxml")+1]).write_text(
+            '<testsuite tests="1" skipped="0" failures="0" errors="0"/>')
+        return 0
+    monkeypatch.setattr(s, "run_command", command)
+    result = {"errors": []}
+    s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=1, timeout=1), result)
+    row = result["iterations"][0]
+    assert row["errors"] == 0
+    assert row["diagnostic_errors"] == []

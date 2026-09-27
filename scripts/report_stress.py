@@ -221,6 +221,27 @@ def complete_coverage(raw):
                     return False
             return True
 
+        if lane in {"regression", "native-regression"}:
+            iterations = raw["iterations"]
+            n = count(raw["planned_iterations"])
+            if not n or count(raw["completed_iterations"]) != n:
+                return False
+            if count(raw["arguments"]["iterations"]) != n:
+                return False
+            if workers or planned or successful or len(iterations) != n:
+                return False
+            for ordinal, iteration in enumerate(iterations):
+                if iteration["number"] != ordinal or iteration["exit"] != 0:
+                    return False
+                if count(iteration["tests"]) <= 0:
+                    return False
+                if any(count(iteration[k]) != 0
+                       for k in ("skipped", "failures", "errors")):
+                    return False
+                if iteration.get("diagnostic_errors", []):
+                    return False
+                number(iteration["elapsed_seconds"])
+            return True
         return False
     except (KeyError, TypeError, ValueError):
         return False
@@ -228,10 +249,30 @@ def complete_coverage(raw):
 
 def error_counts(report):
     counts = Counter()
-    for section in [report, *report.get("workers", []), report.get("recovery", {})]:
-        for error in section.get("errors", []):
+    ordinary = [
+        report, *report.get("workers", []), report.get("recovery", {})
+    ]
+    sections = [(section, False) for section in ordinary]
+    sections += [(section, True) for section in report.get("iterations", [])]
+
+    for section, junit in sections:
+        values = section.get("errors", [])
+        if junit and type(values) is int:
+            counts["child_exit"] += count(values)
+        else:
+            if not isinstance(values, list):
+                raise ValueError("invalid errors collection")
+            for error in values:
+                category = error.get("category") if isinstance(error, dict) else None
+                counts[enum(category, ERRORS, "other")] += 1
+        diagnostics = section.get("diagnostic_errors", [])
+        if not isinstance(diagnostics, list):
+            raise ValueError("invalid diagnostics collection")
+        for error in diagnostics:
             category = error.get("category") if isinstance(error, dict) else None
             counts[enum(category, ERRORS, "other")] += 1
+        if junit:
+            counts["child_exit"] += count(section.get("failures", 0))
         for category, value in section.get("error_counts", {}).items():
             counts[enum(category, ERRORS, "other")] += count(value)
     return +counts
@@ -255,6 +296,14 @@ def summarize(report, index):
         value = report.get(key)
         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
             row[key] = value
+    if report.get("lane") in {"regression", "native-regression"}:
+        for key in ("planned_iterations", "completed_iterations"):
+            if key in report:
+                row[key] = count(report[key])
+        iterations = report.get("iterations", [])
+        row["junit"] = {key: sum(count(item[key]) for item in iterations)
+                        if iterations and all(type(item.get(key)) is int for item in iterations)
+                        else None for key in ("tests", "skipped", "failures", "errors")}
     value = report.get("python_version", report.get("python"))
     if isinstance(value, str):
         match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)(?: |$)", value)
@@ -390,6 +439,22 @@ def soak_metrics(raw):
     return result
 
 
+def complete_soak_coverage(raw):
+    try:
+        worker, args = raw["worker"], raw["arguments"]
+        if number(worker["active_seconds"]) < number(args["duration"]):
+            return False
+        if count(raw["resources"]["sample_count"]) <= 0 or count(worker["cycles"]) <= 0:
+            return False
+        if args.get("engine_restart_at") is not None and not worker["restarts"]:
+            return False
+        if count(args["seed_facts"]) and worker.get("corpus_removed") is not True:
+            return False
+        return count(worker["final_mirror_records"]) == 0
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def adapt_report(raw):
     """Only known schemas can claim success; incomplete failures stay attempts."""
     soak = raw.get("lane") == "long_lived_soak"
@@ -410,6 +475,8 @@ def adapt_report(raw):
             and {"planned_callbacks", "successful_callbacks", "elapsed_seconds", "workers"} <= raw.keys()
             and isinstance(raw["workers"], list)
             and all(isinstance(w, dict) and isinstance(w.get("samples"), list) for w in raw["workers"]))
+    if soak and raw.get("passed") is True:
+        supported = supported and complete_soak_coverage(raw)
     if not soak and raw.get("passed", raw.get("pass")) is True:
         supported = supported and complete_coverage(raw)
     if not supported:

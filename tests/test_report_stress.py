@@ -494,3 +494,55 @@ def test_native_coverage_requires_exact_selected_oracles(damage):
     else:
         assert tool().summarize(raw, 1)["passed"] is False
         with pytest.raises(ValueError): tool().aggregate([raw])
+
+
+def regression_report():
+    return {"schema_version": 1, "lane": "regression", "mode": "offline", "passed": True,
+            "arguments": {"iterations": 1}, "planned_iterations": 1, "completed_iterations": 1,
+            "planned_callbacks": 0, "successful_callbacks": 0, "elapsed_seconds": 1,
+            "workers": [], "iterations": [{"number": 0, "exit": 0, "tests": 3,
+                "skipped": 0, "failures": 0, "errors": 0, "diagnostic_errors": [], "elapsed_seconds": .5}]}
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "empty", "skipped", "failures", "errors", "short", "diagnostic"])
+def test_regression_success_requires_observed_junit_coverage(damage):
+    raw = regression_report()
+    item = raw["iterations"][0]
+    if damage == "missing": item.pop("tests")
+    elif damage == "empty": item["tests"] = 0
+    elif damage in ("skipped", "failures", "errors"): item[damage] = 1
+    elif damage == "short": raw["completed_iterations"] = 0
+    elif damage == "diagnostic": item["diagnostic_errors"] = ["private failure"]
+    if damage is None:
+        result = tool().aggregate([raw])
+        assert result["passed"] is True
+        assert result["runs"][0]["planned_iterations"] == 1
+        assert result["runs"][0]["completed_iterations"] == 1
+        assert result["runs"][0]["junit"]["tests"] == 3
+        assert not result["error_counts"]
+    else:
+        assert tool().summarize(raw, 1)["passed"] is False
+        with pytest.raises(ValueError): tool().aggregate([raw])
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_failed_iteration_diagnostics_survive_export(legacy):
+    raw = regression_report()
+    raw["passed"] = False
+    raw["iterations"][0]["errors" if legacy else "diagnostic_errors"] = ["private failure"]
+    result = tool().aggregate([raw])
+    assert result["passed"] is False and result["attempts"] == 1
+    assert result["error_counts"] == {"other": 1}
+    assert "private failure" not in str(result)
+
+
+@pytest.mark.parametrize("damage", ["short", "no_samples", "missed_restart", "missed_removal"])
+def test_soak_success_requires_full_requested_coverage(damage):
+    raw = soak_report()
+    if damage == "short": raw["arguments"]["duration"] = 1800
+    elif damage == "no_samples": raw["resources"]["sample_count"] = 0
+    elif damage == "missed_restart":
+        raw["arguments"]["engine_restart_at"] = 2
+        raw["worker"]["restarts"] = []
+    elif damage == "missed_removal": raw["worker"]["corpus_removed"] = False
+    with pytest.raises(ValueError): tool().aggregate([raw])
