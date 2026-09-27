@@ -118,6 +118,9 @@ def environment(run, port):
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
             "XDG_DATA_HOME": str(home / "data"), "LANG": "C.UTF-8", "TZ": "UTC",
+            "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
+            "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "ZVEC_GREP_HOME": str(run / "zg-state"),
             "ZVEC_GREP_MODEL_CACHE": str(ROOT / ".test-tools/models"),
             "ZVEC_GREP_MODE": "server", "ZVEC_GREP_DEVICE": "cpu",
@@ -387,6 +390,31 @@ def write_json(path, value):
 def retrieval_hit(text, content):
     body = text.partition("\n#1 ")[2]
     return bool(body) and "facts/" in body.splitlines()[0] and content in body
+
+
+def owned_worker_environment(candidate):
+    candidate = Path(candidate)
+    run = candidate.resolve()
+    if candidate.is_symlink() or candidate.absolute() != run or run.parent != RUNS.resolve():
+        raise ValueError("non-owned worker run")
+    if any(path.is_symlink() for path in run.rglob("*")):
+        raise ValueError("symlink inside worker run")
+
+    marker = json.loads((run / "OWNER.json").read_text())
+    if not isinstance(marker, dict):
+        raise ValueError("invalid owner marker")
+    expected = {
+        "kind": "zvec-long-lived-soak",
+        "version": 2,
+        "repo": str(ROOT),
+        "port": marker.get("port"),
+    }
+    if marker != expected or type(marker["port"]) is not int:
+        raise ValueError("owner marker mismatch")
+    env = environment(run, marker["port"])
+    os.environ.clear()
+    os.environ.update(env)
+    return run, env
 
 
 def provider_factory(run, number):
@@ -738,27 +766,26 @@ def main(argv=None):
     except ValueError as exc:
         parser.error(str(exc))
     if args.worker_run:
-        run = args.worker_run.resolve()
-        if (run.parent != RUNS.resolve() or not (run / "OWNER.json").is_file()
-                or os.environ.get("HERMES_HOME") != str(run / "home/hermes")
-                or os.environ.get("HOME") != str(run / "home")):
+        try:
+            run, env = owned_worker_environment(args.worker_run)
+        except (OSError, ValueError, TypeError):
             parser.error("refusing non-owned worker environment")
-        # Environment was constructed by the coordinator, never ambient copy.
-        port = int(os.environ["ZVEC_GREP_SERVER_URL"].split(":")[2].split("/")[0])
-        return worker(run, args, environment(run, port))
+        return worker(run, args, env)
     RUNS.mkdir(parents=True, exist_ok=True)
     run = Path(tempfile.mkdtemp(prefix="soak-", dir=RUNS)).resolve()
     run.chmod(0o700)
     report = {"schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
               "passed": False, "errors": [], "runtime": runtime_metadata}
     try:
-        write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 1})
         if not Path(runtime[0]).is_file() or not (HOST / "agent/memory_provider.py").is_file():
             raise FileNotFoundError("test engine or host checkout missing")
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise RuntimeError("Linux pidfd support required")
-        env = environment(run, free_port())
-        for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "ZVEC_GREP_HOME"):
+        port = free_port()
+        write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 2,
+                                        "repo": str(ROOT), "port": port})
+        env = environment(run, port)
+        for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR", "ZVEC_GREP_HOME"):
             Path(env[key]).mkdir(parents=True, exist_ok=True)
         with (run / "token").open("x") as token:
             token.write(secrets.token_hex(32) + "\n")
@@ -767,7 +794,7 @@ def main(argv=None):
         launcher = run / "zg-server-only"
         launcher.write_text(f"#!{sys.executable}\nimport runpy\nfrom pathlib import Path\nm = runpy.run_path({str(Path(__file__).resolve())!r})\nraise SystemExit(m['transport_main'](Path({str(run)!r})))\n")
         launcher.chmod(0o700)
-        command = [sys.executable, str(Path(__file__).resolve()), "--worker-run", str(run),
+        command = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker-run", str(run),
                    "--duration", str(args.duration), "--seed-facts", str(args.seed_facts),
                    "--sample-interval", str(args.sample_interval),
                    "--convergence-timeout", str(args.convergence_timeout)]

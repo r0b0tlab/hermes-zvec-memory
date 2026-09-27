@@ -38,6 +38,12 @@ def environment(run, repo):
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
             "XDG_CACHE_HOME": str(home / "cache"), "ZVEC_GREP_HOME": str(run / "zg-state"),
+            "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
+            "ZVEC_TEST_ROOT": str(run), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "HERMES_ZVEC_RUNTIME_DIR": str(run / "runtime"),
+            "HERMES_ZVEC_MODEL_CACHE": str(run / "models"),
+            "ZVEC_TEST_NODE_MODULES": str(repo / ".test-tools/node_modules"),
+            "ZVEC_TEST_MODEL_CACHE": str(repo / ".test-tools/models"),
             "ZVEC_GREP_MODEL_CACHE": str(repo / ".test-tools/models"),
             "ZVEC_GREP_MODE": "direct", "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1",
@@ -100,7 +106,10 @@ def hit_body(text):
 
 
 def prepare_home(run):
-    (run / "home/hermes").mkdir(parents=True, exist_ok=True)
+    env = environment(run, ROOT)
+    for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                "XDG_STATE_HOME", "TMPDIR", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE"):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
     # Raw direct zg only. Fail closed on JS network access, including cache misses.
     (run / "deny-network.cjs").write_text(
         "const deny = () => { throw new Error('stress: network disabled'); };\n"
@@ -583,7 +592,7 @@ def load_campaign(run, args, report):
         for n in range(args.workers):
             log = (run / f"worker-{n}.log").open("w")
             handles.append(log)
-            cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", str(n), "--run", str(run),
+            cmd = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker", str(n), "--run", str(run),
                    "--records", str(args.records), "--workers", str(args.workers), "--mode", args.mode,
                    "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                    "--timeout", str(args.timeout)]
@@ -652,7 +661,7 @@ def load_campaign(run, args, report):
         return
     rc = None
     try:
-        rc = run_command([sys.executable, str(Path(__file__).resolve()), "--recover", "--run", str(run),
+        rc = run_command([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--recover", "--run", str(run),
                           "--workers", str(args.workers), "--records", str(args.records), "--mode", args.mode,
                           "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                           "--recovery-timeout", str(args.recovery_timeout)],
@@ -694,7 +703,7 @@ def regression_campaign(run, args, report):
         root = run / f"iteration-{i}"
         prepare_home(root)
         xml = root / "junit.xml"
-        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+        cmd = [sys.executable, "-I", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                "--basetemp", str(root / "pytest"), "--junitxml", str(xml), *files]
         env = environment(root, ROOT)
         if native:

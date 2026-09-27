@@ -1031,3 +1031,27 @@ def test_shutdown_duration_survives_failure(monkeypatch):
     assert receipt["admission_seconds"] == 1.0
     assert receipt["drain_seconds"] == 3.0
     assert receipt["errors"]
+
+
+def test_worker_environment_contains_precollection_roots(tmp_path):
+    s = module()
+    s.prepare_home(tmp_path)
+    env = s.environment(tmp_path, ROOT)
+    for name in ("TMPDIR", "XDG_STATE_HOME", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE"):
+        assert Path(env[name]).is_relative_to(tmp_path)
+        assert Path(env[name]).is_dir()
+    assert env["ZVEC_TEST_ROOT"] == str(tmp_path)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+
+
+def test_regression_original_spawn_disables_ambient_python(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    observed = []
+    def command(cmd, env, *args):
+        observed.append(cmd)
+        Path(cmd[cmd.index("--junitxml")+1]).write_text('<testsuite tests="1" skipped="0" failures="0" errors="0"/>')
+        return 0
+    monkeypatch.setattr(s, "run_command", command)
+    s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=1, timeout=1), {"errors": []})
+    assert observed[0][1:3] == ["-I", "-B"]

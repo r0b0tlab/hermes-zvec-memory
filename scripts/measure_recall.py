@@ -37,7 +37,6 @@ from harness_support import host_provenance
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
-sys.path.insert(0, str(HERMES_AGENT_DIR))
 
 FACTS = [
     ("project", "Production deploys require the canary gate to pass before any rollout proceeds", "deploy"),
@@ -201,6 +200,7 @@ def run_set(p, p_full, queries):
 def load_provider():
     """Import only after HOME/HERMES_HOME have been isolated."""
     import importlib.util
+    sys.path.insert(0, str(HERMES_AGENT_DIR))
     spec = importlib.util.spec_from_file_location(
         "zvec_benchmark_provider", REPO_ROOT / "zvec-memory" / "__init__.py")
     assert spec is not None and spec.loader is not None
@@ -300,7 +300,12 @@ def main(argv=None):
 
     @contextmanager
     def environment(home):
-        values = {"HOME": str(home), "HERMES_HOME": str(home / "hermes"),
+        values = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC",
+                  "HOME": str(home), "HERMES_HOME": str(home / "hermes"),
+                  "HERMES_AGENT_DIR": str(HERMES_AGENT_DIR),
+                  "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                  "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                  "TMPDIR": str(home / "tmp"), "XDG_STATE_HOME": str(home / "state"),
                   "XDG_CONFIG_HOME": str(home / "config"),
                   "XDG_DATA_HOME": str(home / "data"),
                   "ZVEC_GREP_HOME": str(home / "zvec-state"),
@@ -310,16 +315,16 @@ def main(argv=None):
                   "HF_HOME": str((cache or home / "cache") / "huggingface"),
                   "HUGGINGFACE_HUB_CACHE": str((cache or home / "cache") / "huggingface" / "hub"),
                   "TRANSFORMERS_CACHE": str((cache or home / "cache") / "transformers")}
-        previous = {key: os.environ.get(key) for key in values}
+        for key in ("TMPDIR", "XDG_STATE_HOME"):
+            Path(values[key]).mkdir(parents=True, exist_ok=True)
+        previous = dict(os.environ)
+        os.environ.clear()
         os.environ.update(values)
         try:
             yield
         finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            os.environ.clear()
+            os.environ.update(previous)
 
     try:
         with tempfile.TemporaryDirectory(prefix="zvec-measure-") as directory:

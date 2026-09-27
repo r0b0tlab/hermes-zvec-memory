@@ -226,3 +226,22 @@ def test_visibility_does_not_borrow_uncapped_evidence():
     result = benchmark.run_set(capped, full, [("deployment policy", "canary gate")])
     assert result["retrieved_hit_at_5"] == {"hybrid": 1.0, "fts": 1.0}
     assert result["visible_hit_at_5"] == 0.0
+
+
+def test_benchmark_isolated_environment_scrubs_ambient_extras(tmp_path, monkeypatch):
+    import os
+    poison = ("OPENAI_API_KEY", "HTTP_PROXY", "HTTPS_PROXY", "PYTHONPATH", "NODE_OPTIONS", "ZVEC_GREP_SERVER_URL", "ZVEC_GREP_SERVER_TOKEN_FILE")
+    for name in poison: monkeypatch.setenv(name, "poison")
+    before = dict(os.environ)
+    observed = []
+    def provider():
+        observed.append(dict(os.environ))
+        raise RuntimeError("stop before native provider")
+    monkeypatch.setattr(benchmark, "load_provider", provider)
+    monkeypatch.setattr(benchmark.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="fixture", stderr=""))
+    assert benchmark.main(["--output", str(tmp_path / "receipt.json")]) == 1
+    assert len(observed) == 1
+    assert not set(poison) & observed[0].keys()
+    assert observed[0]["HF_HUB_OFFLINE"] == observed[0]["TRANSFORMERS_OFFLINE"] == "1"
+    assert Path(observed[0]["TMPDIR"]).is_relative_to(Path(observed[0]["HOME"]))
+    assert os.environ == before

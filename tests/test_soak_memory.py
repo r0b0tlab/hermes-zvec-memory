@@ -403,6 +403,7 @@ def test_installed_snapshot_provenance_precedes_soak_work(tmp_path, monkeypatch,
     monkeypatch.setattr(soak.subprocess, "check_output",
                         lambda *a, **k: calls.append("plugin-provenance") or "a" * 40)
     def work(*args):
+        assert args[1][1:3] == ["-I", "-B"]
         calls.append("worker")
         assert calls[:-1] == ["plugin-provenance"], "provenance must precede executed work"
         return {"passed": True, "errors": [], "worker": {"coverage": "retained"}}
@@ -469,3 +470,65 @@ def test_tree_cleanup_signal_error_does_not_skip_other_identities(monkeypatch):
     with pytest.raises(RuntimeError): tree.stop(grace=0)
     assert {101, 102, 103} <= set(attempts)
     assert {101, 102, 103} <= set(closed)
+
+
+def owned_run(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    run = runs / "soak-owned"
+    run.mkdir(parents=True, mode=0o700)
+    marker = {"kind": "zvec-long-lived-soak", "version": 2, "repo": str(soak.ROOT), "port": 23456}
+    (run / "OWNER.json").write_text(json.dumps(marker))
+    (run / "token").write_text("fixture-token")
+    monkeypatch.setattr(soak, "RUNS", runs)
+    monkeypatch.setenv("HOME", str(run / "home"))
+    monkeypatch.setenv("HERMES_HOME", str(run / "home/hermes"))
+    monkeypatch.setenv("ZVEC_GREP_SERVER_URL", "http://127.0.0.1:29999/mcp")
+    return run, marker
+
+
+def test_direct_worker_environment_is_reconstructed_before_worker(tmp_path, monkeypatch):
+    run, _ = owned_run(tmp_path, monkeypatch)
+    poison = ("OPENAI_API_KEY", "HTTP_PROXY", "HTTPS_PROXY", "PYTHONPATH", "NODE_OPTIONS")
+    for name in poison: monkeypatch.setenv(name, "poison")
+    previous = dict(os.environ)
+    def work(selected, args, env):
+        assert selected == run and dict(os.environ) == env
+        assert not set(poison) & env.keys()
+        assert env["ZVEC_GREP_SERVER_URL"] == "http://127.0.0.1:23456/mcp"
+        for key in ("TMPDIR", "XDG_STATE_HOME"):
+            assert Path(env[key]).is_relative_to(run)
+        assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+        assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        return 0
+    monkeypatch.setattr(soak, "worker", work)
+    try:
+        assert soak.main(["--worker-run", str(run), "--duration", "1"]) == 0
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+
+
+@pytest.mark.parametrize("damage", ["wrong_kind", "wrong_repo", "boolean_port", "production_port", "missing", "malformed", "symlink_run", "symlink_marker", "symlink_token"])
+def test_direct_worker_refuses_invalid_owner_before_import(tmp_path, monkeypatch, damage):
+    run, marker = owned_run(tmp_path, monkeypatch)
+    candidate = run
+    if damage == "wrong_kind": marker["kind"] = "other"
+    elif damage == "wrong_repo": marker["repo"] = "/other"
+    elif damage == "boolean_port": marker["port"] = True
+    elif damage == "production_port": marker["port"] = 17999
+    (run / "OWNER.json").write_text(json.dumps(marker))
+    if damage == "missing": (run / "OWNER.json").unlink()
+    elif damage == "malformed": (run / "OWNER.json").write_text("broken")
+    elif damage == "symlink_run":
+        candidate = run.parent / "alias"
+        candidate.symlink_to(run, target_is_directory=True)
+    elif damage in {"symlink_marker", "symlink_token"}:
+        name = "OWNER.json" if damage == "symlink_marker" else "token"
+        source = run / name
+        target = tmp_path / "outside"
+        source.rename(target)
+        source.symlink_to(target)
+    monkeypatch.setattr(soak, "worker", lambda *a: pytest.fail("worker import reached"))
+    with pytest.raises(SystemExit) as exc:
+        soak.main(["--worker-run", str(candidate), "--duration", "1"])
+    assert exc.value.code == 2
