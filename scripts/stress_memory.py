@@ -526,8 +526,10 @@ def load_campaign(run, args, report):
                    "--records", str(args.records), "--workers", str(args.workers), "--mode", args.mode,
                    "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                    "--timeout", str(args.timeout)]
-            children.append(track_child(subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
-                                             stderr=subprocess.STDOUT, start_new_session=True)))
+            child = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+            children.append(child)
+            track_child(child)
         while any(poll_owned(child) is None for child in children):
             if any(poll_owned(child) not in (None, 0) for child in children):
                 raise RuntimeError("unexpected child exit; aborting peer writers")
@@ -538,10 +540,23 @@ def load_campaign(run, args, report):
         report["errors"].append(f"writers: {exc!r}")
     finally:
         for child in children:
-            if cleanup_owned(child):
-                report["errors"].append(f"leftover descendants of worker pid {child.pid}")
+            try:
+                if getattr(child, "_stress_handles", None):
+                    if cleanup_owned(child):
+                        report["errors"].append(f"leftover descendants of worker pid {child.pid}")
+                else:
+                    stop_direct(child)
+            except BaseException as exc:
+                report["errors"].append("worker cleanup: " + type(exc).__name__)
+                try:
+                    stop_direct(child)
+                except BaseException as fallback:
+                    report["errors"].append("direct cleanup: " + type(fallback).__name__)
         for log in handles:
-            log.close()
+            try:
+                log.close()
+            except BaseException as exc:
+                report["errors"].append("log cleanup: " + type(exc).__name__)
     report["writers_seconds"] = time.monotonic()-began
     for n in range(args.workers):
         path = run / f"worker-{n}.json"

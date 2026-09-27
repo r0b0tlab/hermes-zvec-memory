@@ -913,3 +913,43 @@ def test_post_spawn_tracking_failure_is_owned(tmp_path, monkeypatch):
             if child.poll() is None:
                 child.kill()
             child.wait(timeout=2)
+
+
+@pytest.mark.parametrize("fault", ["later_tracking", "first_cleanup"])
+def test_peer_failure_cleans_every_spawned_child(tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
+    s = module()
+    created = []
+    real_popen, real_track, real_cleanup = subprocess.Popen, s.track_child, s.cleanup_owned
+    def spawn(*args, **kwargs):
+        child = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+        created.append(child)
+        return child
+    def track(child):
+        if fault == "later_tracking" and len(created) == 2:
+            raise RuntimeError("later peer tracking failed")
+        return real_track(child)
+    def cleanup(child, *args):
+        if fault == "first_cleanup" and child is created[0]:
+            raise RuntimeError("first peer cleanup failed")
+        return real_cleanup(child, *args)
+    monkeypatch.setattr(s.subprocess, "Popen", spawn)
+    monkeypatch.setattr(s, "track_child", track)
+    monkeypatch.setattr(s, "cleanup_owned", cleanup)
+    monkeypatch.setattr(s, "poll_owned", lambda child: 9)
+    args = SimpleNamespace(seed_facts=0, mode="offline", workers=2, records=1,
+                           timeout=1, recovery_timeout=1, shutdown_policy="immediate")
+    result = {"errors": [], "workers": []}
+    try:
+        s.load_campaign(tmp_path, args, result)
+        assert result["errors"]
+        assert len(created) == 2
+        assert all(child.returncode is not None for child in created)
+        assert all(not Path(f"/proc/{child.pid}").exists() for child in created)
+    finally:
+        for child in created:
+            if child.poll() is None: child.kill()
+            child.wait(timeout=2)
+            for fd in getattr(child, "_stress_handles", {}).values():
+                try: s.os.close(fd)
+                except OSError: pass
