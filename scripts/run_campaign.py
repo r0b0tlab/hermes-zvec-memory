@@ -39,6 +39,7 @@ MIN_TASKS = 64
 # Measured native peak is 138-150 concurrent tasks; 128 provably fails the native
 # lanes (see docs/stress-results.md), so the default is the measured profile.
 DEFAULT_TASKS = 256
+CGROUP_ROOT = Path("/sys/fs/cgroup")
 SCRIPTS = {"stress_memory.py", "soak_memory.py"}
 BASELINE = HERE / "production-before.json"
 # The Hermes CLI rewrites unrelated keys (onboarding, _config_version) in this
@@ -146,6 +147,77 @@ def group_empty(group):
     return values["populated"] == "0"
 
 
+def unit_state(unit):
+    text = output(["systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "ActiveState",
+                   "-p", "ControlGroup", "-p", "InvocationID"])
+    result = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    if result.get("LoadState") not in {"loaded", "not-found"}:
+        raise RuntimeError("unit state unavailable")
+    return result
+
+
+def read_capture(unit, phase):
+    path = HERE / (unit.removesuffix(".service") + f".{phase}.limits.json")
+    if path.is_symlink():
+        raise ValueError("aliased resource capture")
+    data = json.loads(path.read_text())
+    if (not isinstance(data, dict) or type(data.get("schema_version")) is not int
+            or data["schema_version"] != 1 or data.get("phase") != phase or data.get("unit") != unit
+            or not isinstance(data.get("invocation_id"), str)
+            or not re.fullmatch(r"[a-f0-9]{32}", data["invocation_id"])):
+        raise ValueError("invalid resource capture identity")
+    group = data.get("control_group")
+    if (not isinstance(group, str) or not group.startswith("/") or ".." in group.split("/")
+            or str(Path(group)) != group or Path(group).name != unit):
+        raise ValueError("invalid captured cgroup")
+    return data
+
+
+def verify_resources(start, stop, requested):
+    try:
+        if any(start[key] != stop[key] for key in ("unit", "invocation_id", "control_group")):
+            return False
+        for data, phase in ((start, "start"), (stop, "stop")):
+            if data["phase"] != phase:
+                return False
+            effective = data["effective"]
+            if any(not isinstance(effective[key], str) for key in
+                   ("memory.max", "memory.swap.max", "pids.max", "cpu.max")):
+                return False
+            if not limits_match(effective, requested):
+                return False
+            for section, key in (("memory_events", "oom"), ("memory_events", "oom_kill"), ("pids_events", "max")):
+                value = data[section][key]
+                if type(value) is not int or value != 0:
+                    return False
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def cleanup_unit(unit, capture):
+    group = CGROUP_ROOT / capture["control_group"].lstrip("/")
+    def same_identity():
+        current = unit_state(unit)
+        if current["LoadState"] == "not-found":
+            return False
+        if (current.get("InvocationID") != capture["invocation_id"]
+                or current.get("ControlGroup") not in {capture["control_group"], ""}):
+            raise RuntimeError("owned unit identity changed; refusing stop")
+        return True
+    loaded = same_identity()
+    if group_empty(group):
+        return True
+    if not loaded or not same_identity():
+        raise RuntimeError("populated cgroup has no matching loaded unit")
+    result = subprocess.run(["systemctl", "--user", "stop", unit], timeout=25,
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError("owned unit stop failed")
+    same_identity()
+    return group_empty(group)
+
+
 def build_command(case, unit, tasks):
     """Return (systemd-run argv, limits receipt) for one case."""
     assert case["script"] in SCRIPTS, case["script"]
@@ -241,7 +313,7 @@ def publish_attempt(receipt):
         for key, value in (("runs", receipt), ("reports", entry)):
             manifest[key] = [row for row in manifest[key] if row.get("attempt_id") != receipt["attempt_id"]]
             manifest[key].append(value)
-        manifest["status"] = "running" if receipt["passed"] else "stopped_on_failure"
+        manifest["status"] = "running" if receipt["passed"] or receipt["status"] == "started" else "stopped_on_failure"
         atomic(path, manifest)
 
 
@@ -267,6 +339,7 @@ def attempt_record(case, variant, tasks, unit):
     finally:
         os.close(directory)
     try:
+        publish_attempt(receipt)
         yield receipt
     except BaseException as exc:
         receipt["passed"] = False
@@ -276,82 +349,128 @@ def attempt_record(case, variant, tasks, unit):
     finally:
         receipt["status"] = "final"
         receipt["finished_unix_ns"] = time.time_ns()
+        receipt["passed"] = receipt["passed"] is True and not receipt["errors"]
         atomic(HERE / (stamp + ".json"), receipt)
-        publish_attempt(receipt)
+        try:
+            publish_attempt(receipt)
+        except BaseException as exc:
+            receipt["passed"] = False
+            receipt["errors"].append("manifest_finalization:" + type(exc).__name__)
+            atomic(HERE / (stamp + ".json"), receipt)
+            raise
 
 
 def execute(case, variant, tasks):
+    with campaign_lease():
+        unit = "hermes-zvec-stress-" + uuid.uuid4().hex + ".service"
+        with attempt_record(case, variant, tasks, unit) as receipt:
+            start = time.monotonic()
+            try:
+                execute_body(case, variant, tasks, receipt)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:
+                receipt["errors"].append("execute:" + type(exc).__name__)
+                receipt["failure_category"] = "controller_exception"
+            finally:
+                receipt["elapsed_seconds"] = time.monotonic() - start
+                try:
+                    differences = unchanged()
+                    receipt["production_unchanged"] = not differences
+                    if differences:
+                        receipt["production_differences"] = differences
+                        receipt["errors"].append("production_changed")
+                except BaseException as exc:
+                    receipt["production_unchanged"] = False
+                    receipt["errors"].append("production_check:" + type(exc).__name__)
+            receipt["passed"] = bool(receipt.get("workload_passed") and receipt["cleanup_verified"]
+                                     and receipt["production_unchanged"] and not receipt["errors"])
+        print(json.dumps({"case": case["label"], "passed": receipt["passed"],
+                          "cleanup_verified": receipt["cleanup_verified"],
+                          "elapsed_seconds": receipt["elapsed_seconds"]}), flush=True)
+        return receipt["passed"]
+
+
+def execute_body(case, variant, tasks, receipt):
+    receipt["launch_started"] = False
+    receipt["cleanup_verified"] = True  # no process exists until launch admission
     differences = unchanged()
     if differences:
-        raise RuntimeError("Production baseline changed; refusing more load: "
-                           + "; ".join(differences))
-    unit = "hermes-zvec-stress-" + uuid.uuid4().hex[:12] + ".service"
-    user_group = output(["systemctl", "--user", "show", "-p", "ControlGroup", "--value"])
-    assert user_group.startswith("/")
-    group = Path("/sys/fs/cgroup") / user_group.lstrip("/") / "app.slice" / unit
-    stamp = unit.removesuffix(".service")
-    logfile = HERE / (stamp + ".private.log")
-    limitsfile = HERE / (stamp + ".limits.json")
+        raise RuntimeError("production baseline changed")
+    unit = receipt["unit"]
+    if unit_state(unit)["LoadState"] != "not-found":
+        raise RuntimeError("refusing an existing attempt unit")
+    logfile = HERE / (receipt["attempt_id"] + ".private.log")
     command, limits = build_command(case, unit, tasks)
-    receipt = {"label": case["label"], "unit": unit, "limits": limits,
-               "source_sha": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])}
+    receipt.update({"limits": limits,
+                    "source_sha": output(["git", "-C", str(ROOT), "rev-parse", "HEAD"])})
     print("START " + case["label"] + " " + unit + " tasks=" + str(tasks), flush=True)
-    start = time.monotonic()
+    cancelled = None
     try:
-        with logfile.open("w") as stream:
+        with logfile.open("x") as stream:
+            receipt["launch_started"] = True
+            receipt["cleanup_verified"] = False
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
                                     timeout=limits["runtime_seconds"] + 45, text=True)
             receipt["exit_code"] = result.returncode
+            if result.returncode:
+                receipt["failure_category"] = "child_exit"
+                receipt["errors"].append("child_nonzero_exit")
     except subprocess.TimeoutExpired:
         receipt["exit_code"] = 124
+        receipt["failure_category"] = "timeout"
+        receipt["errors"].append("whole_command_timeout")
     finally:
-        # The exact UUID-named unit is ours; systemd owns all descendants even
-        # if native grandchildren fork/reparent between /proc samples.
-        if not group_empty(group):
-            subprocess.run(["systemctl", "--user", "stop", unit], timeout=25,
-                           capture_output=True, text=True)
-        receipt["elapsed_seconds"] = time.monotonic() - start
-        receipt["cleanup_verified"] = group_empty(group)
-        try:
-            after = unchanged()
-            receipt["production_unchanged"] = not after
-            if after:
-                receipt["production_differences"] = after
-        except Exception as exc:
-            receipt["production_unchanged"] = False
-            receipt["production_check_error"] = type(exc).__name__
+        first = None
+        if receipt["launch_started"]:
+            try:
+                first = read_capture(unit, "start")
+                receipt["start_capture"] = first
+                receipt["cleanup_verified"] = cleanup_unit(unit, first)
+                if not receipt["cleanup_verified"]:
+                    receipt["errors"].append("owned_cgroup_not_empty")
+            except BaseException as exc:
+                receipt["cleanup_verified"] = False
+                receipt["errors"].append("cleanup:" + type(exc).__name__)
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)): cancelled = exc
+            try:
+                last = read_capture(unit, "stop")
+                receipt["cgroup"] = last
+                receipt["resources_verified"] = first is not None and verify_resources(first, last, limits)
+                if not receipt["resources_verified"]:
+                    receipt["errors"].append("effective_resources_unverified")
+            except BaseException as exc:
+                receipt["resources_verified"] = False
+                receipt["errors"].append("resource_capture:" + type(exc).__name__)
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)): cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    pointer = None
     for line in logfile.read_text().splitlines():
         try:
             value = json.loads(line)
         except ValueError:
             continue
         if isinstance(value, dict) and "report" in value:
-            path = Path(value["report"]).resolve()
-            if not path.is_relative_to(ROOT / ".test-tools"):
-                raise RuntimeError("Report escaped test artifacts")
-            receipt["report"] = str(path)
-            receipt["harness_passed"] = value.get("passed") is True
-    receipt["cgroup"] = json.loads(limitsfile.read_text()) if limitsfile.exists() else {}
-    receipt["passed"] = bool(receipt.get("exit_code") == 0 and receipt.get("harness_passed")
-                             and receipt["cleanup_verified"] and receipt["production_unchanged"]
-                             and receipt["cgroup"]
-                             and not receipt["cgroup"].get("memory_events", {}).get("oom_kill", 0))
-    atomic(HERE / (stamp + ".json"), receipt)
-    manifest = json.loads((HERE / "manifest.json").read_text())
-    manifest["runs"].append(receipt)
-    entry = manifest_entry(case, tasks, receipt["cgroup"], receipt.get("report"),
-                           receipt.get("exit_code"), receipt["source_sha"])
-    entry["tags"]["variant"] = variant
-    entry["passed"] = bool(receipt["passed"])
-    manifest.setdefault("reports", []).append(entry)
-    manifest["status"] = "running" if receipt["passed"] else "stopped_on_failure"
-    atomic(HERE / "manifest.json", manifest)
-    print(json.dumps({"case": case["label"], "passed": bool(receipt["passed"]),
-                      "tasks": int(tasks),
-                      "elapsed_seconds": receipt["elapsed_seconds"],
-                      "cleanup_verified": receipt["cleanup_verified"],
-                      "report": receipt.get("report")}), flush=True)
-    return bool(receipt["passed"])
+            if pointer is not None:
+                raise ValueError("ambiguous workload report")
+            pointer = value
+    if pointer is None:
+        raise ValueError("missing workload report")
+    path = Path(pointer["report"]).resolve()
+    if path.name != "report.json" or not path.is_relative_to((ROOT / ".test-tools").resolve()):
+        raise ValueError("report escaped test artifacts")
+    receipt["report"] = str(path)
+    from report_stress import adapt_report, summarize
+    raw = json.loads(path.read_text())
+    valid = summarize(adapt_report(raw), 1)
+    receipt["harness_passed"] = pointer.get("passed") is True and valid["passed"] is True
+    if not receipt["harness_passed"]:
+        receipt["errors"].append("workload_coverage_failed")
+    receipt["workload_passed"] = (receipt.get("exit_code") == 0 and receipt["harness_passed"]
+                                   and receipt["resources_verified"])
+
+
 
 
 def load_cases(path=None):

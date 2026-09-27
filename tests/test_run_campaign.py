@@ -270,3 +270,206 @@ def test_atomic_publication_syncs_file_directory_and_uses_unique_temp(tmp_path, 
     assert synced == [False, True]
     assert old_temp.read_text() == "unrelated retained scratch"
     assert set(tmp_path.iterdir()) == before | {path}
+
+
+@pytest.mark.parametrize("fault", ["preflight", "build", "spawn", "interrupt"])
+def test_execute_retains_failure_and_runs_post_guard(tmp_path, monkeypatch, fault):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    checks = []
+    def unchanged():
+        checks.append(1)
+        return ["fixture drift"] if fault == "preflight" else []
+    monkeypatch.setattr(campaign, "unchanged", unchanged)
+    monkeypatch.setattr(campaign, "output", lambda command: "/fixture" if command[0] == "systemctl" else "a" * 40)
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: {"LoadState": "not-found"}, raising=False)
+    def build(*args):
+        if fault == "build": raise ValueError("invalid construction")
+        return ["fixture-never-executed"], {"runtime_seconds": 1, "tasks":256, "memory_bytes":2147483648,
+                                            "swap_bytes":0, "cpu_quota_percent":200}
+    monkeypatch.setattr(campaign, "build_command", build)
+    def spawn(*args, **kwargs):
+        if fault == "interrupt": raise KeyboardInterrupt()
+        raise OSError("injected pre-spawn failure")
+    monkeypatch.setattr(campaign.subprocess, "run", spawn)
+    try:
+        result = campaign.execute(CASE, "fix", 256)
+        assert result is False
+    except BaseException as exc:
+        assert fault == "interrupt" and isinstance(exc, KeyboardInterrupt)
+    starts = list(root.glob("*.started.json"))
+    assert len(starts) == 1
+    final = json.loads(starts[0].with_name(starts[0].name.replace(".started", "")).read_text())
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert final["passed"] is False and final["errors"]
+    assert manifest["runs"] == [final]
+    assert len(manifest["reports"]) == 1 and manifest["reports"][0]["passed"] is False
+    assert len(checks) == 2, "post-check must run even after an early preflight failure"
+
+
+def capture_fixture(unit, phase):
+    return {"schema_version":1, "phase":phase, "unit":unit,
+            "invocation_id":"b" * 32, "control_group":"/fixture/app.slice/" + unit,
+            "effective":{"memory.max":"2147483648","memory.swap.max":"0","pids.max":"256",
+                         "cpu.max":"200000 100000"},
+            "memory_events":{"oom":0,"oom_kill":0},"pids_events":{"max":0},
+            "memory_peak_bytes":12345,"pids_peak":12,"cpu":{"usage_usec":1000}}
+
+
+@pytest.mark.parametrize("fault", [None,"missing", "identity", "phase", "swap", "boolean_swap", "denial", "oom", "missing_counter", "traversal"])
+def test_effective_resources_require_matching_complete_captures(tmp_path, monkeypatch, fault):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    start, stop = capture_fixture(unit, "start"), capture_fixture(unit, "stop")
+    if fault == "identity": stop["invocation_id"] = "c" * 32
+    if fault == "phase": stop["phase"] = "start"
+    if fault == "swap": stop["effective"]["memory.swap.max"] = "max"
+    if fault == "boolean_swap": stop["effective"]["memory.swap.max"] = False
+    if fault == "denial": stop["pids_events"]["max"] = 1
+    if fault == "oom": stop["memory_events"]["oom_kill"] = 1
+    if fault == "missing_counter": del stop["pids_events"]["max"]
+    if fault == "traversal": start["control_group"] = "/fixture/../app.slice/" + unit
+    for phase, record in (("start", start), ("stop", stop)):
+        if phase == "stop" and fault == "missing": continue
+        (root / (unit[:-8] + f".{phase}.limits.json")).write_text(json.dumps(record))
+    limits = {"memory_bytes":2147483648,"swap_bytes":0,"cpu_quota_percent":200,"tasks":256,"runtime_seconds":30}
+    if fault is None:
+        first, last = campaign.read_capture(unit, "start"), campaign.read_capture(unit, "stop")
+        assert campaign.verify_resources(first, last, limits) is True
+    else:
+        try:
+            first, last = campaign.read_capture(unit, "start"), campaign.read_capture(unit, "stop")
+        except (ValueError, OSError): pass
+        else: assert campaign.verify_resources(first, last, limits) is False
+
+
+@pytest.mark.parametrize("state", ["empty", "populated", "reused_identity", "missing_population", "stop_failure"])
+def test_cleanup_uses_recorded_group_and_rechecks_unit_identity(tmp_path, monkeypatch, state):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    mount = tmp_path / "cgroup"
+    monkeypatch.setattr(campaign, "CGROUP_ROOT", mount, raising=False)
+    unit = "hermes-zvec-stress-" + "a" * 32 + ".service"
+    start = capture_fixture(unit, "start")
+    group = mount / start["control_group"].lstrip("/")
+    group.mkdir(parents=True)
+    if state != "missing_population":
+        (group / "cgroup.events").write_text("populated " + ("0" if state == "empty" else "1") + "\n")
+    current = {"LoadState":"loaded", "ActiveState":"active", "ControlGroup":start["control_group"],
+               "InvocationID": "c"*32 if state == "reused_identity" else start["invocation_id"]}
+    monkeypatch.setattr(campaign, "unit_state", lambda name: current, raising=False)
+    stopped = []
+    def stop(command, **kwargs):
+        stopped.append(command)
+        if state == "stop_failure": raise TimeoutError("stop failed")
+        (group / "cgroup.events").write_text("populated 0\n")
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(campaign.subprocess, "run", stop)
+    if state in {"empty", "populated"}:
+        assert campaign.cleanup_unit(unit, start) is True
+        assert len(stopped) == (1 if state == "populated" else 0)
+    else:
+        with pytest.raises((RuntimeError, OSError, TimeoutError)):
+            campaign.cleanup_unit(unit, start)
+        if state in {"reused_identity", "missing_population"}: assert not stopped
+
+
+@pytest.mark.parametrize("fault", [None, "missing_start", "bad_stop", "swap", "unit_reuse", "cleanup", "report_json", "report_coverage", "timeout", "log_read", "post_guard"])
+def test_execute_integrates_real_receipt_validation(tmp_path, monkeypatch, fault):
+    """Synthetic kernel/workload files test the real controller, not capacity."""
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(campaign, "ROOT", source)
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    mount = tmp_path / "cgroup"
+    monkeypatch.setattr(campaign, "CGROUP_ROOT", mount)
+    calls = []
+    checks = []
+    state = {"LoadState":"not-found"}
+    def unchanged():
+        checks.append(1)
+        if fault == "post_guard" and len(checks) == 2: raise OSError("post guard unavailable")
+        return []
+    monkeypatch.setattr(campaign, "unchanged", unchanged)
+    monkeypatch.setattr(campaign, "unit_state", lambda unit: dict(state))
+    monkeypatch.setattr(campaign, "output", lambda command: "/fixture" if command[0] == "systemctl" else "a"*40)
+    report_path = source / ".test-tools/stress-runs/stress-fixture/report.json"
+    report_path.parent.mkdir(parents=True)
+    raw = {"schema_version":1, "lane":"regression", "mode":"offline", "passed":True,
+           "arguments":{"iterations":1}, "planned_iterations":1, "completed_iterations":1,
+           "planned_callbacks":0,"successful_callbacks":0,"elapsed_seconds":1,"workers":[],
+           "iterations":[{"number":0,"exit":0,"tests":3,"skipped":0,"failures":0,"errors":0,
+                          "diagnostic_errors":[],"elapsed_seconds":.5}]}
+    if fault == "report_coverage": raw["iterations"][0]["tests"] = 0
+    report_path.write_text("broken" if fault == "report_json" else json.dumps(raw))
+    def launch(command, **kwargs):
+        calls.append(command)
+        assert command[0] == "systemd-run", "no unrelated process may be controlled"
+        unit = next(x.removeprefix("--unit=") for x in command if x.startswith("--unit="))
+        start, stop = capture_fixture(unit, "start"), capture_fixture(unit, "stop")
+        group = mount / start["control_group"].lstrip("/")
+        group.mkdir(parents=True)
+        if fault != "cleanup": (group / "cgroup.events").write_text("populated 0\n")
+        if fault == "unit_reuse": state.update(LoadState="loaded", ControlGroup=start["control_group"], InvocationID="c"*32)
+        if fault == "swap": stop["effective"]["memory.swap.max"] = "max"
+        for phase, value in (("start",start),("stop",stop)):
+            if phase == "start" and fault == "missing_start": continue
+            (root / (unit[:-8] + f".{phase}.limits.json")).write_text("broken" if phase == "stop" and fault == "bad_stop" else json.dumps(value))
+        # A historical unbound capture must never rescue missing/new invalid proof.
+        (root / (unit[:-8] + ".limits.json")).write_text(json.dumps(stop))
+        kwargs["stdout"].write(json.dumps({"report":str(report_path),"passed":True})+"\n")
+        kwargs["stdout"].flush()
+        if fault == "timeout": raise subprocess.TimeoutExpired(command, 1)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(campaign.subprocess, "run", launch)
+    real_open = Path.open
+    def open_path(path, mode="r", *args, **kwargs):
+        if fault == "log_read" and str(path).endswith(".private.log") and mode.startswith("r"):
+            raise OSError("unreadable owned log")
+        return real_open(path, mode, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", open_path)
+    case = {"label":"regression-fixture","script":"stress_memory.py","args":["--lane","regression","--iterations","1"],"timeout_s":30}
+    assert campaign.execute(case, "fix", 256) is (fault is None)
+    manifest = json.loads((root / "manifest.json").read_text())
+    final = manifest["runs"][0]
+    assert len(manifest["runs"]) == len(manifest["reports"]) == len(calls) == 1
+    assert len(checks) == 2
+    if fault is None:
+        assert final["cleanup_verified"] and final["resources_verified"] and final["production_unchanged"]
+    else:
+        assert final["errors"] and not manifest["reports"][0]["passed"]
+    if fault == "timeout": assert final["failure_category"] == "timeout"
+
+
+@pytest.mark.parametrize("fault", ["none", "manifest_final", "receipt_final"])
+def test_attempt_is_published_before_work_and_finalization_cannot_hide_failure(tmp_path, monkeypatch, fault):
+    root = initialize_private_campaign(tmp_path, monkeypatch)
+    unit = "hermes-zvec-stress-" + "a"*32 + ".service"
+    real_atomic = campaign.atomic
+    publication, entered = [], []
+    def atomic(path, data):
+        if path.name == "manifest.json":
+            publication.append(1)
+            if fault == "manifest_final" and len(publication) == 2:
+                raise OSError("manifest write failed")
+        if fault == "receipt_final" and path.name == unit[:-8] + ".json":
+            raise OSError("final receipt write failed")
+        return real_atomic(path, data)
+    monkeypatch.setattr(campaign, "atomic", atomic)
+    def attempt():
+        with campaign.attempt_record(CASE, "fix", 256, unit) as receipt:
+            manifest = json.loads((root / "manifest.json").read_text())
+            assert len(manifest["runs"]) == 1
+            assert manifest["runs"][0]["status"] == "started"
+            assert manifest["runs"][0]["passed"] is False
+            entered.append(True)
+            receipt["passed"] = True  # fixture models a fully checked inner result
+    if fault == "none": attempt()
+    else:
+        with pytest.raises(OSError): attempt()
+        assert entered == [True]
+        assert (root / (unit[:-8] + ".started.json")).exists()
+        final = root / (unit[:-8] + ".json")
+        if fault == "manifest_final":
+            data = json.loads(final.read_text())
+            assert data["passed"] is False
+            assert any("manifest" in error for error in data["errors"])
+        else: assert not final.exists()
