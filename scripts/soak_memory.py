@@ -15,7 +15,12 @@ command/phase, resources (sample count, peak sampled RSS sum, grouped slopes),
 versions and arguments. resources.jsonl retains actual sample times and each
 PID/start-time's RSS, CPU, FDs and threads. native-commands.jsonl contains only
 safe command kinds/timings/status, never argv or output. *.private.log, token,
-and the generated vault are PRIVATE; report.json has no absolute paths/secrets.
+and the generated vault are PRIVATE. Query response/source snapshots in raw
+receipts are private too; report_stress.py exports only allowlisted metrics.
+worker.ledger is an ordered list of [section, index] references to observed
+operations/callbacks/convergence/queries/prefetch/restarts. Each referenced row
+records its cycle, stage, phase and engine generation; nothing is prefilled from
+a workload plan. Failed workers retain only the prefix actually observed.
 
 RSS sum double-counts shared pages and is NOT PSS. Sampled CPU can miss short
 children. Slopes are diagnostics, not proof of a leak or its absence. Warm
@@ -43,6 +48,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from retrieval_evidence import capture_sources, cited_lines, response_text
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
@@ -451,13 +457,33 @@ def workload(run, args, report, daemon, factory=provider_factory):
     vault = run / "vault"
     (vault / "facts").mkdir(parents=True, exist_ok=True)
     (vault / "sessions").mkdir(exist_ok=True)
+    phase, stage, cycle = "cold_start", "initial", None
+    report.update(cycles=0, corpus_removed=False, prefetch=[], operations=[], ledger=[])
+
+    def record(section, row):
+        # Append only after the observed operation returns. Ledger references are
+        # compact and reconcile one-to-one with the original metric samples.
+        row.update(phase=phase, stage=stage, cycle=cycle, generation=daemon.generation)
+        report["ledger"].append([section, len(report[section])])
+        report[section].append(row)
+
+    seeded = []
     for n in range(args.seed_facts):
-        (vault / "facts" / f"background-{n:06d}.md").write_text(
+        path = vault / "facts" / f"background-{n:06d}.md"
+        path.write_text(
             f"# Synthetic archive {n}\nsoakbackground{n:06d} stores synthetic shade amber.\n")
+        seeded.append(path.name)
+    record("operations", {"action": "seed", "files": seeded})
     handles = []
-    phase = "cold_start"
     active_start = None
-    report.update(cycles=0, corpus_removed=False, prefetch=[])
+
+    def remove_corpus():
+        removed = []
+        for path in sorted((vault / "facts").glob("background-*.md")):
+            path.unlink()
+            removed.append(path.name)
+        record("operations", {"action": "corpus_remove", "files": removed})
+        report["corpus_removed"] = True
 
     def heartbeat():
         nonlocal phase
@@ -469,7 +495,8 @@ def workload(run, args, report, daemon, factory=provider_factory):
             started = time.monotonic()
             event = daemon.restart(started + 30)
             event["restart_seconds"] = time.monotonic()-started
-            report["restarts"].append(event)
+            event["active_seconds"] = started-active_start
+            record("restarts", event)
         write_json(run / "phase.json", {"phase": phase, "generation": daemon.generation})
 
     def converge(wanted):
@@ -498,29 +525,31 @@ def workload(run, args, report, daemon, factory=provider_factory):
                 if "obsoleteanswer" in source:
                     raise RuntimeError("obsolete_source_remains")
                 validate_sources(vault, wanted)
-                report["convergence"].append({"phase": phase, "seconds": time.monotonic()-start})
+                record("convergence", {"records": len(rows), "seconds": time.monotonic()-start})
                 return
             time.sleep(.05)
         raise TimeoutError("automatic_convergence_timeout")
 
-    def search(p, query, content, required=True, absent=False, kind="fts"):
+    def search(p, query, content, required=True, absent=False, kind="fts", probe="control", slot=None):
         heartbeat()
         start = time.monotonic()
         result = json.loads(p.handle_tool_call("memory_search", {
             "query": query, "mode": kind, "limit": 5, "globs": ["facts/**"]}))
-        body = result.get("results", "")
-        hit = retrieval_hit(body, content)
-        report["queries"].append({"phase": phase, "generation": daemon.generation,
+        body = response_text(result)
+        sources = capture_sources(result, vault)
+        lines = cited_lines(result, sources)
+        hit = any(content in line for line in lines) if absent else content in lines
+        record("queries", {"probe": probe, "slot": slot, "key": query, "response": result, "sources": sources,
             "kind": kind, "seconds": time.monotonic()-start, "hit": hit,
             "required": required, "absent": absent, "chars": len(body)})
         if result.get("error") or len(body) > 2000 or (required and not hit) or (absent and hit):
             (run / "retrieval-error.private.log").write_text(json.dumps(result))
             raise RuntimeError("native_retrieval_gate_failed")
 
-    def notify(p, action, text, previous=""):
+    def notify(p, action, text, previous="", slot=None):
         start = time.monotonic()
         p.on_memory_write(action, "user", text, {"old_text": previous} if previous else {})
-        report["callbacks"].append({"action": action, "phase": phase,
+        record("callbacks", {"action": action, "slot": slot, "content": text, "previous": previous,
             "seconds": time.monotonic()-start})
 
     try:
@@ -531,6 +560,7 @@ def workload(run, args, report, daemon, factory=provider_factory):
         stored = json.loads(handles[0].handle_tool_call("memory_store", {"content": control}))
         if stored.get("status") != "stored":
             raise RuntimeError("control_store_failed")
+        record("operations", {"action": "control_store", "path": stored["path"]})
         converge([])
         search(handles[1], "soakcontrolanchor", control, kind="hybrid")
         phase = "warm"
@@ -539,26 +569,26 @@ def workload(run, args, report, daemon, factory=provider_factory):
         # Always finish at least one bounded cycle, then remove the seeded corpus
         # and keep these SAME handles and daemon warm for the remaining phase.
         while time.monotonic()-active_start < args.duration or not report["cycles"]:
+            cycle, stage = report["cycles"], "revise"
             heartbeat()
             if not report["corpus_removed"] and time.monotonic()-active_start >= args.duration * .8:
                 phase = "corpus_removal"
-                for path in (vault / "facts").glob("background-*.md"):
-                    path.unlink()
-                report["corpus_removed"] = True
+                remove_corpus()
             revised = [f"soakslot{n:02d} revisedanswer cycle{report['cycles']:08d} is indigo." for n in range(2)]
             old = [t.replace("revisedanswer", "obsoleteanswer") for t in revised]
             for n, p in enumerate(handles):
-                notify(p, "add", old[n])
-                notify(p, "replace", revised[n], old[n])
+                notify(p, "add", old[n], slot=n)
+                notify(p, "replace", revised[n], old[n], slot=n)
             converge(revised)
             for n in range(2):
-                search(handles[1-n], f"soakslot{n:02d}", revised[n])
-                search(handles[1-n], f"soakslot{n:02d}", "obsoleteanswer", required=False, absent=True)
+                search(handles[1-n], f"soakslot{n:02d}", revised[n], probe="revised", slot=n)
+                search(handles[1-n], f"soakslot{n:02d}", "obsoleteanswer", required=False, absent=True, probe="obsolete", slot=n)
+            stage = "remove"
             for n, p in enumerate(handles):
-                notify(p, "remove", "", revised[n])
+                notify(p, "remove", "", revised[n], slot=n)
             converge([])
             for n in range(2):
-                search(handles[1-n], f"soakslot{n:02d}", "revisedanswer", required=False, absent=True)
+                search(handles[1-n], f"soakslot{n:02d}", "revisedanswer", required=False, absent=True, probe="deleted", slot=n)
             search(handles[1], "soakcontrolanchor", control, kind="hybrid")
             # Cache-warmed identical query vs a genuinely distinct next-turn
             # prompt. Empty 2s prefetch is diagnostic, never false retrieval PASS.
@@ -566,34 +596,38 @@ def workload(run, args, report, daemon, factory=provider_factory):
                                 ("distinct_query", f"soakcontrolanchor cycle {report['cycles']}")):
                 started = time.monotonic()
                 text = handles[1].prefetch(query)
-                report["prefetch"].append({"kind": kind, "phase": phase,
-                    "generation": daemon.generation, "seconds": time.monotonic()-started,
+                record("prefetch", {"kind": kind, "seconds": time.monotonic()-started,
                     "chars": len(text), "hit": retrieval_hit(text, control)})
                 if len(text) > 2000:
                     raise RuntimeError("prefetch_context_cap_exceeded")
+            record("operations", {"action": "cycle_complete"})
             report["cycles"] += 1
             if report["corpus_removed"]:
                 phase = "warm_after_removal"
             time.sleep(min(.05, args.duration/10))
         # Short mode may spend the whole duration in one native cycle. Still
         # perform the corpus-removal gate, but do not pretend it is a long trend.
-        if not report["corpus_removed"]:
+        cycle, stage = None, "cleanup"
+        cleanup_marker = not report["corpus_removed"]
+        if cleanup_marker:
             phase = "corpus_removal"
-            for path in (vault / "facts").glob("background-*.md"):
-                path.unlink()
+            remove_corpus()
             notify(handles[0], "add", "soakcleanupanchor synthetic cleanup marker.")
             notify(handles[0], "remove", "", "soakcleanupanchor synthetic cleanup marker.")
             converge([])
-            report["corpus_removed"] = True
+        stage = "final"
         phase = "warm_after_removal"
         heartbeat()
         converge([])
         search(handles[1], "soakcontrolanchor", control, kind="hybrid")
         if args.seed_facts:
-            search(handles[1], "soakbackground000000", "soakbackground000000", required=False, absent=True)
+            search(handles[1], "soakbackground000000", "soakbackground000000", required=False, absent=True, probe="background")
+        if cleanup_marker:
+            search(handles[1], "soakcleanupanchor", "soakcleanupanchor", required=False, absent=True, probe="cleanup")
         if args.engine_restart_at is not None and len(report["restarts"]) != 1:
             raise RuntimeError("requested_restart_not_exercised")
         report["final_mirror_records"] = len(handles[1]._mirror_state()["records"])
+        record("operations", {"action": "final_state", "records": report["final_mirror_records"]})
         report["active_seconds"] = time.monotonic()-active_start
     finally:
         for p in handles:

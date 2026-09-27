@@ -34,43 +34,95 @@ def report(values, passed=True):
 
 
 def soak_report():
-    # Shape emitted by soak_memory.supervise + main, not the load schema.
-    return {"schema_version": 1, "lane": "long_lived_soak",
+    # Synthetic unit fixture ONLY, never a capacity receipt.
+    raw = {"schema_version": 1, "lane": "long_lived_soak",
         "transport": "native_server_only", "passed": True, "errors": [],
         "elapsed_seconds": 10, "worker_exit": 0, "leftover_owned_pids": [],
-        "worker": {"passed": True, "errors": [], "callbacks": [
-            {"action": "add", "phase": "warm", "seconds": .1},
-            {"action": "remove", "phase": "warm", "seconds": .3}],
-            "queries": [{"phase": "warm", "kind": "fts", "generation": 1,
-                         "seconds": .5, "hit": True, "required": True, "absent": False, "chars": 20}],
-            "convergence": [{"phase": "warm", "seconds": 2}],
-            "prefetch": [{"kind": "repeated_query", "phase": "warm", "generation": 1,
-                          "seconds": .2, "chars": 10, "hit": True}],
-            "restarts": [{"generation": 2, "restart_seconds": 3}],
+        "worker": {"passed": True, "errors": [],
             "cycles": 1, "active_seconds": 5, "final_mirror_records": 0, "corpus_removed": True},
         "resources": {"sample_count": 2, "peak_sampled_rss_sum_bytes": 4096,
             "rss_semantics": "concurrent_tree_sum_shared_pages_overcounted",
             "trends": {"warm:generation1": {"samples": 2, "rss_bytes_per_second": -10,
                                            "classification": "diagnostic_not_leak_proof"}}},
-        # Selected real smoke summary values (no identities or local paths).
+        # Quantile-shaped fixture values, not a measurement.
         "native_latency": {"query:warm": {"count": 41, "over_prefetch_2s_budget": 0,
             "p50_seconds": .9643653579987586, "p95_seconds": 1.6928382410042104,
             "p99_seconds": 1.7835073890018975, "max_seconds": 1.7835073890018975}},
         "native_nonzero_commands": 1, "prefetch_budget_seconds": 2,
         "arguments": {"duration": 5, "seed_facts": 20, "sample_interval": 1,
-                      "convergence_timeout": 120, "engine_restart_at": None}}
+                      "convergence_timeout": 120, "engine_restart_at": 0}}
+    w = raw["worker"]
+    for section in ("callbacks", "queries", "convergence", "prefetch", "restarts", "operations", "ledger"):
+        w[section] = []
+    generation, cycle, stage, phase = 1, None, "initial", "cold_start"
+    def record(section, **row):
+        row.update(cycle=cycle, stage=stage, phase=phase, generation=generation)
+        w["ledger"].append([section, len(w[section])])
+        w[section].append(row)
+    control = "soakcontrolanchor confirms synthetic durable control is violet."
+    def query(probe, slot=None):
+        content = (control if probe == "control" else
+                   f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo." if probe == "revised" else "")
+        body = f"#1 facts/a.md:1\nsource:\n1\t{content}\n" if content else "hits: 0"
+        key = ("soakcontrolanchor" if probe == "control" else "soakcleanupanchor" if probe == "cleanup"
+               else "soakbackground000000" if probe == "background" else f"soakslot{slot:02d}")
+        record("queries", probe=probe, slot=slot, key=key, kind="hybrid" if probe == "control" else "fts",
+               seconds=.5, chars=len(body), response={"results": body},
+               sources={"facts/a.md": content} if content else {}, hit=bool(content),
+               required=bool(content), absent=not bool(content))
+    files = [f"background-{n:06d}.md" for n in range(20)]
+    record("operations", action="seed", files=files)
+    record("operations", action="control_store", path="facts/a.md")
+    record("convergence", records=0, seconds=2)
+    query("control")
+    generation, phase, stage, cycle = 2, "warm", "revise", 0
+    record("restarts", restart_seconds=3, active_seconds=0)
+    for slot in range(2):
+        for action in ("add", "replace"):
+            revised = f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo."
+            old = revised.replace("revisedanswer", "obsoleteanswer")
+            record("callbacks", action=action, slot=slot, seconds=.2,
+                   content=old if action == "add" else revised, previous="" if action == "add" else old)
+    record("convergence", records=2, seconds=2)
+    for slot in range(2):
+        query("revised", slot)
+        query("obsolete", slot)
+    stage = "remove"
+    for slot in range(2):
+        record("callbacks", action="remove", slot=slot, seconds=.2, content="",
+               previous=f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo.")
+    record("convergence", records=0, seconds=2)
+    for slot in range(2): query("deleted", slot)
+    query("control")
+    for kind in ("repeated_query", "distinct_query"):
+        record("prefetch", kind=kind, seconds=.2, chars=10, hit=True)
+    record("operations", action="cycle_complete")
+    cycle, stage, phase = None, "cleanup", "corpus_removal"
+    record("operations", action="corpus_remove", files=files)
+    for action in ("add", "remove"):
+        marker = "soakcleanupanchor synthetic cleanup marker."
+        record("callbacks", action=action, slot=None, seconds=.2,
+               content=marker if action == "add" else "", previous=marker if action == "remove" else "")
+    record("convergence", records=0, seconds=2)
+    stage, phase = "final", "warm_after_removal"
+    record("convergence", records=0, seconds=2)
+    query("control")
+    query("background")
+    query("cleanup")
+    record("operations", action="final_state", records=0)
+    return raw
 
 
 def test_actual_soak_schema_exports_metrics_without_pooling_native_percentiles():
     data = tool().aggregate([soak_report(), soak_report()])
     assert data["passed"] is True
-    assert data["successful_callbacks"] == 4
-    assert data["callback_seconds"]["mean"] == .2
-    assert data["query_seconds"]["count"] == 2
+    assert data["successful_callbacks"] == 16
+    assert data["callback_seconds"]["mean"] == pytest.approx(.2)
+    assert data["query_seconds"]["count"] == 22
     row = data["runs"][0]
     assert (row["lane"], row["mode"]) == ("long_lived_soak", "native_server_only")
     assert "planned_callbacks" not in row  # duration-driven; no invented plan
-    assert row["callback_by_phase"]["add"]["count"] == 1
+    assert row["callback_by_phase"]["add"]["count"] == 3
     assert row["soak"]["convergence_seconds"]["max"] == 2
     assert row["soak"]["prefetch_by_kind"]["repeated_query"]["seconds"]["mean"] == .2
     assert row["soak"]["restart_seconds"]["max"] == 3
@@ -115,6 +167,31 @@ def test_soak_partial_failed_receipt_remains_failed():
     assert data["failed_attempts"] == 1
     assert data["error_counts"] == {"other": 1}
     assert data["callbacks_per_second_including_recovery"] is None
+
+
+@pytest.mark.parametrize("lane", ["long_lived_soak", "load", "future"])
+@pytest.mark.parametrize("invalid", [None, "product_identity", "harness_identity", "host_provenance"])
+def test_incomplete_failure_retains_each_valid_identity(lane, invalid):
+    raw = {"lane": lane, "passed": False, "errors": ["private preflight exception"],
+           "worker": {"arbitrary": "not metrics"}, "elapsed_seconds": "not measured"}
+    for key, fingerprint in zip(("product_identity", "harness_identity", "host_provenance"), "abc"):
+        raw[key] = {"kind": "installed_snapshot", "content_sha256": fingerprint * 64,
+                    "git_sha": "d" * 40, "dirty": True, "files": {"/private": "secret"}}
+    if invalid: raw[invalid]["content_sha256"] = "/private/malformed"
+    adapted = tool().adapt_report(raw)
+    result = tool().aggregate([raw])
+    row = result["runs"][0]
+    assert result["attempts"] == result["failed_attempts"] == 1
+    assert result["callbacks_per_second_including_recovery"] is None
+    for key in ("elapsed_seconds", "workers", "worker", "successful_callbacks", "planned_callbacks"):
+        assert key not in adapted, "never invent incomplete workload metrics"
+    for key in ("product_identity", "harness_identity", "host_provenance"):
+        if key == invalid:
+            assert key not in adapted and key not in row
+        else:
+            expected = {k: v for k, v in raw[key].items() if k != "files"}
+            assert adapted[key] == row[key] == expected
+    assert "/private" not in str(row) and "secret" not in str(adapted)
 
 
 def test_soak_share_zip_uses_only_allowlisted_metrics(tmp_path, capsys):
@@ -170,16 +247,46 @@ def test_successful_soak_requires_observed_metrics(field):
 
 def test_soak_query_counts_and_gate_failures():
     raw = soak_report()
-    raw["worker"]["queries"].append({"phase": "warm", "kind": "fts", "generation": 1,
-        "seconds": .7, "chars": 0, "hit": False, "required": False, "absent": True})
     data = tool().aggregate([raw, raw])
-    assert data["query_count"] == 4
-    assert data["query_hits"] == 2
+    assert data["query_count"] == 22
+    assert data["query_hits"] == 10
     assert data["runs"][0]["soak"]["query_gate_failures"] == 0
     raw["worker"]["queries"][0]["hit"] = False
-    data = tool().aggregate([raw])
-    assert data["passed"] is False
-    assert data["runs"][0]["soak"]["query_gate_failures"] == 1
+    with pytest.raises(ValueError): tool().aggregate([raw])
+
+
+@pytest.mark.parametrize("damage", ["replace", "obsolete", "deleted", "final_probe", "cycles",
+    "generation", "restart", "removals", "convergence", "unreferenced", "echo", "reordered", "ledger", "wrong_key"])
+def test_soak_requires_reconciled_observed_ledger(damage):
+    raw = soak_report()
+    w = raw["worker"]
+    if damage == "replace": w["callbacks"][1]["action"] = "add"
+    elif damage in {"obsolete", "deleted"}:
+        next(q for q in w["queries"] if q["probe"] == damage)["probe"] = "control"
+    elif damage == "final_probe": w["queries"][-1]["probe"] = "control"
+    elif damage == "cycles": w["cycles"] += 1
+    elif damage == "generation": w["queries"][-1]["generation"] = 1
+    elif damage == "restart": w["restarts"][0]["generation"] = 3
+    elif damage == "removals": next(o for o in w["operations"] if o["action"] == "corpus_remove")["files"] = []
+    elif damage == "convergence": w["convergence"][1]["records"] = 0
+    elif damage == "wrong_key": w["queries"][-1]["key"] = "nonexistent-wrong-query"
+    elif damage == "unreferenced": w["queries"].append(dict(w["queries"][0]))
+    elif damage == "echo":
+        q = w["queries"][0]
+        q["response"]["results"] = "Q1: soakcontrolanchor confirms synthetic durable control is violet.\nhits: 0"
+        q["chars"] = len(q["response"]["results"])
+    elif damage == "reordered": w["ledger"][6:8] = reversed(w["ledger"][6:8])
+    else: w.pop("ledger")
+    with pytest.raises(ValueError, match="incomplete receipt"):
+        tool().aggregate([raw])
+
+
+def test_final_cleanup_removal_requires_absence_probe():
+    raw = soak_report()
+    for query in raw["worker"]["queries"]:
+        if query["probe"] == "cleanup": query["probe"] = "background"
+    with pytest.raises(ValueError, match="incomplete receipt"):
+        tool().aggregate([raw])
 
 
 def test_pool_raw_samples_and_keep_every_attempt():
@@ -470,10 +577,11 @@ def complete_native_report():
     token = hashlib.sha256(b"stress-fixture:0:0").hexdigest()[:20]
     def digest(text): return hashlib.sha256(text.encode()).hexdigest()
     raw["recovery"].update(native_status={"exit": 0}, queries=[{
-        "key": control, "hit": True, "chars": 0, "seconds": .1,
-        "expected_sha256": digest(control), "response": {"results": ""}}],
+        "key": control, "hit": True, "chars": len(f"#1 facts/control.md:1\nsource:\n1\t{control}\n"), "seconds": .1,
+        "sources": {"facts/control.md": control + "\n"},
+        "expected_sha256": digest(control), "response": {"results": f"#1 facts/control.md:1\nsource:\n1\t{control}\n"}}],
         negative_queries=[{"key": "stress"+token, "stale": False, "chars": 0,
-                           "seconds": .1, "response": {"results": ""},
+                           "seconds": .1, "response": {"results": ""}, "sources": {},
                            "forbidden_sha256": digest(f"For key stress{token}, the {adjective} answer is payload{token}.")}
                           for adjective in ("obsolete", "verified")])
     return raw
@@ -494,6 +602,32 @@ def test_native_coverage_requires_exact_selected_oracles(damage):
     else:
         assert tool().summarize(raw, 1)["passed"] is False
         with pytest.raises(ValueError): tool().aggregate([raw])
+
+
+@pytest.mark.parametrize("damage", ["empty", "echo", "wrong_source", "wrong_line", "nonexistent",
+                                   "unnumbered", "shape", "chars", "negative_body"])
+def test_native_response_evidence_is_independently_validated(damage):
+    raw = complete_native_report()
+    q = raw["recovery"]["queries"][0]
+    control = q["key"]
+    if damage == "empty": q["response"]["results"] = ""
+    elif damage == "echo": q["response"]["results"] = "Q1: " + control + "\nhits: 0"
+    elif damage == "wrong_source": q["sources"]["facts/control.md"] = "unrelated\n"
+    elif damage == "wrong_line": q["response"]["results"] = f"#1 facts/control.md:1\nsource:\n2\t{control}\n"
+    elif damage == "nonexistent": q["sources"] = {}
+    elif damage == "unnumbered": q["response"]["results"] = f"#1 facts/control.md:1\n{control}\n"
+    elif damage == "shape": q["response"]["results"] = []
+    elif damage == "chars": q["chars"] = 0
+    else:
+        import hashlib
+        token = hashlib.sha256(b"stress-fixture:0:0").hexdigest()[:20]
+        forbidden = f"For key stress{token}, the obsolete answer is payload{token}."
+        q = raw["recovery"]["negative_queries"][0]
+        q["sources"] = {"facts/stale.md": forbidden + "\n"}
+        q["response"]["results"] = f"#1 facts/stale.md:1\nsource:\n1\t{forbidden}\n"
+    if damage != "chars": q["chars"] = len(q["response"]["results"])
+    with pytest.raises(ValueError, match="incomplete receipt"):
+        tool().aggregate([raw])
 
 
 def regression_report():
@@ -577,6 +711,8 @@ def test_comparison_binds_instrument_and_installed_host_not_product_path():
     result = tool().aggregate([baseline,fixed],tags=tags)
     assert len(result["comparisons"]) == 1
     assert result["comparisons"][0]["identity_basis"] == "content_fingerprints"
+    assert result["comparisons"][0]["baseline_product_content_sha256"] == "a"*64
+    assert result["comparisons"][0]["fix_product_content_sha256"] == "b"*64
     import csv, io
     rendered = tool().render(result)
     rows = list(csv.DictReader(io.StringIO(rendered["aggregate.csv"])))
@@ -592,3 +728,21 @@ def test_comparison_binds_instrument_and_installed_host_not_product_path():
     fixed["harness_identity"]["content_sha256"] = "c"*64
     fixed["host_provenance"]["content_sha256"] = "f"*64
     assert tool().aggregate([baseline,fixed],tags=tags)["comparisons"] == []
+
+
+@pytest.mark.parametrize("variant", ["baseline", "fix"])
+def test_comparison_rejects_mixed_products_within_one_side(variant):
+    raws = [report([1]), report([2]), report([3], passed=False)]
+    for raw, fingerprint in zip(raws, "abc"):
+        raw["product_identity"] = {"kind": "source_snapshot", "content_sha256": fingerprint * 64}
+        raw["harness_identity"] = {"content_sha256": "d" * 64}
+        raw["host_provenance"] = {"content_sha256": "e" * 64}
+        raw["arguments"]["provider_source"] = "/private/" + fingerprint
+    tags = [{"scenario": "same", "variant": "baseline"}, {"scenario": "same", "variant": "fix"},
+            {"scenario": "same", "variant": variant}]
+    with pytest.raises(ValueError, match="multiple product fingerprints"):
+        tool().aggregate(raws, tags=tags)
+    raws[2]["product_identity"] = dict(raws[0 if variant == "baseline" else 1]["product_identity"])
+    comparison = tool().aggregate(raws, tags=tags)["comparisons"][0]
+    assert comparison[variant + "_attempts"] == 2
+    assert comparison[variant + "_failed_attempts"] == 1

@@ -114,7 +114,8 @@ def test_readiness_rejects_wrong_pid_or_token(tmp_path):
 
 
 @pytest.mark.parametrize("restart_at", [None, 0])
-def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restart_at):
+@pytest.mark.parametrize("duration,seed_facts", [(.01, 0), (.4, 2)])
+def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restart_at, duration, seed_facts):
     import json
     from types import SimpleNamespace
     from test_provider import ZvecMemoryProvider
@@ -129,11 +130,13 @@ def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restar
         hits = [p for p in (self._vault / "facts").glob("*.md") if query in p.read_text()]
         body = "query groups (1):\nQ1: " + query + "\nhits: " + str(len(hits))
         for i, path in enumerate(hits, 1):
-            body += f"\n#{i} facts/{path.name}:1\n" + path.read_text()
+            lines = path.read_text().splitlines()
+            body += f"\n#{i} facts/{path.name}:1-{len(lines)}\nsource:\n" + "\n".join(
+                f"{n}\t{line}" for n, line in enumerate(lines, 1)) + "\n"
         return 0, body, ""
     monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", native_boundary)
     monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
-    args = SimpleNamespace(duration=.4, seed_facts=2, engine_restart_at=restart_at,
+    args = SimpleNamespace(duration=duration, seed_facts=seed_facts, engine_restart_at=restart_at,
                            convergence_timeout=3, sample_interval=.05)
     report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
     class FakeDaemon:
@@ -162,6 +165,14 @@ def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restar
         assert all(q["chars"] <= 2000 for q in report["prefetch"])
         assert "index" in calls
         assert not list((tmp_path / "vault/facts").glob("background-*.md"))
+        from test_report_stress import tool, soak_report
+        receipt = soak_report()
+        receipt.update(worker={**report, "passed": True}, arguments=vars(args))
+        assert report["ledger"], "ledger must be recorded by the actual workload"
+        if any(row["stage"] == "cleanup" for row in report["callbacks"]):
+            assert any(q["probe"] == "cleanup" and q["absent"] for q in report["queries"])
+        assert tool().aggregate([receipt])["passed"] is True
+        assert len([o for o in report["operations"] if o["action"] == "cycle_complete"]) == report["cycles"]
     finally:
         for p in handles:
             p.shutdown()

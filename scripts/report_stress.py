@@ -47,6 +47,10 @@ query_gate_failures separately checks required hits and required absences.
 Only known complete metric schemas may claim success; unsupported/incomplete
 successful receipts raise ValueError (CLI exit 2), never pass with empty metrics.
 Partial failed receipts retain failure/status metadata without inferred metrics.
+Successful native probes require returned numbered source lines matching private
+query-time source snapshots, not producer flags or requested-content digests.
+Successful soak receipts additionally require the complete observed phase ledger;
+historical successes without these observations must not be upgraded by inference.
 Parent service/cgroup unit envelopes are NOT supported: point manifest paths at
 inner receipts and propagate outer failures with passed=false/failure_category.
 Cgroup cleanup verification and cgroup peak memory are not exported by this
@@ -73,6 +77,10 @@ import math
 from pathlib import Path
 import re
 import zipfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from retrieval_evidence import cited_lines, response_text
 
 # Extension contract: metrics is a mapping from these names to nonnegative raw
 # numeric sample lists. Add names here with tests; never pass arbitrary keys through.
@@ -143,22 +151,26 @@ def complete_native_queries(raw, workers, records):
                                         ("negative_queries", forbidden, "forbidden_sha256")):
         selected = source[::max(1, len(source)//20)][:20]
         expected = {(content.split(",", 1)[0].removeprefix("For key "),
-                     hashlib.sha256(content.encode()).hexdigest()) for content in selected}
+                     hashlib.sha256(content.encode()).hexdigest()): content for content in selected}
         rows = recovery[label]
         if not isinstance(rows, list) or len(rows) != len(expected):
             return False
         observed = set()
         for row in rows:
-            observed.add((row["key"], row[digest_name]))
+            identity = (row["key"], row[digest_name])
+            observed.add(identity)
+            content = expected[identity]
             response = row["response"]
-            if (not isinstance(response, dict) or response.get("error")
-                    or response.get("success") is False or number(row["chars"]) > 2000):
+            body = response_text(response)
+            lines = cited_lines(response, row["sources"])
+            if count(row["chars"]) != len(body):
                 return False
-            if label == "queries" and row.get("hit") is not True:
+            hit = content in lines
+            if label == "queries" and (not hit or row.get("hit") is not hit):
                 return False
-            if label != "queries" and row.get("stale") is not False:
+            if label != "queries" and (hit or row.get("stale") is not hit):
                 return False
-        if observed != expected:
+        if observed != set(expected):
             return False
     return True
 
@@ -285,6 +297,20 @@ def phase_stats(samples):
     return {k: stats(v) for k, v in sorted(phases.items())}
 
 
+def sanitize_identity(identity):
+    if (not isinstance(identity, dict) or not isinstance(identity.get("content_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", identity["content_sha256"])):
+        raise ValueError("invalid source fingerprint")
+    result = {"kind": enum(identity.get("kind"), {"git", "source_snapshot", "installed_snapshot"}),
+              "content_sha256": identity["content_sha256"]}
+    sha = identity.get("git_sha")
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        result["git_sha"] = sha
+    if type(identity.get("dirty")) is bool:
+        result["dirty"] = identity["dirty"]
+    return result
+
+
 def summarize(report, index):
     errors = error_counts(report)
     row = {"attempt": index, "lane": enum(report.get("lane"), LANES),
@@ -299,17 +325,7 @@ def summarize(report, index):
     for key in ("product_identity", "harness_identity", "host_provenance"):
         if key not in report:
             continue
-        identity = report[key]
-        if (not isinstance(identity, dict) or not isinstance(identity.get("content_sha256"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", identity["content_sha256"])):
-            raise ValueError("invalid source fingerprint")
-        row[key] = {"kind":enum(identity.get("kind"), {"git", "source_snapshot", "installed_snapshot"}),
-                    "content_sha256":identity["content_sha256"]}
-        sha = identity.get("git_sha")
-        if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
-            row[key]["git_sha"] = sha
-        if type(identity.get("dirty")) is bool:
-            row[key]["dirty"] = identity["dirty"]
+        row[key] = sanitize_identity(report[key])
     if report.get("lane") in {"regression", "native-regression"}:
         for key in ("planned_iterations", "completed_iterations"):
             if key in report:
@@ -405,6 +421,11 @@ def comparisons(reports, rows, tags):
                       "identity_basis": "content_fingerprints" if len(json.loads(signature)[2]) == 2 else "legacy_git_only"}
         means = {}
         for variant, indices in group.items():
+            if item["identity_basis"] == "content_fingerprints":
+                fingerprints = {rows[i]["product_identity"]["content_sha256"] for i in indices}
+                if len(fingerprints) != 1:
+                    raise ValueError("multiple product fingerprints on one comparison side")
+                item[variant + "_product_content_sha256"] = next(iter(fingerprints))
             item[variant + "_attempts"] = len(indices)
             item[variant + "_failed_attempts"] = sum(not rows[i]["passed"] for i in indices)
             item[variant + "_attempt_ids"] = [rows[i]["attempt"] for i in indices]
@@ -468,6 +489,117 @@ def soak_metrics(raw):
     return result
 
 
+def validate_soak_ledger(raw):
+    """Reconcile observed operations, not a plan inferred from summary flags."""
+    w, args = raw["worker"], raw["arguments"]
+    sections = ("operations", "callbacks", "convergence", "queries", "prefetch", "restarts")
+    offsets = dict.fromkeys(sections, 0)
+    observed = []
+    generation, removal = 1, None
+    files = [f"background-{n:06d}.md" for n in range(count(args["seed_facts"]))]
+    control = "soakcontrolanchor confirms synthetic durable control is violet."
+    for section, index in w["ledger"]:
+        if section not in offsets or type(index) is not int or index != offsets[section]:
+            raise ValueError("invalid ledger reference")
+        row = w[section][index]
+        offsets[section] += 1
+        cycle, stage = row["cycle"], row["stage"]
+        if cycle is not None and (type(cycle) is not int or not 0 <= cycle < count(w["cycles"])):
+            raise ValueError("invalid observed cycle")
+        action = row.get("action")
+        if section == "operations" and action == "corpus_remove":
+            if removal is not None or row["files"] != files or stage not in {"revise", "cleanup"}:
+                raise ValueError("corpus removal mismatch")
+            removal = row
+        phase = ("cold_start" if stage == "initial" else "warm" if removal is None else
+                 "warm_after_removal" if stage == "final" or cycle != removal["cycle"] else "corpus_removal")
+        if row["phase"] != phase:
+            raise ValueError("phase disagrees with observed removals")
+        if section == "restarts":
+            generation += 1
+            requested = args.get("engine_restart_at")
+            if (requested is None or stage == "initial" or
+                    not number(requested) <= number(row["active_seconds"]) <= number(w["active_seconds"])):
+                raise ValueError("unrequested or mistimed restart")
+        if count(row["generation"]) != generation:
+            raise ValueError("restart generation mismatch")
+        if section != "operations": number(row["seconds"] if section != "restarts" else row["restart_seconds"])
+        if section == "restarts" or (section == "operations" and action == "corpus_remove"):
+            continue
+        slot = row.get("slot")
+        if slot is not None and (type(slot) is not int or slot not in (0, 1)):
+            raise ValueError("invalid slot")
+        label = action
+        if section == "convergence": label = count(row["records"])
+        elif section == "prefetch":
+            label = row["kind"]
+            if count(row["chars"]) > 2000: raise ValueError("prefetch overflow")
+        elif section == "queries":
+            label = row["probe"]
+            positive = label in {"control", "revised"}
+            content = (control if label == "control" else
+                       f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo." if label == "revised" else
+                       {"obsolete": "obsoleteanswer", "deleted": "revisedanswer",
+                        "background": "soakbackground000000", "cleanup": "soakcleanupanchor"}[label])
+            body = response_text(row["response"])
+            lines = cited_lines(row["response"], row["sources"])
+            hit = content in lines if positive else any(content in line for line in lines)
+            key = ("soakcontrolanchor" if label == "control" else "soakcleanupanchor"
+                   if label == "cleanup" else "soakbackground000000"
+                   if label == "background" else f"soakslot{slot:02d}")
+            if (row["required"] is not positive or row["absent"] is not (not positive)
+                    or row["hit"] is not hit or hit is not positive
+                    or row["key"] != key
+                    or count(row["chars"]) != len(body)
+                    or row["kind"] != ("hybrid" if label == "control" else "fts")):
+                raise ValueError("invalid observed retrieval probe")
+        elif section == "callbacks":
+            revised = (f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo."
+                       if cycle is not None else "soakcleanupanchor synthetic cleanup marker.")
+            old = revised.replace("revisedanswer", "obsoleteanswer")
+            content, previous = {"add": (old, ""), "replace": (revised, old), "remove": ("", revised)}[action]
+            if row["content"] != content or row["previous"] != previous:
+                raise ValueError("observed callback content mismatch")
+        elif action == "seed" and row["files"] != files:
+            raise ValueError("seed observations mismatch")
+        elif action == "final_state" and count(row["records"]) != count(w["final_mirror_records"]):
+            raise ValueError("final observations mismatch")
+        observed.append((section, cycle, stage, label, slot))
+    if any(offsets[s] != len(w[s]) for s in sections):
+        raise ValueError("unreferenced observations")
+    if offsets["restarts"] != int(args.get("engine_restart_at") is not None) or removal is None:
+        raise ValueError("missing restart or removal")
+    expected = []
+    def add(section, cycle, stage, label, slot=None):
+        expected.append((section, cycle, stage, label, slot))
+    add("operations", None, "initial", "seed")
+    add("operations", None, "initial", "control_store")
+    add("convergence", None, "initial", 0)
+    add("queries", None, "initial", "control")
+    for cycle in range(count(w["cycles"])):
+        for slot in range(2):
+            for action in ("add", "replace"): add("callbacks", cycle, "revise", action, slot)
+        add("convergence", cycle, "revise", 2)
+        for slot in range(2):
+            for probe in ("revised", "obsolete"): add("queries", cycle, "revise", probe, slot)
+        for slot in range(2): add("callbacks", cycle, "remove", "remove", slot)
+        add("convergence", cycle, "remove", 0)
+        for slot in range(2): add("queries", cycle, "remove", "deleted", slot)
+        add("queries", cycle, "remove", "control")
+        for kind in ("repeated_query", "distinct_query"): add("prefetch", cycle, "remove", kind)
+        add("operations", cycle, "remove", "cycle_complete")
+    if removal["stage"] == "cleanup":
+        for action in ("add", "remove"): add("callbacks", None, "cleanup", action)
+        add("convergence", None, "cleanup", 0)
+    add("convergence", None, "final", 0)
+    add("queries", None, "final", "control")
+    if files: add("queries", None, "final", "background")
+    if removal["stage"] == "cleanup": add("queries", None, "final", "cleanup")
+    add("operations", None, "final", "final_state")
+    if observed != expected:
+        raise ValueError("incomplete observed soak workload")
+
+
 def complete_soak_coverage(raw):
     try:
         worker, args = raw["worker"], raw["arguments"]
@@ -479,8 +611,9 @@ def complete_soak_coverage(raw):
             return False
         if count(args["seed_facts"]) and worker.get("corpus_removed") is not True:
             return False
+        validate_soak_ledger(raw)
         return count(worker["final_mirror_records"]) == 0
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, IndexError, TypeError, ValueError):
         return False
 
 
@@ -514,6 +647,13 @@ def adapt_report(raw):
         # Failure-only envelope: do not interpret unknown metrics or parent units.
         result = {k: raw[k] for k in ("lane", "mode", "source_sha", "plugin_sha", "host_sha",
                                       "errors", "error_counts") if k in raw}
+        # Source evidence is independent of workload schema completeness. Keep
+        # each valid identity, even if another was unavailable or malformed.
+        for key in ("product_identity", "harness_identity", "host_provenance"):
+            try:
+                result[key] = sanitize_identity(raw.get(key))
+            except ValueError:
+                pass
         result["passed"] = False
         if soak:
             result["lane"] = "soak"
@@ -694,6 +834,7 @@ def render(data):
     lines.extend(["", "## Matched baseline/fix comparisons", "",
                   "Deltas are fix minus baseline; they are descriptive, not causal claims.",
                   "New receipts match host and harness content fingerprints, lane, mode, workload (except selected product path), and context tags.",
+                  "Each comparison side is bound to one exported product content fingerprint; mixed-product retries are rejected.",
                   "Legacy Git-only comparisons are labelled and are not repaired-instrument evidence.",
                   "Machine/cache/environment equality must be supplied in context tags when they vary.",
                   "Missing required conditions produce no comparison.", "",

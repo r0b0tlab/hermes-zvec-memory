@@ -23,6 +23,7 @@ import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from retrieval_evidence import capture_sources, cited_lines, response_text
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/stress-runs"
@@ -315,13 +316,12 @@ def native_queries(obj, wanted, result, forbidden=()):
         start = time.perf_counter()
         out = json.loads(obj.handle_tool_call("memory_search", {
             "query": key, "mode": "fts", "limit": 5, "globs": ["facts/**"]}))
-        text = out.get("results", "")
-        body = hit_body(text)
-        hit = bool(re.match(r"(?:matchedBy=fts )?facts/[^\n]+:\d+", body)) and content in body
-        result["queries"].append({"key": key, "hit": hit, "chars": len(text),
+        evidence = query_evidence(obj, out)
+        hit = content in evidence.pop("lines") and evidence["valid"]
+        result["queries"].append({"key": key, "hit": hit, **evidence,
                                   "expected_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                   "seconds": time.perf_counter()-start, "response": out})
-        if out.get("error") or not hit or len(text) > 2000:
+        if not evidence["valid"] or not hit:
             result["errors"].append(f"native query failed: {key}")
     result["hit_at_5"] = sum(q["hit"] for q in result["queries"])/len(selected) if selected else None
     result["query_latency_seconds"] = latency([q["seconds"] for q in result["queries"]])
@@ -331,14 +331,29 @@ def native_queries(obj, wanted, result, forbidden=()):
         start = time.perf_counter()
         out = json.loads(obj.handle_tool_call("memory_search", {
             "query": key, "mode": "fts", "limit": 5, "globs": ["facts/**"]}))
-        text = out.get("results", "")
-        stale = content in hit_body(text)
+        evidence = query_evidence(obj, out)
+        stale = content in evidence.pop("lines")
         result["negative_queries"].append({"key": key, "stale": stale, "response": out,
-                                           "chars": len(text),
+                                           **evidence,
                                            "forbidden_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                            "seconds": time.perf_counter()-start})
-        if stale or out.get("error") or len(text) > 2000:
+        if stale or not evidence["valid"]:
             result["errors"].append(f"stale/failed negative native query: {key}")
+
+
+def query_evidence(obj, response):
+    text = response.get("results") if isinstance(response, dict) else None
+    row = {"sources": {}, "lines": [], "valid": False}
+    if isinstance(text, str):
+        row["chars"] = len(text)  # no character metric exists for non-text output
+    try:
+        response_text(response)
+        row["sources"] = capture_sources(response, obj._vault)
+        row["lines"] = cited_lines(response, row["sources"])
+        row["valid"] = True
+    except (AttributeError, OSError, ValueError):
+        pass  # failed evidence is retained, never a successful absence probe
+    return row
 
 
 def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate"):
@@ -513,10 +528,15 @@ def cleanup_owned(child, deadline=None):
                     elif os.waitid(os.P_PIDFD, handles[pid], os.WEXITED | os.WNOHANG) is not None:
                         awaiting.discard(pid)
                 except ChildProcessError:
-                    # Already reaped or not yet adopted: use the retained pidfd
-                    # to distinguish death from a live non-child.
+                    # POLLIN means dead, NOT reaped: a zombie may still belong
+                    # to an intermediate parent killed in this very round.
+                    # Retain it until adoption lets waitid reap it, or POLLHUP
+                    # proves its original parent already reaped that identity.
                     try:
-                        if select.select([handles[pid]], [], [], 0)[0]:
+                        reaped = select.poll()
+                        reaped.register(handles[pid], select.POLLIN | select.POLLHUP)
+                        if any(fd == handles[pid] and flags & select.POLLHUP
+                               for fd, flags in reaped.poll(0)):
                             awaiting.discard(pid)
                     except BaseException as exc:
                         errors.append(exc)
@@ -529,7 +549,9 @@ def cleanup_owned(child, deadline=None):
             if not awaiting or remaining <= 0 or not active:
                 break
             try:
-                select.select(active, [], [], min(.01, remaining))
+                # A not-yet-adopted zombie is permanently readable. Wait on
+                # no descriptors instead of spinning on its readable pidfd.
+                select.select([], [], [], min(.01, remaining))
             except BaseException as exc:
                 errors.append(exc)
                 break
