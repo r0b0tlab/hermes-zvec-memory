@@ -156,9 +156,10 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) ->
 
 
 def report(checks: List[Dict]) -> Dict:
-    failures = [c for c in checks if not c["ok"]]
-    return {"ok": not failures, "checks": checks, "failures": [c["name"] for c in failures],
-            "checked": sorted(c["name"] for c in checks) == sorted(REQUIRED_CHECKS)}
+    checked = sorted(c["name"] for c in checks) == sorted(REQUIRED_CHECKS)
+    failures = [c for c in checks if c["ok"] is not True]
+    return {"ok": checked and not failures, "checks": checks,
+            "failures": [c["name"] for c in failures], "checked": checked}
 
 
 def resolve_vault(raw: str, home: Path) -> Path:
