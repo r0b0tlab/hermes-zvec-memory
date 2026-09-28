@@ -50,3 +50,9 @@ def test_retired_updater_never_runs_or_changes_state(
     assert upgrade.main(argv) == 2
     assert "Retired:" in capsys.readouterr().err
     assert snapshot() == before
+
+
+def test_installed_subtree_includes_exact_mit_license():
+    shipped = ROOT / "zvec-memory" / "LICENSE"
+    assert shipped.is_file(), "The installed plugin subtree must ship the MIT notice"
+    assert shipped.read_bytes() == (ROOT / "LICENSE").read_bytes()
