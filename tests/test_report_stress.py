@@ -38,6 +38,13 @@ def zero_hit_body(key):
     return native_fixture("zero_hit")["response"]["results"].replace("stressSYNTHETIC002", key)
 
 
+def ranked_hit_body(key, content, citation="facts/a.md:1", number=1):
+    # Pinned CLI grammar declares group.items.length, not a global search total.
+    # Old handcrafted bare #1 bodies omitted the envelope being validated.
+    return (f"query groups (1):\nQ1 [supplemental]: {key}\nhits: 1\n\n"
+            f"#1 matchedBy=fts {citation}\nsource:\n{number}\t{content}\n")
+
+
 def soak_report():
     # Synthetic unit fixture ONLY, never a capacity receipt.
     raw = {"schema_version": 1, "lane": "long_lived_soak",
@@ -70,7 +77,7 @@ def soak_report():
                    f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo." if probe == "revised" else "")
         key = ("soakcontrolanchor" if probe == "control" else "soakcleanupanchor" if probe == "cleanup"
                else "soakbackground000000" if probe == "background" else f"soakslot{slot:02d}")
-        body = f"#1 facts/a.md:1\nsource:\n1\t{content}\n" if content else zero_hit_body(key)
+        body = ranked_hit_body(key, content) if content else zero_hit_body(key)
         record("queries", probe=probe, slot=slot, key=key, kind="hybrid" if probe == "control" else "fts",
                seconds=.5, chars=len(body), response={"results": body},
                sources={"facts/a.md": content} if content else {}, hit=bool(content),
@@ -581,10 +588,11 @@ def complete_native_report():
     control = "Explicit control fact for worker 0 in stress-fixture."
     token = hashlib.sha256(b"stress-fixture:0:0").hexdigest()[:20]
     def digest(text): return hashlib.sha256(text.encode()).hexdigest()
+    body = ranked_hit_body(control, control, "facts/control.md:1")
     raw["recovery"].update(native_status={"exit": 0}, queries=[{
-        "key": control, "hit": True, "chars": len(f"#1 facts/control.md:1\nsource:\n1\t{control}\n"), "seconds": .1,
+        "key": control, "hit": True, "chars": len(body), "seconds": .1,
         "sources": {"facts/control.md": control + "\n"},
-        "expected_sha256": digest(control), "response": {"results": f"#1 facts/control.md:1\nsource:\n1\t{control}\n"}}],
+        "expected_sha256": digest(control), "response": {"results": body}}],
         negative_queries=[{"key": "stress"+token, "stale": False, "chars": len(zero_hit_body("stress"+token)),
                            "seconds": .1, "response": {"results": zero_hit_body("stress"+token)}, "sources": {},
                            "forbidden_sha256": digest(f"For key stress{token}, the {adjective} answer is payload{token}.")}
@@ -618,9 +626,9 @@ def test_native_response_evidence_is_independently_validated(damage):
     if damage == "empty": q["response"]["results"] = ""
     elif damage == "echo": q["response"]["results"] = "Q1: " + control + "\nhits: 0"
     elif damage == "wrong_source": q["sources"]["facts/control.md"] = "unrelated\n"
-    elif damage == "wrong_line": q["response"]["results"] = f"#1 facts/control.md:1\nsource:\n2\t{control}\n"
+    elif damage == "wrong_line": q["response"]["results"] = ranked_hit_body(control, control, "facts/control.md:1", 2)
     elif damage == "nonexistent": q["sources"] = {}
-    elif damage == "unnumbered": q["response"]["results"] = f"#1 facts/control.md:1\n{control}\n"
+    elif damage == "unnumbered": q["response"]["results"] = ranked_hit_body(control, control, "facts/control.md:1").replace("source:\n1\t", "")
     elif damage == "shape": q["response"]["results"] = []
     elif damage == "chars": q["chars"] = 0
     else:
@@ -629,7 +637,7 @@ def test_native_response_evidence_is_independently_validated(damage):
         forbidden = f"For key stress{token}, the obsolete answer is payload{token}."
         q = raw["recovery"]["negative_queries"][0]
         q["sources"] = {"facts/stale.md": forbidden + "\n"}
-        q["response"]["results"] = f"#1 facts/stale.md:1\nsource:\n1\t{forbidden}\n"
+        q["response"]["results"] = ranked_hit_body(q["key"], forbidden, "facts/stale.md:1")
     if damage != "chars": q["chars"] = len(q["response"]["results"])
     with pytest.raises(ValueError, match="incomplete receipt"):
         tool().aggregate([raw])

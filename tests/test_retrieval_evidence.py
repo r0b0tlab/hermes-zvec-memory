@@ -115,3 +115,77 @@ def test_export_accepts_retained_positive_source_shape():
     query["sources"] = {name: text.replace(answer, query["key"]) for name, text in fixture["sources"].items()}
     query["chars"] = len(query["response"]["results"])
     assert tool().aggregate([raw])["passed"] is True
+
+
+RANKED_CONTROLS = ["one", "two", "primary", "engine_tab"]
+RANKED_COUNT_DAMAGE = ["missing_hit", "undercount", "zero_count", "missing_count",
+                       "malformed_count", "negative_count", "decimal_count", "duplicate_count",
+                       "missing_envelope", "wrong_group"]
+RANKED_PREVIEW_DAMAGE = ["incomplete_final", "ellipsis_final", "source_gap", "leading_gap",
+                         "missing_final_source", "partial_final_line"]
+
+
+def ranked_negative_fixture(case, key="SYNTHETIC forbidden query"):
+    """Complete pinned CLI syntax, then one deliberate completeness defect."""
+    count = 2 if case in {"two", "undercount", *RANKED_PREVIEW_DAMAGE} else 1
+    sources = {f"facts/ranked-safe-{n}.md": f"SYNTHETIC safe control {n}\n"
+               for n in range(1, count + 1)}
+    sections = [f"#{n} matchedBy=fts {name}:1-2\nsource:\n1\t{text.rstrip()}\n2\t"
+                for n, (name, text) in enumerate(sources.items(), 1)]
+    body = (f"query groups (1):\nQ1 [supplemental]: {key}\nhits: {count}\n\n"
+            + "\n\n".join(sections)).strip()
+    if case == "missing_hit": body = body.replace("hits: 1", "hits: 2")
+    elif case == "undercount": body = body.replace("hits: 2", "hits: 1")
+    elif case == "zero_count": body = body.replace("hits: 1", "hits: 0")
+    elif case == "missing_count": body = body.replace("hits: 1\n", "")
+    elif case == "malformed_count": body = body.replace("hits: 1", "hits: unknown")
+    elif case == "negative_count": body = body.replace("hits: 1", "hits: -1")
+    elif case == "decimal_count": body = body.replace("hits: 1", "hits: 1.0")
+    elif case == "duplicate_count": body = body.replace("hits: 1", "hits: 1\nhits: 2")
+    elif case == "missing_envelope": body = body.split("\n\n", 1)[1]
+    elif case == "wrong_group": body = body.replace("query groups (1)", "query groups (2)")
+    elif case == "primary": body = body.replace("[supplemental]", "[primary]")
+    elif case == "engine_tab": body += "\t\n"
+    elif case == "incomplete_final": body = body.rsplit("\n", 1)[0]
+    elif case == "ellipsis_final": body = body.rsplit("\n", 1)[0] + "\n..."
+    elif case in {"source_gap", "leading_gap"}:
+        body = body.replace("ranked-safe-2.md:1-2", "ranked-safe-2.md:1-3")
+        body = body.rsplit("\n", 1)[0] + "\n3"
+        if case == "source_gap": sources["facts/ranked-safe-2.md"] += "SYNTHETIC forbidden content\n"
+        else:
+            sources["facts/ranked-safe-2.md"] = "SYNTHETIC forbidden content\n" + sources["facts/ranked-safe-2.md"]
+            body = body.replace("1\tSYNTHETIC safe control 2", "2\tSYNTHETIC safe control 2")
+    elif case == "missing_final_source": body = body.rsplit("\nsource:", 1)[0]
+    elif case == "partial_final_line": body = body.rsplit(" control 2", 1)[0]
+    return {"results": body}, sources
+
+
+@pytest.mark.parametrize("case", RANKED_CONTROLS + RANKED_COUNT_DAMAGE + RANKED_PREVIEW_DAMAGE)
+def test_producer_requires_complete_ranked_negative(tmp_path, case):
+    from stress_memory import native_queries
+    response, sources = ranked_negative_fixture(case)
+    put_sources(tmp_path, sources)
+    result = {"errors": [], "queries": []}
+    reader = SimpleNamespace(_vault=tmp_path, handle_tool_call=lambda *args: json.dumps(response))
+    native_queries(reader, [], result, forbidden=["SYNTHETIC forbidden content"])
+    row = result["negative_queries"][0]
+    assert row["response"] == response
+    assert row["valid"] is (case in RANKED_CONTROLS)
+    assert bool(result["errors"]) is (case not in RANKED_CONTROLS)
+    assert row["stale"] is False
+
+
+@pytest.mark.parametrize("case", RANKED_CONTROLS + RANKED_COUNT_DAMAGE + RANKED_PREVIEW_DAMAGE)
+@pytest.mark.parametrize("lane", ["stress", "soak"])
+def test_export_requires_complete_ranked_negative(case, lane):
+    from test_report_stress import complete_native_report, soak_report, tool
+    raw = complete_native_report() if lane == "stress" else soak_report()
+    query = (raw["recovery"]["negative_queries"][0] if lane == "stress" else
+             next(q for q in raw["worker"]["queries"] if q["absent"]))
+    response, sources = ranked_negative_fixture(case, query["key"])
+    query.update(response=response, sources=sources, chars=len(response["results"]))
+    if case in RANKED_CONTROLS:
+        assert tool().aggregate([raw])["passed"] is True
+    else:
+        with pytest.raises(ValueError, match="incomplete receipt"):
+            tool().aggregate([raw])

@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from test_report_stress import ranked_hit_body
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/stress_memory.py"
@@ -146,16 +147,22 @@ def test_native_regression_selects_real_tests(tmp_path, monkeypatch, capsys):
     assert "NODE_OPTIONS" in calls[0][1]
 
 
-@pytest.mark.parametrize("citation", ["facts/a.md:7", "matchedBy=fts facts/a.md:1-8"])
+@pytest.mark.parametrize("citation", ["facts/a.md:7", "facts/a.md:1-8"])
 def test_native_queries_accept_real_citation_formats(tmp_path, citation):
     s = module()
     wanted = s.expected("run", 1, 2)
     (tmp_path / "facts").mkdir()
-    (tmp_path / "facts/a.md").write_text("\n" * 6 + wanted[0] + "\n\n")
+    source = "\n" * 6 + wanted[0] + "\n"
+    (tmp_path / "facts/a.md").write_text(source)
+    # Both pinned range forms carry an envelope and the whole cited range;
+    # the old 1-8 fixture showing only line 7 was incomplete evidence.
+    preview = ("7\t" + wanted[0] if citation.endswith(":7") else
+               "\n".join(f"{n}\t{line}" for n, line in enumerate(source.split("\n"), 1)))
     class Reader:
         _vault = tmp_path
         def handle_tool_call(self, name, args):
-            return json.dumps({"results": "query\n#1 " + citation + "\nsource:\n7\t" + wanted[0]})
+            return json.dumps({"results": (f"query groups (1):\nQ1 [supplemental]: {args['query']}\n"
+                f"hits: 1\n\n#1 matchedBy=fts {citation}\nsource:\n{preview}").strip()})
     result = {"errors": [], "queries": []}
     s.native_queries(Reader(), wanted, result)
     assert result["errors"] == []
@@ -504,7 +511,7 @@ def test_native_negative_hits_fail(tmp_path):
     class Reader:
         _vault = tmp_path
         def handle_tool_call(self, *a):
-            return json.dumps({"results": "query\n#1 facts/a.md:1\nsource:\n1\t" + content})
+            return json.dumps({"results": ranked_hit_body("SYNTHETIC", content)})
     result = {"errors": [], "queries": []}
     s.native_queries(Reader(), [], result, forbidden=[content])
     assert result["errors"]
@@ -864,7 +871,7 @@ def test_native_query_receipts_bind_each_oracle(tmp_path):
     class Reader:
         _vault = tmp_path
         def handle_tool_call(self, name, args):
-            return json.dumps({"results": "#1 facts/a.md:1\nsource:\n1\t" + wanted[0]})
+            return json.dumps({"results": ranked_hit_body(args["query"], wanted[0])})
     result = {"errors": [], "queries": []}
     s.native_queries(Reader(), wanted, result, forbidden)
     assert result["queries"][0]["expected_sha256"] == hashlib.sha256(wanted[0].encode()).hexdigest()
@@ -892,7 +899,7 @@ def test_native_queries_resolve_cited_numbered_source(tmp_path, damage):
     class Reader:
         _vault = tmp_path
         def handle_tool_call(self, *a):
-            text = f"query\n#1 {citation}\nsource:\n1\t{content}"
+            text = ranked_hit_body("SYNTHETIC", content, citation)
             if damage == "shape": text = [text]
             elif damage == "overflow": text += "x" * 2000
             return json.dumps({"results": text})

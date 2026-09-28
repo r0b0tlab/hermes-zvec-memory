@@ -7,6 +7,7 @@ import sys
 import subprocess
 import time
 import pytest
+from test_retrieval_evidence import RANKED_CONTROLS, RANKED_COUNT_DAMAGE, RANKED_PREVIEW_DAMAGE
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("soak_memory", ROOT / "scripts/soak_memory.py")
@@ -178,6 +179,47 @@ def test_soak_retains_invalid_attempt_without_ledger_coverage(tmp_path, monkeypa
     with pytest.raises(ValueError): tool().aggregate([raw])
     raw["passed"] = False
     assert "SYNTHETIC" not in json.dumps(tool().aggregate([raw]))
+
+
+@pytest.mark.parametrize("case", RANKED_CONTROLS + RANKED_COUNT_DAMAGE + RANKED_PREVIEW_DAMAGE)
+def test_soak_ledger_requires_complete_ranked_negative(tmp_path, monkeypatch, case):
+    from types import SimpleNamespace
+    from test_provider import ZvecMemoryProvider
+    from test_retrieval_evidence import ranked_negative_fixture, put_sources
+    original = ZvecMemoryProvider.handle_tool_call
+    responses = []
+    def respond(self, name, args):
+        if (name == "memory_search" and args.get("query", "").startswith("soakslot")
+                and not self._mirror_state()["records"]):
+            response, sources = ranked_negative_fixture(case, args["query"])
+            put_sources(self._vault, sources)
+            responses.append(response)
+            return json.dumps(response)
+        return original(self, name, args)
+    monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", synthetic_native_boundary)
+    monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(ZvecMemoryProvider, "handle_tool_call", respond)
+    def factory(run, number):
+        p = ZvecMemoryProvider(config={"vault": str(run / "vault"), "zg_bin": "/no/native",
+            "context_chars": 2000, "reindex_min_seconds": 0})
+        p.initialize(f"soak-{number}", hermes_home=str(tmp_path / "home/hermes"))
+        return p
+    args = SimpleNamespace(duration=.01, seed_facts=0, engine_restart_at=None,
+                           convergence_timeout=3, sample_interval=.05)
+    report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
+    daemon = SimpleNamespace(generation=1, process=SimpleNamespace(poll=lambda: None))
+    if case in RANKED_CONTROLS:
+        soak.workload(tmp_path, args, report, daemon, factory)
+    else:
+        with pytest.raises(ValueError):
+            soak.workload(tmp_path, args, report, daemon, factory)
+    assert responses, "must reach the negative probe, not an earlier failure"
+    rows = [(i, q) for i, q in enumerate(report["queries"]) if q["response"] in responses]
+    assert rows
+    for index, row in rows:
+        assert row["probe"] == "deleted" and row["absent"] is True
+        assert row["valid"] is (case in RANKED_CONTROLS)
+        assert (["queries", index] in report["ledger"]) is (case in RANKED_CONTROLS)
 
 
 @pytest.mark.parametrize("restart_at", [None, 0])

@@ -19,10 +19,23 @@ def response_text(response):
 
 def cited_sections(text):
     sections = re.split(r"(?m)(?=^#\d+ )", text)
+    if len(sections) == 1:
+        # One query is sent per harness probe. Absence is evidence only when
+        # the pinned engine explicitly completes that group with zero hits.
+        empty = re.fullmatch(r"query groups \(1\):\nQ1 \[(?:primary|supplemental)\]: ([^\r\n]+)"
+                             r"\nhits: 0\n\nNo matches\.\n?", text)
+        if not empty or not empty[1].strip():
+            raise ValueError("missing complete zero-hit result envelope")
+        return
+    # Pinned CLI context.js counts group.items.length, i.e. the ranked items
+    # it renders, not all search candidates. A clipped list proves no absence.
+    envelope = re.fullmatch(r"query groups \(1\):\nQ1 \[(?:primary|supplemental)\]: ([^\r\n]+)"
+                            r"\nhits: ([1-5])\n\n", sections[0])
+    if (not envelope or not envelope[1].strip()
+            or int(envelope[2]) != len(sections) - 1):
+        raise ValueError("incomplete ranked result envelope")
     rank = 0
-    for section in sections:
-        if not re.match(r"^#\d+ ", section):
-            continue  # query echoes are never evidence
+    for section in sections[1:]:
         header = re.match(r"^#([1-5]) (?:matchedBy=\S+ )?(facts/[^\s:]+\.md):"
                           r"([1-9]\d*)(?:-([1-9]\d*))?[^\n]*\n", section)
         rank += 1
@@ -49,18 +62,14 @@ def cited_sections(text):
                 if not start <= number <= end or (lines and number <= lines[-1][0]):
                     raise ValueError("invalid source line number")
                 lines.append((number, value))
-            elif line and line not in {"...", "…"}:
+            elif line:
                 raise ValueError("invalid source preview line")
-        if not lines:
-            raise ValueError("empty source preview")
+        # A valid short/windowed preview can still hide the forbidden answer.
+        # Strictly increasing in-range numbers must cover the entire citation,
+        # including the terminal empty entry; count equality alone is not enough.
+        if len(lines) != end - start + 1:
+            raise ValueError("incomplete source preview")
         yield name, start, end, lines
-    if rank == 0:
-        # One query is sent per harness probe. Absence is evidence only when
-        # the pinned engine explicitly completes that group with zero hits.
-        empty = re.fullmatch(r"query groups \(1\):\nQ1 \[(?:primary|supplemental)\]: ([^\r\n]+)"
-                             r"\nhits: 0\n\nNo matches\.\n?", text)
-        if not empty or not empty[1].strip():
-            raise ValueError("missing complete zero-hit result envelope")
 
 
 def capture_sources(response, vault):
