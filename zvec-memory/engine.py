@@ -112,9 +112,15 @@ def token_file(hermes_home, config=None) -> Path:
 
 def installed_version(hermes_home, config=None):
     try:
-        return json.loads(package_json_path(hermes_home, config).read_text(encoding="utf-8")).get("version")
+        metadata = json.loads(package_json_path(hermes_home, config).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(metadata, dict) or metadata.get("name") != ENGINE_PACKAGE:
+        return None
+    version = metadata.get("version")
+    if not isinstance(version, str) or not version or version != version.strip():
+        return None
+    return version
 
 
 def launcher_script(hermes_home, config=None) -> str:
@@ -182,7 +188,7 @@ def _write_if_changed(path: Path, text: str, mode: int = 0o600) -> bool:
     return True
 
 
-def ensure_engine(hermes_home, config=None) -> dict:
+def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VERSION) -> dict:
     """Idempotently lay out launcher + unit for the verified local runtime."""
     hermes_home = Path(hermes_home)
     config = dict(config or {})
@@ -193,6 +199,12 @@ def ensure_engine(hermes_home, config=None) -> dict:
         return {"status": "missing-engine", "runtime_root": str(root), "version": version,
                 "detail": (f"{ENGINE_PACKAGE} runtime not found under {root}/runtime; "
                            f"run 'hermes {PROVIDER_NAME} engine install'")}
+    if version is None:
+        return {"status": "invalid-engine-metadata", "runtime_root": str(root),
+                "detail": "Engine package metadata must identify the expected package and a version"}
+    if version != expected_version:
+        return {"status": "version-mismatch", "expected": expected_version, "found": version,
+                "runtime_root": str(root), "detail": "Installed engine does not match the requested version"}
 
     launcher, unit = launcher_path(hermes_home, config), unit_path()
     writes = []
@@ -241,6 +253,15 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     config = dict(config or {})
     # Validate systemd-bound values before npm or any filesystem mutation.
     unit_template(hermes_home, config)
+    package = package_json_path(hermes_home, config)
+    if package.parent.exists() or package.parent.is_symlink():
+        found = installed_version(hermes_home, config)
+        if found is None:
+            return {"status": "invalid-engine-metadata",
+                    "detail": "Existing engine package metadata is invalid; refusing replacement"}
+        if found != version:
+            return {"status": "migration-required", "expected": version, "found": found,
+                    "detail": "Changing an installed engine version requires separately approved migration"}
     prefix = runtime_root(hermes_home, config) / "runtime"
     npm_bin = npm or shutil.which("npm") or NPM_BIN
     if shutil.which(npm_bin) is None:
@@ -258,7 +279,7 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     found = installed_version(hermes_home, config)
     if found != version:
         return {"status": "version-mismatch", "expected": version, "found": found}
-    return ensure_engine(hermes_home, config)
+    return ensure_engine(hermes_home, config, expected_version=version)
 
 
 def provider_config_path(hermes_home) -> Path:
