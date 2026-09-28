@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -122,14 +123,22 @@ def launcher_script(hermes_home, config=None) -> str:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "# Dedicated, authenticated local engine for the default Hermes profile.\n"
-        f'export ZVEC_GREP_HOME="{engine_home(hermes_home, config)}"\n'
-        f'export ZVEC_GREP_MODEL_CACHE="{model_cache(config)}/models"\n'
+        f'export ZVEC_GREP_HOME={shlex.quote(str(engine_home(hermes_home, config)))}\n'
+        f'export ZVEC_GREP_MODEL_CACHE={shlex.quote(str(model_cache(config) / "models"))}\n'
         'export ZVEC_GREP_MODE="auto"\n'
-        f'export ZVEC_GREP_SERVER_URL="{server_url(config)}"\n'
+        f'export ZVEC_GREP_SERVER_URL={shlex.quote(server_url(config))}\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
-        f'exec {NODE_BIN} {entry_path(hermes_home, config)} "$@"\n'
+        f'exec {shlex.quote(str(NODE_BIN))} {shlex.quote(str(entry_path(hermes_home, config)))} "$@"\n'
     )
+
+
+def _systemd_arg(value) -> str:
+    """Quote the supported systemd grammar, without expansion or escapes."""
+    text = str(value)
+    if any(char in "\"'\\$%" or ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("Unsupported character in systemd argument")
+    return f'"{text}"'
 
 
 def unit_template(hermes_home, config=None) -> str:
@@ -140,8 +149,9 @@ def unit_template(hermes_home, config=None) -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"ExecStart={launcher_path(hermes_home, config)} server run --listen {listen_address(config)}"
-        f" --token-file {token_file(hermes_home, config)}\n"
+        f"ExecStart={_systemd_arg(launcher_path(hermes_home, config))} server run"
+        f" --listen {_systemd_arg(listen_address(config))}"
+        f" --token-file {_systemd_arg(token_file(hermes_home, config))}\n"
         "Restart=on-failure\n"
         "RestartSec=3\n"
         "TimeoutStopSec=20\n"
@@ -176,6 +186,7 @@ def ensure_engine(hermes_home, config=None) -> dict:
     """Idempotently lay out launcher + unit for the verified local runtime."""
     hermes_home = Path(hermes_home)
     config = dict(config or {})
+    wanted_unit = unit_template(hermes_home, config)
     root = runtime_root(hermes_home, config)
     version = installed_version(hermes_home, config)
     if not entry_path(hermes_home, config).is_file():
@@ -188,7 +199,6 @@ def ensure_engine(hermes_home, config=None) -> dict:
     if _write_if_changed(launcher, launcher_script(hermes_home, config), mode=0o700):
         writes.append("launcher")
 
-    wanted_unit = unit_template(hermes_home, config)
     unit_status = "current"
     if not unit.exists():
         _write_if_changed(unit, wanted_unit)
@@ -229,6 +239,8 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
     hermes_home = Path(hermes_home)
     config = dict(config or {})
+    # Validate systemd-bound values before npm or any filesystem mutation.
+    unit_template(hermes_home, config)
     prefix = runtime_root(hermes_home, config) / "runtime"
     npm_bin = npm or shutil.which("npm") or NPM_BIN
     if shutil.which(npm_bin) is None:

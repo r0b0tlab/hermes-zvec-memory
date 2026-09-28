@@ -49,7 +49,7 @@ def unit_dir(tmp_path, monkeypatch):
     return tmp_path / "xdg/systemd/user"
 
 
-def test_launcher_script_is_byte_identical_to_the_verified_launcher(tmp_path):
+def test_launcher_script_matches_the_current_generator_contract(tmp_path):
     engine = load_engine()
     home = tmp_path / "hermes-home"
     config = config_for(tmp_path)
@@ -58,10 +58,10 @@ def test_launcher_script_is_byte_identical_to_the_verified_launcher(tmp_path):
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "# Dedicated, authenticated local engine for the default Hermes profile.\n"
-        f'export ZVEC_GREP_HOME="{tmp_path / "engine-home"}"\n'
-        f'export ZVEC_GREP_MODEL_CACHE="{engine.model_cache(config)}/models"\n'
+        f'export ZVEC_GREP_HOME={tmp_path / "engine-home"}\n'
+        f'export ZVEC_GREP_MODEL_CACHE={engine.model_cache(config)}/models\n'
         'export ZVEC_GREP_MODE="auto"\n'
-        'export ZVEC_GREP_SERVER_URL="http://127.0.0.1:17999/mcp"\n'
+        'export ZVEC_GREP_SERVER_URL=http://127.0.0.1:17999/mcp\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
         f'exec /usr/bin/node {tmp_path / "runtime_root/runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js"} "$@"\n')
@@ -82,8 +82,8 @@ def test_unit_template_declares_the_task_ceiling_and_the_listen_address(tmp_path
     config = config_for(tmp_path, server_url="http://127.0.0.1:18099/mcp")
     unit = engine.unit_template(tmp_path / "hermes-home", config)
     assert f"TasksMax={engine.TASKS_MAX}\n" in unit
-    assert f"ExecStart={tmp_path}/runtime_root/zg-default server run --listen 127.0.0.1:18099" in unit
-    assert f"--token-file {tmp_path}/engine-home/server.token" in unit
+    assert f'ExecStart="{tmp_path}/runtime_root/zg-default" server run --listen "127.0.0.1:18099"' in unit
+    assert f'--token-file "{tmp_path}/engine-home/server.token"' in unit
     assert "WantedBy=default.target\n" in unit
 
 
