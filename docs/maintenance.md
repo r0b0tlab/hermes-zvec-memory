@@ -125,14 +125,14 @@ content changes.
 
 ## Publishing to the plugin catalog
 
-`plugin-catalog-entry.yaml` is the exact file the catalog PR adds. Its schema,
-the admission rules and the two CI gates it must pass were checked against
-`plugin-catalog/README.md`, the published plugin-catalog docs page and
-`.github/workflows/plugin-catalog-ci.yml` in hermes-agent; the per-requirement
-result, the verification commands and the submission steps are in
-[`docs/catalog-submission.md`](catalog-submission.md).
+`plugin-catalog-entry.yaml` retains a historical v0.2.0 pin; it is not a
+v0.3.0 submission artifact. Current policy requires an exact reviewed release
+SHA and **no self-updating code**, not a commit-age waiting period. Hermes's
+own dependency quarantine is a separate policy.
 
-The one requirement that is time-based: the pinned SHA must be **at least two
-weeks old** at pin time. The current pin (`v0.2.0`, `36fdba7…`) becomes eligible
-on 2026-09-25. Submit the PR on or after that date, and re-run both gates before
-doing so.
+Release publication does not authorize catalog submission. After separate
+approval, prepare an entry for the verified released commit, align its version,
+category and declared capabilities, and rerun the current structural and
+pinned-source admission gates in an isolated validation environment. The
+current authorities, historical-pin distinction and gate commands are in
+[`docs/catalog-submission.md`](catalog-submission.md).
