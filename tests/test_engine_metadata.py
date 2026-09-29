@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from test_engine import config_for, fake_runtime, load_engine
+from test_engine import config_for, default_node, fake_runtime, fixture_node, load_engine
 from test_engine_arguments import tree_state
 
 
@@ -106,11 +106,16 @@ def test_fresh_explicit_install_honours_requested_version(tmp_path, isolated_hom
     from types import SimpleNamespace
 
     engine = load_engine()
-    config = config_for(tmp_path)
+    node = fixture_node(tmp_path / "metadata-interpreter", native_version="0.2.3")
+    config = config_for(tmp_path, node_bin=str(node))
+    real_run = engine.subprocess.run
     calls = []
 
     def install(argv, **kwargs):
+        if argv[-1] == "--version":
+            return real_run(argv, **kwargs)
         calls.append(argv)
+        assert argv[:2] == [str(node), "/not-executed/npm"]
         assert argv[-1] == f"{engine.ENGINE_PACKAGE}@0.2.3"
         fake_runtime(tmp_path, version="0.2.3")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -155,15 +160,20 @@ def test_unreadable_metadata_preserved_before_admission(
 
 @pytest.mark.parametrize("metadata", BAD_METADATA + [{"name": "@zvec/zvec-grep", "version": "0.2.1"}])
 def test_post_fetch_metadata_is_revalidated_before_artifact_writes(
-        tmp_path, isolated_home, monkeypatch, metadata):
+        tmp_path, isolated_home, monkeypatch, metadata, default_node):
     from types import SimpleNamespace
 
     engine = load_engine()
     config = config_for(tmp_path)
     calls = []
 
+    real_run = engine.subprocess.run
+
     def install(argv, **kwargs):
+        if argv[-1] == "--version":
+            return real_run(argv, **kwargs)
         calls.append(argv)
+        assert argv[:2] == [str(default_node), "/not-executed/npm"]
         assert argv[-1] == f"{engine.ENGINE_PACKAGE}@{engine.PINNED_VERSION}"
         fake_runtime(tmp_path)
         engine.package_json_path(isolated_home, config).write_text(json.dumps(metadata))
@@ -172,6 +182,7 @@ def test_post_fetch_metadata_is_revalidated_before_artifact_writes(
     monkeypatch.setattr(engine.shutil, "which", lambda name: "/not-executed/npm")
     monkeypatch.setattr(engine.subprocess, "run", install)
 
+    config["node_bin"] = str(default_node)
     result = engine.install_engine(isolated_home, config)
 
     assert len(calls) == 1 and result["status"] == "version-mismatch"
@@ -182,7 +193,7 @@ def test_post_fetch_metadata_is_revalidated_before_artifact_writes(
 
 
 @pytest.mark.parametrize("preexisting", [False, True])
-def test_same_version_explicit_install_remains_supported(tmp_path, isolated_home, monkeypatch, preexisting):
+def test_same_version_explicit_install_remains_supported(tmp_path, isolated_home, monkeypatch, preexisting, default_node):
     from types import SimpleNamespace
 
     engine = load_engine()
@@ -191,18 +202,24 @@ def test_same_version_explicit_install_remains_supported(tmp_path, isolated_home
         fake_runtime(tmp_path)
     calls = []
 
+    real_run = engine.subprocess.run
+
     def install(argv, **kwargs):
+        if argv[-1] == "--version":
+            return real_run(argv, **kwargs)
+        assert not preexisting, "a matching installed package must stay offline"
+        assert argv[:2] == [str(default_node), "/not-executed/npm"]
         calls.append(argv)
-        if not preexisting:
-            fake_runtime(tmp_path)
+        fake_runtime(tmp_path)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(engine.shutil, "which", lambda name: "/not-executed/npm")
     monkeypatch.setattr(engine.subprocess, "run", install)
 
+    config["node_bin"] = str(default_node)
     result = engine.install_engine(isolated_home, config)
 
-    assert len(calls) == 1 and result["status"] == "updated"
+    assert len(calls) == (0 if preexisting else 1) and result["status"] == "updated"
     assert result["version"] == engine.PINNED_VERSION
 
 

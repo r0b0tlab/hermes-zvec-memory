@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from test_engine import fake_runtime, load_engine
+from test_engine import default_node, fake_runtime, load_engine
 
 
 def tree_state(root):
@@ -103,7 +103,7 @@ def test_systemd_parser_accepts_quoted_spaces_and_rejects_unquoted_control(
     assert f"Command {str(launcher).split(' ', 1)[0]} is not executable" in results[1].stderr
 
 
-def test_shell_only_model_cache_is_not_restricted_by_systemd_grammar(tmp_path, isolated_home):
+def test_shell_only_model_cache_is_not_restricted_by_systemd_grammar(tmp_path, isolated_home, default_node):
     engine = load_engine()
     root = fake_runtime(tmp_path)
     config = {"runtime_dir": str(root), "engine_home": str(tmp_path / "engine"),
@@ -113,7 +113,7 @@ def test_shell_only_model_cache_is_not_restricted_by_systemd_grammar(tmp_path, i
 
     assert result["status"] == "updated"
     assert engine.unit_path().read_text() == engine.unit_template(isolated_home, config)
-    assert engine.launcher_path(isolated_home, config).read_text() == engine.launcher_script(isolated_home, config)
+    assert engine.launcher_path(isolated_home, config).read_text() == engine.launcher_script(isolated_home, config, node=default_node)
 
 
 @pytest.mark.parametrize("name", ["with spaces", "with'quote", 'with"quote',

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -123,8 +124,9 @@ def installed_version(hermes_home, config=None):
     return version
 
 
-def launcher_script(hermes_home, config=None) -> str:
-    """The engine wrapper: every engine environment variable lives in one file."""
+def launcher_script(hermes_home, config=None, *, node=None) -> str:
+    """Render only; managed callers supply the admitted absolute interpreter."""
+    node = NODE_BIN if node is None else node
     return (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -135,7 +137,7 @@ def launcher_script(hermes_home, config=None) -> str:
         f'export ZVEC_GREP_SERVER_URL={shlex.quote(server_url(config))}\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
-        f'exec {shlex.quote(str(NODE_BIN))} {shlex.quote(str(entry_path(hermes_home, config)))} "$@"\n'
+        f'exec {shlex.quote(str(node))} {shlex.quote(str(entry_path(hermes_home, config)))} "$@"\n'
     )
 
 
@@ -206,9 +208,22 @@ def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VE
         return {"status": "version-mismatch", "expected": expected_version, "found": version,
                 "runtime_root": str(root), "detail": "Installed engine does not match the requested version"}
 
+    node = verified_node(config)
+    try:
+        proc = subprocess.run([str(node), str(entry_path(hermes_home, config)), "--version"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "runtime-verification-failed", "runtime_root": str(root),
+                "detail": "Engine version could not execute: " + type(exc).__name__}
+    found = proc.stdout.strip()
+    if proc.returncode or found != version:
+        return {"status": "executable-version-mismatch", "expected": version, "found": found,
+                "runtime_root": str(root), "detail": "Engine executable does not match package metadata"}
+
     launcher, unit = launcher_path(hermes_home, config), unit_path()
     writes = []
-    if _write_if_changed(launcher, launcher_script(hermes_home, config), mode=0o700):
+    if _write_if_changed(launcher, launcher_script(hermes_home, config, node=node), mode=0o700):
         writes.append("launcher")
 
     unit_status = "current"
@@ -222,7 +237,7 @@ def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VE
         unit_status = "conflict"
 
     manifest_path = root / MANIFEST_NAME
-    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": NODE_BIN,
+    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": str(node),
                 "entry": str(entry_path(hermes_home, config)),
                 "engine_home": str(engine_home(hermes_home, config)),
                 "server_url": server_url(config), "launcher": str(launcher),
@@ -246,6 +261,27 @@ def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VE
             "runtime_root": str(root), "writes": writes}
 
 
+def verified_node(config) -> Path:
+    """Select an executable absolute interpreter, never an ambient fallback."""
+    raw = config.get("node_bin") or shutil.which("node")
+    if not raw:
+        raise ValueError("Node.js >=22 is required")
+    node = Path(raw).expanduser()
+    if not node.is_absolute() or not node.is_file() or not os.access(node, os.X_OK):
+        raise ValueError("node_bin must be an executable absolute path")
+    node = node.resolve()
+    try:
+        proc = subprocess.run([str(node), "--version"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("Node.js >=22 verification failed: " + type(exc).__name__) from None
+    match = re.fullmatch(r"v([0-9]+)\.[0-9]+\.[0-9]+", proc.stdout.strip())
+    if proc.returncode or not match or int(match.group(1)) < 22:
+        raise ValueError("Node.js >=22 verification failed")
+    return node
+
+
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                    npm: str | None = None) -> dict:
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
@@ -253,6 +289,13 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     config = dict(config or {})
     # Validate systemd-bound values before npm or any filesystem mutation.
     unit_template(hermes_home, config)
+    # Only a literal package version may reach npm: no tags, ranges, or token
+    # repair. The engine pin is separate from the plugin's release version.
+    exact_version = (r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+                     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+    if not isinstance(version, str) or re.fullmatch(exact_version, version) is None:
+        raise ValueError("An exact engine package version is required")
     package = package_json_path(hermes_home, config)
     if package.parent.exists() or package.parent.is_symlink():
         found = installed_version(hermes_home, config)
@@ -262,16 +305,21 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
         if found != version:
             return {"status": "migration-required", "expected": version, "found": found,
                     "detail": "Changing an installed engine version requires separately approved migration"}
+        return ensure_engine(hermes_home, config, expected_version=version)
+    node = verified_node(config)
     prefix = runtime_root(hermes_home, config) / "runtime"
-    npm_bin = npm or shutil.which("npm") or NPM_BIN
-    if shutil.which(npm_bin) is None:
-        return {"status": "no-npm", "detail": f"{npm_bin} not found; install Node.js >= 22"}
+    npm_bin = shutil.which(npm or "npm")
+    if npm_bin is None and npm is None:
+        npm_bin = shutil.which(NPM_BIN)
+    if npm_bin is None:
+        return {"status": "no-npm", "detail": "npm not found; install Node.js >= 22"}
+    npm_bin = str(Path(npm_bin).resolve())
     prefix.mkdir(parents=True, exist_ok=True)
-    # sharp tries to build from source when it finds a global libvips; the engine
-    # runtime must use the prebuilt binaries instead.
-    environment = {**os.environ,
+    # Execute npm's CLI with the exact admitted interpreter; PATH also pins its
+    # ordinary env-node children. No later resolver may switch this installation.
+    environment = {**os.environ, "PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", ""),
                    "SHARP_IGNORE_GLOBAL_LIBVIPS": os.environ.get("SHARP_IGNORE_GLOBAL_LIBVIPS", "1")}
-    proc = subprocess.run([npm_bin, "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
+    proc = subprocess.run([str(node), npm_bin, "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                            "--save-exact", f"{ENGINE_PACKAGE}@{version}"],
                           capture_output=True, text=True, timeout=900, env=environment)
     if proc.returncode != 0:
@@ -279,6 +327,7 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     found = installed_version(hermes_home, config)
     if found != version:
         return {"status": "version-mismatch", "expected": version, "found": found}
+    config["node_bin"] = str(node)
     return ensure_engine(hermes_home, config, expected_version=version)
 
 
