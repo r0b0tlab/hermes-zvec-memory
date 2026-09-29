@@ -1023,3 +1023,20 @@ def test_mirror_map_records_its_schema_and_refuses_newer_layouts(tmp_path):
             provider._mirror_state()
     finally:
         provider.shutdown()
+
+
+@pytest.mark.parametrize("action", ["replace", "remove"])
+def test_authoritative_previous_content_selects_exact_record(tmp_path, monkeypatch, action):
+    p = make_provider(tmp_path)
+    monkeypatch.setattr(p, "_maybe_reindex", lambda *a, **k: None)
+    selected = "Uses the blue interface."
+    other = "A quote: " + selected + " Independent fact."
+    try:
+        for content in (selected, other):
+            p._apply_mirror("add", "memory", content, {})
+        p._apply_mirror(action, "memory", "Uses the green interface.",
+                        {"old_text": selected, "previous_content": selected})
+        wanted = {other, "Uses the green interface."} if action == "replace" else {other}
+        assert {r["content"] for r in p._mirror_state()["records"].values()} == wanted
+    finally:
+        p.shutdown()

@@ -635,15 +635,23 @@ class ZvecMemoryProvider(MemoryProvider):
             records = state["records"]
             old_key = None
             if action in {"replace", "remove"}:
-                old_text = metadata.get("old_text", "")
+                authoritative = "previous_content" in metadata
+                previous = metadata.get("previous_content") if authoritative else metadata.get("old_text")
+                if not isinstance(previous, str) or not previous:
+                    raise ValueError("Exact previous memory content is required for destructive mirroring")
                 matches = [key for key, record in records.items()
-                           if record["target"] == target and isinstance(old_text, str)
-                           and old_text and old_text in record["content"]]
-                if len(matches) != 1:
-                    logger.warning("Mirror %s needs one match; found %d", action, len(matches))
-                    self._save_mirror_state(state)
-                    return
-                old_key = matches[0]
+                           if record["target"] == target and record["content"] == previous]
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous exact mirror ownership")
+                if not matches:
+                    # No owned record: never adopt/delete a lookalike or an explicit fact.
+                    if authoritative and action == "replace":
+                        old_key = None  # The committed new entry may be mirrored as a new add.
+                    else:
+                        self._save_mirror_state(state)
+                        return
+                else:
+                    old_key = matches[0]
             if action != "remove":
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("Empty mirrored content")
