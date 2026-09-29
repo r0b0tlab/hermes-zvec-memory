@@ -98,6 +98,8 @@ def managed(host, monkeypatch):
     def native(args, timeout):
         calls.append((list(args), timeout))
         assert provider._vault.resolve() == vault.resolve()
+        if args == ["--version"]:
+            return 0, "0.0.0-contract-fixture", ""
         if args[0] == "query":
             return 0, "facts/offline.md:1: Contract-only recall fixture", ""
         assert args[0] == "index", args
@@ -108,12 +110,59 @@ def managed(host, monkeypatch):
     manager.add_provider(provider)
     try:
         manager.initialize_all("initial-session", agent_context="primary")
+        assert provider._engine_state()["zg_version"] == "0.0.0-contract-fixture"
         assert provider._vault.resolve() == vault.resolve()
         assert (vault / "facts").is_dir()
         yield SimpleNamespace(manager=manager, provider=provider, vault=vault, calls=calls)
     finally:
         assert manager.flush_pending(timeout=5)
         manager.shutdown_all()
+
+
+def contents(provider):
+    with provider._vault_lock:
+        provider._drain_mirror_inbox()
+        return {r["content"] for r in provider._mirror_state()["records"].values()}
+
+@pytest.mark.parametrize("action", ["replace", "remove"])
+def test_real_host_exact_selection_reaches_correct_owned_mirror(host, managed, monkeypatch, action):
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    store = MemoryStore()
+    assert store._path_for("memory").resolve().is_relative_to(host.home.resolve())
+    selected = "Review fixture selects the blue interface."
+    other = "Unrelated entry quoting: " + selected + " This is a separate fact."
+    replacement = "Review fixture now selects the green interface."
+    observed = []
+    original = managed.provider._apply_mirror
+
+    def capture(action, target, content, metadata, notification_id=None):
+        observed.append((action, dict(metadata)))
+        return original(action, target, content, metadata, notification_id=notification_id)
+
+    monkeypatch.setattr(managed.provider, "_apply_mirror", capture)
+
+    def invoke(arguments):
+        result = json.loads(memory_tool(store=store, **arguments))
+        assert result.get("success") is True, result
+        managed.manager.notify_memory_tool_write(result, arguments)
+        assert managed.manager.flush_pending(timeout=5)
+        contents(managed.provider)
+        return result
+
+    for fact in (selected, other):
+        invoke({"action": "add", "target": "memory", "content": fact})
+    assert contents(managed.provider) == {selected, other}
+    arguments = {"action": action, "target": "memory", "old_text": selected}
+    if action == "replace":
+        arguments["content"] = replacement
+    result = invoke(arguments)
+    result_key = "replaced_entry" if action == "replace" else "removed_entry"
+    assert result[result_key] == selected, "the REAL native store selected this complete entry"
+    assert observed[-1][1]["previous_content"] == selected, "the REAL manager forwarded authoritative identity"
+    expected = {other, replacement} if action == "replace" else {other}
+    assert set(store.memory_entries) == expected, "native write really committed"
+    assert contents(managed.provider) == expected, "mirror must follow host exact-match precedence"
 
 
 def test_discovery_and_schema_are_cold_and_load_real_abc(host):

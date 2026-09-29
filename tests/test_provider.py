@@ -746,7 +746,8 @@ def test_mirror_matching_is_targeted_unambiguous_and_idempotent(tmp_path):
         before = set((p._vault / "facts").glob("*.md"))
         assert len(before) == 2
         p._apply_mirror("remove", "memory", "", {"old_text": "shared preference first"})
-        p._apply_mirror("remove", "user", "", {"old_text": "shared preference"})
+        with pytest.raises(ValueError, match="Legacy selector"):
+            p._apply_mirror("remove", "user", "", {"old_text": "shared preference"})
         assert set((p._vault / "facts").glob("*.md")) == before
     finally:
         p.shutdown()
@@ -1023,6 +1024,23 @@ def test_mirror_map_records_its_schema_and_refuses_newer_layouts(tmp_path):
             provider._mirror_state()
     finally:
         provider.shutdown()
+
+
+@pytest.mark.parametrize("metadata,target,remaining", [
+    ({"old_text": "Other preference.", "previous_content": "Chosen preference."}, "user", {"Other preference."}),
+    ({"old_text": "Chosen preference."}, "user", {"Other preference."}),
+    ({"previous_content": "Chosen preference."}, "memory", {"Chosen preference.", "Other preference."}),
+    ({"previous_content": "Missing preference."}, "user", {"Chosen preference.", "Other preference."}),
+])
+def test_destructive_mirror_identity_is_authoritative_and_target_scoped(tmp_path, metadata, target, remaining):
+    p = make_provider(tmp_path)
+    try:
+        for content in ("Chosen preference.", "Other preference."):
+            p._apply_mirror("add", "user", content, {})
+        p._apply_mirror("remove", target, "", metadata)
+        assert {record["content"] for record in p._mirror_state()["records"].values()} == remaining
+    finally:
+        p.shutdown()
 
 
 @pytest.mark.parametrize("action", ["replace", "remove"])

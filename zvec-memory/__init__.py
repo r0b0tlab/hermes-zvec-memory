@@ -644,6 +644,9 @@ class ZvecMemoryProvider(MemoryProvider):
                 if len(matches) > 1:
                     raise ValueError("Ambiguous exact mirror ownership")
                 if not matches:
+                    if not authoritative and any(record["target"] == target and previous in record["content"]
+                                                 for record in records.values()):
+                        raise ValueError("Legacy selector is not an exact mirror identity")
                     # No owned record: never adopt/delete a lookalike or an explicit fact.
                     if authoritative and action == "replace":
                         old_key = None  # The committed new entry may be mirrored as a new add.
