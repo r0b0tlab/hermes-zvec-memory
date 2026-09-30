@@ -1,5 +1,14 @@
 # hermes-zvec-memory
 
+> **0.3.0 candidate: UNRELEASED / SOURCE-ONLY / NOT_READY.** This isolated
+> packaging successor is not approved for installation or activation. Retained
+> offline success does not certify current supported-host, ownership, native,
+> resource or measurement gates. No narrower release is authorized. See
+> [candidate notes](docs/release-0.3.0-notes.md),
+> [validation](docs/release-0.3.0-validation.md) and
+> [migration](docs/migration-0.3.0.md). Installation examples below are a future
+> operator workflow only, not permission to modify production.
+
 A local-first [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 memory provider backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep).
 Markdown facts and session notes are the source of truth; `zg` supplies hybrid
@@ -21,8 +30,8 @@ active per Hermes profile. Do not modify Hermes core to install this provider.
 
 ```sh
 hermes plugins install https://github.com/<your-account>/hermes-zvec-memory#zvec-memory
-hermes memory setup zvec-memory      # installs the engine runtime and activates it
 hermes zvec-memory engine install    # the one explicit step that fetches the pinned engine
+hermes memory setup zvec-memory      # verifies an already installed engine; never fetches
 hermes zvec-memory doctor
 ```
 

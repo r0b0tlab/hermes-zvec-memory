@@ -1,7 +1,31 @@
 # Changelog
 
-All notable changes to this plugin. Versions match `zvec-memory/plugin.yaml`;
-the release tags point at the commits the plugin-catalog entry pins.
+All notable changes to this plugin. Manifest versions identify source revisions;
+only remotely verified published tags identify releases. Unreleased sections
+below are not publication or deployment claims. Catalog pins retain the exact
+historical revision they describe until separately approved updates.
+
+## 0.3.0 — UNRELEASED / SOURCE-ONLY / NOT_READY
+
+Packaging successor of accepted local composition `343392d`; not committed,
+tagged, published, installed or activated by this work. Native engine remains
+`@zvec/zvec-grep@0.2.2`; this is the plugin candidate version only.
+
+- Accepted source includes authoritative mirror identity, generation-safe
+  rebuild/refresh intent, cold authoritative settings, runtime/worker recovery,
+  complete CLI health/selection diagnostics, conflict-safe default-only managed
+  setup and private quiescent restore boundaries.
+- Tracked measurement/attempt/retrieval/export controls and installed MIT notice
+  are included. The standalone updater/rollback remains retired.
+- Retained 2036-pass offline results per host are scoped base history, not fresh
+  candidate certification. Full supported-host compatibility, real ownership,
+  native/model/resource, remaining measurements and the reduced same-handle
+  soak pair remain HOLD. No speedup, long-term stability or narrower release is
+  claimed. SERV-01 production repair remains excluded/not certified.
+
+See [candidate notes](docs/release-0.3.0-notes.md),
+[gate reconciliation](docs/release-0.3.0-validation.md) and
+[migration/rollback boundaries](docs/migration-0.3.0.md).
 
 ## 0.2.1 — 2026-09-26
 

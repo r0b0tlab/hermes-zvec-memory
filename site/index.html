@@ -110,18 +110,25 @@
 
   <header class="hero">
     <div class="kicker">Hermes Agent memory provider &middot; MIT licensed</div>
+    <p role="note"><b>0.3.0 candidate — UNRELEASED / NOT_READY / SOURCE-ONLY.</b>
+    Do not install or activate this candidate. Supported-host compatibility,
+    ownership, native/resource/model and release gates remain HOLD. This local
+    source-page correction does not establish that any deployed website changed.
+    Historical descriptions, timings, badges and test claims below are retained
+    pre-0.3.0 history, not qualification or new measurements for this candidate.
+    See <a href="../docs/release-0.3.0-validation.md">the full validation boundary</a>.</p>
     <h1><span class="zg">zvec-memory</span><br>an agent that remembers.</h1>
     <p class="tag">Hermes is sharp inside one conversation and forgetful between them.
     zvec-memory fixes that: a private, on-device recall layer over your own Markdown
     vault — no cloud, no account, nothing leaves the machine.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/r0b0tlab/hermes-zvec-memory">Get it on GitHub</a>
-      <a class="btn" href="#install">Install in 4 steps</a>
+      <a class="btn" href="#install">Gated maintenance — HOLD</a>
     </div>
     <div class="badges">
-      <span class="badge ok">realistic recall 10/10</span>
-      <span class="badge">recall p50 ~0.25 s</span>
-      <span class="badge">warmed cache ~265&times; faster</span>
+      <span class="badge">historical recall 10/10 — not 0.3.0 proof</span>
+      <span class="badge">historical p50 ~0.25 s</span>
+      <span class="badge">historical warmed cache ~265&times; faster</span>
       <span class="badge">stdlib + zg only</span>
     </div>
   </header>
@@ -214,10 +221,12 @@ engine:      <span class="hl">zvec-grep</span> — BM25 + vector with RRF fusion
   </section>
 
   <section>
-    <h2><span class="n">05</span>Measured value</h2>
-    <p class="lede">From <code class="inline">scripts/measure_recall.py</code> in
+    <h2><span class="n">05</span>Historical measurements — not qualified for 0.3.0</h2>
+    <p class="lede">Retained pre-0.3.0 landing-page history attributed to
+    <code class="inline">scripts/measure_recall.py</code> in
     <a href="https://github.com/r0b0tlab/hermes-zvec-memory">the repo</a> — 20 seeded facts,
-    10 queries per set, reproducible on any machine with <code class="inline">zg</code> installed.</p>
+    10 queries per set. No new measurement, source-equivalent reproduction or
+    machine-independent result is established by this source-only correction.</p>
     <table>
       <tr><th>query set</th><th>hybrid hit@5</th><th>fts hit@5</th><th>p50</th></tr>
       <tr><td>same-vocabulary (the realistic case)</td><td class="big">10/10</td><td>10/10</td><td>0.25 s</td></tr>
@@ -228,20 +237,32 @@ engine:      <span class="hl">zvec-grep</span> — BM25 + vector with RRF fusion
     <code class="inline">embeddinggemma-300m</code> model scored the same 6/10 on
     paraphrases while taking 125 s to build vs 3 s — so the tiny
     <code class="inline">potion-retrieval-32m</code> stays the default. Honest limits,
-    shipped with the repo.</p>
+    retained with the repo as historical observations, not candidate throughput,
+    model readiness, statistical speedup or release acceptance.</p>
   </section>
 
   <section id="install">
-    <h2><span class="n">06</span>Install</h2>
-<pre>git clone https://github.com/r0b0tlab/hermes-zvec-memory
-npm install -g @zvec/zvec-grep   # needs Node.js 22+
-cp -r hermes-zvec-memory/zvec-memory "${HERMES_HOME:-~/.hermes}/plugins/zvec-memory"
-hermes memory status               # zvec-memory appears as local
-hermes memory setup zvec-memory    # activate (one provider at a time)
-zg server on                       # optional: shared models, background refresh</pre>
-    <p class="dim">Configure via the setup wizard or the desktop config panel (vault, embedding,
-    recall limit, context cap, auto-extract). Remote embeddings stay opt-in behind an explicit
-    <code class="inline">zg auth grant</code> — never automatic.</p>
+    <h2><span class="n">06</span>Future gated maintenance — HOLD</h2>
+    <p><b>Do not install, activate or start a daemon from this page.</b> No released
+    0.3.0 revision is available here. After full independent release gates and
+    separate maintenance/deployment authority, select the exact reviewed plugin
+    revision through the host plugin manager. Do not copy code into a live plugin
+    tree or use an unversioned global npm install.</p>
+    <p>Follow <a href="../docs/maintenance.md">gated maintenance</a> and
+    <a href="../docs/migration-0.3.0.md">the candidate migration requirements</a>.
+    Explicit engine installation must retain the exact pin
+    <code class="inline">@zvec/zvec-grep@0.2.2</code>; setup verifies an existing
+    runtime and does not authorize fetching or service activation. Node &gt;=22
+    is a declared minimum/admission requirement, not verified range support;
+    the retained ownership pilot reviewed only exact Linux Node 26.8.1.
+    Generic-range/macOS, actual native ownership and installed-resource gates
+    remain HOLD; no model download or substitution is authorized.</p>
+    <p class="dim">The compatible host's generic desktop configuration writer and
+    cold-host/import closure remain HOLD. A desktop panel or setup wizard is not
+    a qualified live-upgrade recipe. All-writer/build enrollment and coherent
+    migration remain operator requirements, not implemented/qualified enforcement.
+    Production service adoption, other real profiles and upstream host/catalog
+    actions remain outside this source-only packet.</p>
     <div class="cta" style="margin-top:20px">
       <a class="btn primary" href="https://github.com/r0b0tlab/hermes-zvec-memory">Star it on GitHub</a>
     </div>
@@ -253,8 +274,13 @@ zg server on                       # optional: shared models, background refresh
       <a href="https://github.com/zvec-ai/zvec-grep">zvec-grep (Apache-2.0)</a>
       <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>
     </div>
-    Provider pattern follows Hermes's bundled holographic provider. 8/8 tests green;
-    recall numbers reproducible via <code class="inline">scripts/measure_recall.py</code>.
+    Provider pattern follows Hermes's bundled holographic provider. Historical
+    landing-page claim: "8/8 tests green"; its original small test boundary is
+    not complete 0.3.0 offline, cold-host, native, ownership or release validation.
+    No tests were run for this correction. Historical recall values above are
+    retained, not freshly reproduced. Earlier failed review history remains in
+    <a href="../docs/reliability-review.md">the reliability review</a>; this page
+    does not erase it or certify release readiness.
   </footer>
 
 </div>

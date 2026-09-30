@@ -1,5 +1,13 @@
 # Maintaining and upgrading the provider
 
+> **0.3.0 candidate: UNRELEASED / SOURCE-ONLY / NOT_READY.** Full compatibility
+> and release acceptance are HOLD. Nothing here authorizes production service,
+> plugin/configuration or other-profile changes. Use
+> [migration-0.3.0.md](migration-0.3.0.md) for the current evidence-preserving
+> migration/rollback boundary and
+> [validation](release-0.3.0-validation.md) for unresolved gates. Operational
+> examples require separate future maintenance authorization.
+
 Everything below assumes this checkout (`~/hermes-zvec-memory`) is the source of
 truth and the installed copy lives in `$HERMES_HOME/plugins/zvec-memory`.
 
@@ -16,10 +24,12 @@ truth and the installed copy lives in `$HERMES_HOME/plugins/zvec-memory`.
 | systemd unit | `~/.config/systemd/user/hermes-zvec-memory.service` | `engine.ensure_engine` (generated) |
 | Recovery generation | operator-selected private archive | explicit approved, quiescent maintenance |
 
-The launcher and the unit are **generated**. Do not hand-edit them: the next
-`ensure_engine` run rewrites the launcher when it differs, and a hand-edited unit
-is never overwritten — it is written next to the original as
-`hermes-zvec-memory.service.new` and reported as `unit_status: conflict`.
+The launcher, unit and runtime manifest are a **complete generated artifact
+set**. Managed setup admits matching existing members and creates missing members
+only after whole-set preflight. It refuses operator edits, symlinks, wrong modes
+or differing content before mutation; it does not overwrite artifacts or write
+`.new` conflict repairs. Preserve the generation and obtain separate maintenance
+authority rather than editing files to hide a conflict.
 
 ## Daily checks
 
@@ -29,12 +39,15 @@ hermes zvec-memory status --json   # same checks, machine readable
 hermes zvec-memory reindex         # rebuild the index on the next session
 ```
 
-`doctor` checks eight things and fails closed on any of them: `config`, `vault`,
-`engine` (launcher runs and reports a version), `index` (`--check-ready`),
-`inbox` (journal mode `wal`, nothing pending), `mirror` (no pending creates or
-deletes, no refresh required), `identity` (no delivery-failure marker) and
-`tasks` (the service unit's effective `TasksMax` when systemd reports it loaded,
-otherwise the caller's cgroup `pids.max`, is at least 512).
+`doctor` requires all nine checks, with no missing/duplicate check treated as
+healthy: `config`, `vault`, `engine`, `index`, `inbox`, `mirror`, `identity`,
+`service` and `tasks`. Managed service diagnostics require known target/artifact
+and loaded-unit state; a missing/unreadable managed service cannot be replaced
+with the caller's unrelated task ceiling. Direct targets use the caller cgroup,
+with explicit unlimited distinguished from unknown; finite ceilings must meet
+512. Index admission uses `status VAULT --check-ready`; pending/corrupt durable
+state and incomplete health observations fail closed. CLI action results report
+request/admission separately from health and completion.
 
 `reindex` writes `.reindex-request.json` into the vault; the next provider
 session in that vault consumes it and forces a rebuild.
@@ -45,11 +58,14 @@ The runtime is pinned to one npm package version (`engine.PINNED_VERSION`) and i
 fetched by one explicit command — setup hooks never reach the network:
 
 ```sh
-hermes zvec-memory engine install                # pinned version
-hermes zvec-memory engine install --version 0.2.3
+hermes zvec-memory engine install                # pinned 0.2.2 only
 ```
 
-Then restart the service so it picks up the new launcher:
+An alternate `--version` requires separate explicit engine-migration authority;
+plugin candidate0.3.0 does not authorize changing native package/model identity.
+Service actions below require a reviewed coherent generation and separate
+maintenance authority; SERV-01 is excluded/not certified by this work. Only
+then, if approved, restart the service so it picks up the new launcher:
 
 ```sh
 systemctl --user daemon-reload
@@ -83,8 +99,9 @@ do not reload a known-bad unit just to dismiss a warning. Never automatically
 refresh a production baseline as part of an update. A fresh session must store a
 fact, and a second session must recall it by paraphrase with a resolving citation.
 
-The 3.0 implementation is in progress; this branch has not been deployed and its
-complete setup/recovery/native release gates are not yet certified.
+The 0.3.0 candidate is unreleased and has not been deployed by this work;
+complete host/setup/recovery/native/resource/ownership/release gates remain HOLD.
+SERV-01 production repair is excluded and not certified.
 
 ## Quiescent backup and private cold restore (F9 / INT-08)
 
