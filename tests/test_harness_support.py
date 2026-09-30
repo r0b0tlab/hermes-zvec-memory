@@ -208,34 +208,111 @@ def test_coordinator_records_and_forwards_selected_product(tmp_path, monkeypatch
     assert "plugin_sha" not in record, "a non-Git product must not borrow the instrument's Git revision"
 
 
-def test_regression_loaders_and_native_copies_use_selected_product(tmp_path):
+class _ProductCopyCaptured(Exception):
+    """Stop before any provider loading or native work."""
+
+
+class _SelectedProductCopySpy:
+    def __init__(self, source, cache, home):
+        self.source, self.cache, self.home = map(Path, (source, cache, home))
+        self.cache_copies = self.product_copies = 0
+
+    def verify(self):
+        assert self.product_copies == 1, "product copy not observed"
+        assert self.cache_copies == 1, "cached model copy not observed"
+
+    def __call__(self, src, dst, *args, **kwargs):
+        src, dst = Path(src).resolve(), Path(dst).resolve()
+        if src == self.cache or dst == self.home / "native-model-cache":
+            assert src == self.cache, "cached model source"
+            assert dst == self.home / "native-model-cache", "cached model destination"
+            self.cache_copies += 1
+            # Observe preparation without copying the immutable, large model input.
+            return str(dst)
+        assert src == self.source / "zvec-memory", "selected product source"
+        assert dst == self.home / "plugins/zvec-memory", "selected product destination"
+        self.product_copies += 1
+        raise _ProductCopyCaptured()
+
+
+@pytest.mark.parametrize("home_name", ["multi-home", "isolated-home"])
+def test_selected_product_copy_spy_accepts_scoped_cache_before_product(tmp_path, home_name):
+    source, cache, home = tmp_path / "selected", tmp_path / "cache", tmp_path / home_name
+    spy = _SelectedProductCopySpy(source, cache, home)
+    assert spy(cache, home / "native-model-cache") == str(home / "native-model-cache")
+    assert (spy.cache_copies, spy.product_copies) == (1, 0)
+    with pytest.raises(_ProductCopyCaptured):
+        spy(source / "zvec-memory", home / "plugins/zvec-memory")
+    assert (spy.cache_copies, spy.product_copies) == (1, 1)
+    assert not home.exists(), "the spy must not copy model or provider bytes"
+
+
+def _selected_product_copy_probe(tmp_path, fault="none", function_index="all"):
     import os
     import shutil
     import sys
     frozen = tmp_path/"frozen"
     shutil.copytree(ROOT/"zvec-memory", frozen/"zvec-memory")
-    code = r"""import pathlib,sys,pytest
-root,source,work=map(pathlib.Path,sys.argv[1:])
+    code = r"""import os,pathlib,sys,pytest
+root,source,work=map(pathlib.Path,sys.argv[1:4])
+fault,function_index=sys.argv[4:]
 sys.path.insert(0,str(root/'tests'))
 import test_provider as p,test_engine as e,test_cli as c,test_hostio_equivalence as h,test_provider_native as n
+from test_harness_support import _ProductCopyCaptured as Captured, _SelectedProductCopySpy
 for module in (p._mod,e.load_engine(),c.load_cli(),h.hostio):
  assert pathlib.Path(module.__file__).resolve().is_relative_to(source), module.__file__
-class Captured(Exception): pass
-def copy(src,dst,*a,**k):
- assert pathlib.Path(src).resolve()==source/'zvec-memory', str(src)
- raise Captured()
-for i,fn in enumerate((n.test_native_two_processes_preserve_mirror_ownership,n.test_real_host_provider_native_lifecycle)):
+for i,(fn,home_name) in enumerate(((n.test_native_two_processes_preserve_mirror_ownership,'multi-home'),(n.test_real_host_provider_native_lifecycle,'isolated-home'))):
+ if function_index != 'all' and i != int(function_index): continue
  home=work/str(i);home.mkdir(parents=True)
+ spy=_SelectedProductCopySpy(source,pathlib.Path(os.environ['ZVEC_TEST_MODEL_CACHE']).resolve(),home/home_name)
+ def copy(src,dst,*args,**kwargs):
+  if fault == 'product-destination' and pathlib.Path(src).resolve() == source/'zvec-memory':
+   dst=work/'wrong-home/plugins/zvec-memory'
+  if fault == 'cache-destination' and pathlib.Path(src).resolve() == spy.cache:
+   dst=work/'wrong-home/native-model-cache'
+  result=spy(src,dst,*args,**kwargs)
+  if fault == 'missing-product': raise Captured()
+  return result
  with pytest.MonkeyPatch.context() as patch:
+  if fault == 'product-source': patch.setattr(n,'PROVIDER_ROOT',root)
+  if fault == 'cache-source': patch.setenv('ZVEC_TEST_MODEL_CACHE',str(work/'wrong-cache'))
   patch.setattr(n.shutil,'copytree',copy)
   try: fn(home,patch)
   except Captured: pass
   else: raise AssertionError('copy boundary not exercised')
+  spy.verify()
 """
     env = dict(os.environ, ZVEC_TEST_PROVIDER_ROOT=str(frozen))
-    result = subprocess.run([sys.executable,"-I","-B","-c",code,str(ROOT),str(frozen),str(tmp_path/"work")],
-                            env=env,capture_output=True,text=True,timeout=15)
+    return subprocess.run([sys.executable,"-I","-B","-c",code,str(ROOT),str(frozen),str(tmp_path/"work"),fault,str(function_index)],
+                          env=env,capture_output=True,text=True,timeout=15)
+
+
+def test_regression_loaders_and_native_copies_use_selected_product(tmp_path):
+    result = _selected_product_copy_probe(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("function_index", [0, 1], ids=["two-processes", "host-lifecycle"])
+def test_selected_product_copy_probe_requires_product_after_cache(tmp_path, function_index):
+    result = _selected_product_copy_probe(tmp_path, "missing-product", function_index)
+    assert result.returncode != 0, "cache-only capture must not pass the product-selection oracle"
+    assert "product copy not observed" in result.stderr, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("function_index", [0, 1], ids=["two-processes", "host-lifecycle"])
+@pytest.mark.parametrize("fault", ["product-source", "product-destination"])
+def test_selected_product_copy_probe_rejects_wrong_product(tmp_path, function_index, fault):
+    result = _selected_product_copy_probe(tmp_path, fault, function_index)
+    assert result.returncode != 0, "an incorrect product copy must fail selection"
+    assert "selected " + fault.replace("-", " ") in result.stderr, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("function_index", [0, 1], ids=["two-processes", "host-lifecycle"])
+@pytest.mark.parametrize("fault", ["cache-source", "cache-destination"])
+def test_selected_product_copy_probe_rejects_unscoped_cache(tmp_path, function_index, fault):
+    result = _selected_product_copy_probe(tmp_path, fault, function_index)
+    assert result.returncode != 0, "an unscoped cache copy must fail before provider loading"
+    assert "cached model " + fault.split("-")[1] in result.stderr, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("attempt", ["../escape", "", "hermes-zvec-stress-"+"A"*32])

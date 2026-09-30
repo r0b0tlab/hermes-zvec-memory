@@ -115,6 +115,19 @@ class MirrorInbox:
         finally:
             db.close()
 
+    def high_watermark(self, *, nonblocking=False):
+        """Highest allocated identity, including already acknowledged rows."""
+        if nonblocking:
+            db = sqlite3.connect(self.path, timeout=0)
+            try:
+                row = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'notifications'").fetchone()
+                return int(row[0]) if row else 0
+            finally:
+                db.close()
+        with self.connect() as db:
+            row = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'notifications'").fetchone()
+            return int(row[0]) if row else 0
+
     def first(self):
         with self.connect() as db:
             row = db.execute("SELECT id, payload FROM notifications ORDER BY id LIMIT 1").fetchone()

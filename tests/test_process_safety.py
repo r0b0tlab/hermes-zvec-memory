@@ -2,9 +2,132 @@
 import multiprocessing
 import time
 import fcntl
+import os
+import sys
+import subprocess
+import pytest
 from pathlib import Path
 
 from test_provider import ZvecMemoryProvider, make_provider
+
+_REAL_RUN_ZG = ZvecMemoryProvider._run_zg
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("import os; os.write(1, b'\\xffout'); os.write(2, b'\\xfeerr')", (0, "�out", "�err")),
+    ("import sys; print('normal'); print('failed', file=sys.stderr); sys.exit(3)", (3, "normal\n", "failed\n")),
+    ("import time; time.sleep(2)", (124, "", "zg timed out")),
+])
+def test_real_runner_normalizes_streams_and_status(tmp_path, monkeypatch, code, expected):
+    p = ZvecMemoryProvider({})
+    p._vault = tmp_path
+    monkeypatch.setattr(p, "_zg", lambda: sys.executable)
+    assert _REAL_RUN_ZG(p, ["-I", "-c", code], timeout=0.2) == expected
+
+
+def test_real_runner_reads_eof_not_inherited_input(tmp_path, monkeypatch):
+    p = ZvecMemoryProvider({})
+    p._vault = tmp_path
+    monkeypatch.setattr(p, "_zg", lambda: sys.executable)
+    read, write = os.pipe()
+    os.write(write, b"must not reach child")
+    os.close(write)
+    real = subprocess.run
+    def inherited(*args, **kwargs):
+        kwargs.setdefault("stdin", read)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(subprocess, "run", inherited)
+    try:
+        assert _REAL_RUN_ZG(p, ["-I", "-c", "import sys; print(len(sys.stdin.buffer.read()))"], 2) == (0, "0\n", "")
+    finally:
+        os.close(read)
+
+
+@pytest.mark.parametrize("kind", ["missing", "not-executable", "directory"])
+def test_real_runner_execution_errors_are_values(tmp_path, monkeypatch, kind):
+    p = ZvecMemoryProvider({})
+    p._vault = tmp_path
+    binary = tmp_path / "fixture"
+    if kind == "not-executable":
+        binary.write_text("fixture")
+        binary.chmod(0o600)
+    elif kind == "directory":
+        binary.mkdir()
+    monkeypatch.setattr(p, "_zg", lambda: str(binary))
+    rc, out, err = _REAL_RUN_ZG(p, [], 1)
+    assert rc == 127 and out == "" and "zg" in err
+
+
+@pytest.mark.parametrize("stream", [1, 2])
+def test_real_runner_finite_multibyte_flood_without_newlines(tmp_path, monkeypatch, stream):
+    p = ZvecMemoryProvider({})
+    p._vault = tmp_path
+    monkeypatch.setattr(p, "_zg", lambda: sys.executable)
+    # Bounded fixture, not a claim that capture_output has a runtime byte cap.
+    code = f"import os; os.write({stream}, (b'\\xff'+bytes([0xe2,0x98,0x83]))*32768)"
+    rc, out, err = _REAL_RUN_ZG(p, ["-I", "-c", code], 2)
+    assert rc == 0
+    assert (out if stream == 1 else err) == "�☃" * 32768
+    assert (err if stream == 1 else out) == ""
+
+
+def test_real_runner_descendant_gap_is_measured_and_fixture_reaped(tmp_path, monkeypatch, request):
+    """Evidence of a LIMITATION: timeout cleans the leader, not descendants.
+
+    An owned subreaper in the test (not product code) adopts/reaps the bounded
+    fixture; no arbitrary process-group signalling or system supervisor changes.
+    """
+    import ctypes
+    import json
+    import signal
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0  # GET_CHILD_SUBREAPER
+    assert libc.prctl(36, 1, 0, 0, 0) == 0  # SET_CHILD_SUBREAPER
+    p = ZvecMemoryProvider({})
+    p._vault = tmp_path
+    monkeypatch.setattr(p, "_zg", lambda: sys.executable)
+    identity = tmp_path / "descendant.pid"
+    code = ("import os,time,pathlib; pid=os.fork(); "
+            f"pathlib.Path({str(identity)!r}).write_text(str(pid)) if pid else None; "
+            "os._exit(0) if pid else None; time.sleep(1); os._exit(0)")
+    pidfd = None
+    pid = None
+    reaped = False
+    started = time.monotonic()
+    try:
+        rc, out, err = _REAL_RUN_ZG(p, ["-I", "-c", code], 0.1)
+        elapsed = time.monotonic() - started
+        pid = int(identity.read_text())
+        assert pid > 0
+        pidfd = os.pidfd_open(pid)
+        running = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None
+        evidence = {"rc": rc, "elapsed_seconds": elapsed, "descendant_alive_at_return": running,
+                    "scope": "known descendant cleanup gap, not a containment pass"}
+        request.node.user_properties.append(("process_boundary_observation", json.dumps(evidence)))
+        (tmp_path / "process-boundary-observation.json").write_text(json.dumps(evidence))
+        assert rc == 124 and running
+    finally:
+        if pid is not None:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    reaped = True
+                    break
+                time.sleep(0.01)
+            if not reaped and pidfd is not None:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                        reaped = True
+                        break
+                    time.sleep(0.01)
+        if pidfd is not None:
+            os.close(pidfd)
+        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+        assert reaped, "test-owned bounded descendant must be reaped before returning"
+        request.node.user_properties.append(("fixture_reaped", "true"))
 
 
 def _add_process(root, content, entered, release, started):

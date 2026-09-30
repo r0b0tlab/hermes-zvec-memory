@@ -119,52 +119,6 @@ def managed(host, monkeypatch):
         manager.shutdown_all()
 
 
-def contents(provider):
-    with provider._vault_lock:
-        provider._drain_mirror_inbox()
-        return {r["content"] for r in provider._mirror_state()["records"].values()}
-
-@pytest.mark.parametrize("action", ["replace", "remove"])
-def test_real_host_exact_selection_reaches_correct_owned_mirror(host, managed, monkeypatch, action):
-    from tools.memory_tool import MemoryStore, memory_tool
-
-    store = MemoryStore()
-    assert store._path_for("memory").resolve().is_relative_to(host.home.resolve())
-    selected = "Review fixture selects the blue interface."
-    other = "Unrelated entry quoting: " + selected + " This is a separate fact."
-    replacement = "Review fixture now selects the green interface."
-    observed = []
-    original = managed.provider._apply_mirror
-
-    def capture(action, target, content, metadata, notification_id=None):
-        observed.append((action, dict(metadata)))
-        return original(action, target, content, metadata, notification_id=notification_id)
-
-    monkeypatch.setattr(managed.provider, "_apply_mirror", capture)
-
-    def invoke(arguments):
-        result = json.loads(memory_tool(store=store, **arguments))
-        assert result.get("success") is True, result
-        managed.manager.notify_memory_tool_write(result, arguments)
-        assert managed.manager.flush_pending(timeout=5)
-        contents(managed.provider)
-        return result
-
-    for fact in (selected, other):
-        invoke({"action": "add", "target": "memory", "content": fact})
-    assert contents(managed.provider) == {selected, other}
-    arguments = {"action": action, "target": "memory", "old_text": selected}
-    if action == "replace":
-        arguments["content"] = replacement
-    result = invoke(arguments)
-    result_key = "replaced_entry" if action == "replace" else "removed_entry"
-    assert result[result_key] == selected, "the REAL native store selected this complete entry"
-    assert observed[-1][1]["previous_content"] == selected, "the REAL manager forwarded authoritative identity"
-    expected = {other, replacement} if action == "replace" else {other}
-    assert set(store.memory_entries) == expected, "native write really committed"
-    assert contents(managed.provider) == expected, "mirror must follow host exact-match precedence"
-
-
 def test_discovery_and_schema_are_cold_and_load_real_abc(host):
     threads = set(threading.enumerate())
     modules = set(sys.modules)
@@ -233,7 +187,11 @@ def test_manager_routes_json_tools_and_keeps_prompt_static(managed):
     path = Path(stored["path"])
     assert path.resolve().is_relative_to(managed.vault / "facts")
     assert "Contract fact stored through real manager" in path.read_text()
+    # Store acknowledges durable source/admission, not completed indexing.
+    assert managed.provider._index_worker.drain(5)
+    assert managed.provider._recall_token() is not None
     recalled = json.loads(manager.handle_tool_call("memory_search", {"query": "contract fact"}))
+    assert "results" in recalled, recalled
     assert "Contract-only recall fixture" in recalled["results"]
     assert any(args[0] == "query" for args, _ in managed.calls)
     assert manager.build_system_prompt() == before

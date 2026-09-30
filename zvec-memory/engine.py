@@ -1,9 +1,9 @@
 """Lay out the local zvec-grep engine runtime, launcher and systemd unit.
 
-Everything in this module is declarative and idempotent, and the module never
-touches the network: ``ensure_engine`` re-lays the files it owns only when their
-content differs, and ``install_engine`` is the one explicit, user-invoked command
-that fetches the pinned npm package.
+``ensure_engine`` admits a verified default-profile runtime and a matching
+complete artifact generation, creating only missing members. Operator edits
+are refused before mutation. ``install_engine`` is the one explicit,
+user-invoked command that fetches the pinned npm package; setup never fetches.
 
 ``post_setup`` is the hook ``hermes memory setup`` calls on the provider package
 (``hermes_cli/memory_setup.py::_post_setup_hook``). Because that hook makes this
@@ -12,19 +12,15 @@ provider own activation, ``post_setup`` must also persist ``memory.provider``.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shlex
 import shutil
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .hostio import atomic_json_write
-
-logger = logging.getLogger(__name__)
 
 ENGINE_PACKAGE = "@zvec/zvec-grep"
 PINNED_VERSION = "0.2.2"
@@ -59,7 +55,7 @@ def plugin_block(config) -> dict:
     block = config.get("plugins")
     if isinstance(block, dict) and isinstance(block.get(PROVIDER_NAME), dict):
         return dict(block[PROVIDER_NAME])
-    if any(key in config for key in ("plugins", "memory", "model", "providers")):
+    if is_host_config(config):
         return {}
     return dict(config)
 
@@ -190,11 +186,69 @@ def _write_if_changed(path: Path, text: str, mode: int = 0o600) -> bool:
     return True
 
 
+def _require_managed_scope(hermes_home):
+    home = Path(hermes_home).expanduser().resolve()
+    if home != (Path.home() / ".hermes").resolve():
+        raise ValueError("Managed engine setup supports only the default ~/.hermes profile; no artifacts changed")
+
+
+def _require_managed_executable(hermes_home, config):
+    custom = config.get("zg_bin")
+    if custom and custom != str(launcher_path(hermes_home, config)):
+        raise RuntimeError("Custom zg_bin selected; managed setup will not replace it")
+
+
+def _artifact_set(hermes_home, config, *, node, version):
+    """Render the complete default-profile generation before any mutation."""
+    launcher, unit = launcher_path(hermes_home, config), unit_path()
+    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": str(node),
+                "entry": str(entry_path(hermes_home, config)),
+                "engine_home": str(engine_home(hermes_home, config)),
+                "server_url": server_url(config), "launcher": str(launcher),
+                "unit": str(unit), "unit_status": "generated", "tasks_max": TASKS_MAX}
+    return [("launcher", launcher, launcher_script(hermes_home, config, node=node), 0o700),
+            ("unit", unit, unit_template(hermes_home, config), 0o600),
+            ("manifest", runtime_root(hermes_home, config) / MANIFEST_NAME,
+             json.dumps(manifest, indent=2, ensure_ascii=False), 0o600)]
+
+
+def _preflight_artifacts(artifacts):
+    """Refuse edits, unsafe file kinds and permissions across the entire set."""
+    for name, path, text, mode in artifacts:
+        try:
+            if path.is_symlink():
+                raise ValueError("symlink")
+            if not path.exists():
+                continue
+            if not path.is_file() or path.stat().st_mode & 0o7777 != mode:
+                raise ValueError("file kind or mode")
+            current = path.read_text(encoding="utf-8")
+            if name == "manifest":
+                # Older generated manifests had a volatile timestamp. Admit a
+                # matching generation without rewriting its existing bytes.
+                data = json.loads(current)
+                if not isinstance(data, dict):
+                    raise ValueError("manifest object")
+                if "updated" in data:
+                    if not isinstance(data["updated"], str):
+                        raise ValueError("manifest timestamp")
+                    data.pop("updated")
+                matches = data == json.loads(text)
+            else:
+                matches = current == text
+            if not matches:
+                raise ValueError("content")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Managed artifact conflict: {name} at {path}") from exc
+
+
 def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VERSION) -> dict:
     """Idempotently lay out launcher + unit for the verified local runtime."""
+    _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
     config = dict(config or {})
-    wanted_unit = unit_template(hermes_home, config)
+    _require_managed_executable(hermes_home, config)
+    unit_template(hermes_home, config)
     root = runtime_root(hermes_home, config)
     version = installed_version(hermes_home, config)
     if not entry_path(hermes_home, config).is_file():
@@ -221,41 +275,20 @@ def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VE
         return {"status": "executable-version-mismatch", "expected": version, "found": found,
                 "runtime_root": str(root), "detail": "Engine executable does not match package metadata"}
 
+    artifacts = _artifact_set(hermes_home, config, node=node, version=version)
+    _preflight_artifacts(artifacts)
     launcher, unit = launcher_path(hermes_home, config), unit_path()
+    unit_status = "current" if unit.exists() else "created"
     writes = []
-    if _write_if_changed(launcher, launcher_script(hermes_home, config, node=node), mode=0o700):
-        writes.append("launcher")
+    for name, path, text, mode in artifacts:
+        if not path.exists():
+            _write_if_changed(path, text, mode=mode)
+            writes.append(name)
 
-    unit_status = "current"
-    if not unit.exists():
-        _write_if_changed(unit, wanted_unit)
-        unit_status = "created"
-        writes.append("unit")
-    elif unit.read_text(encoding="utf-8") != wanted_unit:
-        # Never clobber a hand-edited unit: leave it and report the conflict.
-        _write_if_changed(unit.with_name(unit.name + ".new"), wanted_unit)
-        unit_status = "conflict"
-
-    manifest_path = root / MANIFEST_NAME
-    manifest = {"package": ENGINE_PACKAGE, "version": version, "node": str(node),
-                "entry": str(entry_path(hermes_home, config)),
-                "engine_home": str(engine_home(hermes_home, config)),
-                "server_url": server_url(config), "launcher": str(launcher),
-                "unit": str(unit),
-                # Steady-state, so a second run does not rewrite the manifest.
-                "unit_status": "conflict" if unit_status == "conflict" else "generated",
-                "tasks_max": TASKS_MAX}
-    previous = {}
-    if manifest_path.exists():
-        try:
-            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except ValueError:
-            previous = {}
-    if writes or {k: v for k, v in previous.items() if k != "updated"} != manifest:
-        atomic_json_write(manifest_path, {**manifest, "updated": datetime.now(timezone.utc).isoformat()},
-                          mode=0o600)
-        writes.append("manifest")
-
+    # Read every member back; a successful write call is not readiness.
+    if any(not path.is_file() for _, path, _, _ in artifacts):
+        raise RuntimeError("Managed artifact readback failed: missing member")
+    _preflight_artifacts(artifacts)
     return {"status": "updated" if writes else "present", "version": version,
             "zg_bin": str(launcher), "unit": str(unit), "unit_status": unit_status,
             "runtime_root": str(root), "writes": writes}
@@ -285,8 +318,10 @@ def verified_node(config) -> Path:
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                    npm: str | None = None) -> dict:
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
+    _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
     config = dict(config or {})
+    _require_managed_executable(hermes_home, config)
     # Validate systemd-bound values before npm or any filesystem mutation.
     unit_template(hermes_home, config)
     # Only a literal package version may reach npm: no tags, ranges, or token
@@ -307,6 +342,7 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                     "detail": "Changing an installed engine version requires separately approved migration"}
         return ensure_engine(hermes_home, config, expected_version=version)
     node = verified_node(config)
+    _preflight_artifacts(_artifact_set(hermes_home, config, node=node, version=version))
     prefix = runtime_root(hermes_home, config) / "runtime"
     npm_bin = shutil.which(npm or "npm")
     if npm_bin is None and npm is None:
@@ -335,16 +371,33 @@ def provider_config_path(hermes_home) -> Path:
     return Path(hermes_home) / PROVIDER_NAME / "config.json"
 
 
-def _save_host_config(config: dict) -> bool:
-    """Persist config.yaml through the host API when there is one."""
-    try:
-        from hermes_cli.config import save_config
+def _host_config_destination(hermes_home):
+    """Setup alone may use the host's scoped configuration API, never runtime."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import get_config_path
 
-        save_config(config)
-        return True
-    except Exception:
-        logger.warning("zvec-memory: host config API unavailable; not writing config.yaml", exc_info=True)
-        return False
+    home = Path(hermes_home).resolve()
+    if Path(get_hermes_home()).resolve() != home:
+        raise RuntimeError("Refusing activation in a different active profile")
+    path = Path(get_config_path())
+    if path.resolve() != home / "config.yaml":
+        raise RuntimeError("Host config destination does not match setup home")
+    return path
+
+
+def _save_host_config(hermes_home):
+    """Merge selection into CURRENT host settings, then verify persistence."""
+    from hermes_cli.config import save_config
+    from .hostio import read_user_config_raw
+
+    path = _host_config_destination(hermes_home)
+    try:
+        save_config({"memory": {"provider": PROVIDER_NAME}}, merge_existing=True)
+        saved = read_user_config_raw(path)
+        if not isinstance(saved.get("memory"), dict) or saved["memory"].get("provider") != PROVIDER_NAME:
+            raise RuntimeError("Host did not persist provider selection")
+    except Exception as exc:
+        raise RuntimeError("Host provider activation failed") from exc
 
 
 def is_host_config(config) -> bool:
@@ -354,40 +407,35 @@ def is_host_config(config) -> bool:
 
 
 def post_setup(hermes_home, config=None) -> dict:
-    """`hermes memory setup` entry point: install the engine and own activation.
+    """`hermes memory setup`: verify local engine/artifacts and own activation.
 
     The host hook calls this with the whole config dict and then stops, so this
     function is responsible for persisting ``memory.provider``. A caller that
     hands us only our own settings block gets the engine laid out and nothing
     else written.
     """
+    from .settings import load_settings
+
+    _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
     config = config if isinstance(config, dict) else {}
     owns_config = is_host_config(config)
-    block = plugin_block(config) if owns_config else dict(config)
+    block = load_settings(hermes_home, legacy=plugin_block(config)) if owns_config else dict(config)
+    if owns_config:
+        _host_config_destination(hermes_home)
     result = ensure_engine(hermes_home, block)
+    if result.get("status") not in {"present", "updated"} or result.get("unit_status") == "conflict":
+        raise RuntimeError("Engine setup incomplete: " + str(result.get("status", "unknown")))
+    if not owns_config:
+        return {**result, "owns_config": False, "recall_readiness": "not_checked"}
 
     path = provider_config_path(hermes_home)
-    existing = {}
-    if path.is_file():
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
-            existing = {}
-    merged = {"vault": existing.get("vault") or "$HERMES_HOME/" + PROVIDER_NAME,
-              "embedding": existing.get("embedding") or block.get("embedding") or DEFAULT_EMBEDDING,
-              "engine_home": existing.get("engine_home") or block.get("engine_home")
-              or "$HERMES_HOME/" + ENGINE_HOME_NAME,
-              **existing}
-    if result.get("zg_bin"):
-        merged["zg_bin"] = result["zg_bin"]
-    if existing != merged:
+    merged = {**block, "zg_bin": result["zg_bin"]}
+    if not path.exists() or load_settings(hermes_home) != merged:
         atomic_json_write(path, merged, mode=0o600)
 
-    if owns_config:
-        config.setdefault("memory", {})["provider"] = PROVIDER_NAME
-        plugins = config.setdefault("plugins", {})
-        if isinstance(plugins, dict):
-            plugins.setdefault(PROVIDER_NAME, {})["vault"] = merged["vault"]
-        _save_host_config(config)
-    return {**result, "config": str(path), "provider": PROVIDER_NAME, "owns_config": owns_config}
+    if not path.exists() or load_settings(hermes_home) != merged:
+        raise RuntimeError("Provider configuration readback failed")
+    _save_host_config(hermes_home)
+    return {**result, "config": str(path), "provider": PROVIDER_NAME, "owns_config": owns_config,
+            "recall_readiness": "not_checked"}

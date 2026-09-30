@@ -1,5 +1,6 @@
 from contextvars import ContextVar
-from threading import Event
+from threading import Event, Thread
+import time
 
 from test_provider import _mod
 
@@ -67,4 +68,34 @@ def test_worker_continues_after_task_failure(caplog):
         assert output == [1]
         assert "background task failed" in caplog.text
     finally:
+        worker.close(2)
+
+
+def test_drain_waits_for_continuation_of_owned_work():
+    worker = _mod.Worker("continuation")
+    draining, entered, release, done = Event(), Event(), Event(), Event()
+    result = []
+    def continuation():
+        entered.set()
+        assert release.wait(2)
+    def first():
+        assert draining.wait(2)
+        time.sleep(0.05)
+        assert worker.submit(continuation)
+    def drain():
+        draining.set()
+        result.append(worker.drain(2))
+        done.set()
+    thread = Thread(target=drain)
+    try:
+        assert worker.submit(first)
+        thread.start()
+        assert entered.wait(2)
+        assert not done.wait(0.1), "sentinel cannot overtake a task's continuation"
+        release.set()
+        thread.join(2)
+        assert result == [True]
+    finally:
+        release.set()
+        thread.join(2)
         worker.close(2)

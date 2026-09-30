@@ -92,7 +92,7 @@ def test_unit_template_declares_the_task_ceiling_and_the_listen_address(tmp_path
 def test_ensure_engine_lays_out_and_is_idempotent(tmp_path, unit_dir, default_node):
     engine = load_engine()
     fake_runtime(tmp_path)
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     config = config_for(tmp_path)
 
     first = engine.ensure_engine(home, config)
@@ -113,7 +113,7 @@ def test_ensure_engine_lays_out_and_is_idempotent(tmp_path, unit_dir, default_no
 
 def test_ensure_engine_fails_closed_without_a_verified_runtime(tmp_path, unit_dir):
     engine = load_engine()
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     config = config_for(tmp_path)
     result = engine.ensure_engine(home, config)
     assert result["status"] == "missing-engine"
@@ -125,25 +125,27 @@ def test_ensure_engine_fails_closed_without_a_verified_runtime(tmp_path, unit_di
 def test_ensure_engine_never_clobbers_a_hand_edited_unit(tmp_path, unit_dir):
     engine = load_engine()
     fake_runtime(tmp_path)
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     config = config_for(tmp_path)
     unit_dir.mkdir(parents=True)
     mine = "[Service]\nExecStart=/usr/bin/true\n"
     (unit_dir / engine.UNIT_NAME).write_text(mine)
 
-    result = engine.ensure_engine(home, config)
-    assert result["unit_status"] == "conflict"
+    with pytest.raises(RuntimeError, match="artifact conflict"):
+        engine.ensure_engine(home, config)
     assert (unit_dir / engine.UNIT_NAME).read_text() == mine
-    assert (unit_dir / f"{engine.UNIT_NAME}.new").read_text() == engine.unit_template(home, config)
+    assert not (unit_dir / f"{engine.UNIT_NAME}.new").exists()
+    assert not engine.launcher_path(home, config).exists()
+    assert not (engine.runtime_root(home, config) / engine.MANIFEST_NAME).exists()
 
 
 def test_post_setup_preserves_user_settings_and_records_the_launcher(tmp_path, unit_dir, monkeypatch):
     engine = load_engine()
     fake_runtime(tmp_path)
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     (home / "zvec-memory").mkdir(parents=True)
     (home / "zvec-memory/config.json").write_text(json.dumps(
-        {"embedding": "local/custom", "recall_limit": 9, "vault": "$HERMES_HOME/my-vault"}))
+        {**config_for(tmp_path), "embedding": "local/custom", "recall_limit": 9, "vault": "$HERMES_HOME/my-vault"}))
     saved = []
     monkeypatch.setattr(engine, "_save_host_config", lambda config: saved.append(config) or True)
     config = {"plugins": {"zvec-memory": {"runtime_dir": str(tmp_path / "runtime_root"),
@@ -155,22 +157,21 @@ def test_post_setup_preserves_user_settings_and_records_the_launcher(tmp_path, u
     assert stored["embedding"] == "local/custom" and stored["recall_limit"] == 9
     assert stored["vault"] == "$HERMES_HOME/my-vault"
     assert stored["zg_bin"] == result["zg_bin"] == str(tmp_path / "runtime_root/zg-default")
-    assert config["memory"]["provider"] == "zvec-memory"
-    assert saved == [config]
+    assert config["memory"] == {}
+    assert saved == [home]
 
     stamps = (home / "zvec-memory/config.json").stat().st_mtime_ns
     engine.post_setup(home, config)
     assert (home / "zvec-memory/config.json").stat().st_mtime_ns == stamps
 
 
-def test_post_setup_activates_without_an_engine_and_ignores_a_bare_block(tmp_path, unit_dir, monkeypatch):
+def test_post_setup_missing_engine_refuses_a_bare_block(tmp_path, unit_dir, monkeypatch):
     engine = load_engine()
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     monkeypatch.setattr(engine, "_save_host_config", lambda config: pytest.fail("must not save"))
-    result = engine.post_setup(home, {"runtime_dir": str(tmp_path / "runtime_root")})
-    assert result["status"] == "missing-engine"
-    assert json.loads((home / "zvec-memory/config.json").read_text())["vault"] == "$HERMES_HOME/zvec-memory"
-    assert result["provider"] == "zvec-memory"
+    with pytest.raises(RuntimeError, match="missing-engine"):
+        engine.post_setup(home, {"runtime_dir": str(tmp_path / "runtime_root")})
+    assert not (home / "zvec-memory/config.json").exists()
 
 
 def test_post_setup_activating_a_host_config_marks_ownership(tmp_path, unit_dir, monkeypatch):
@@ -179,7 +180,7 @@ def test_post_setup_activating_a_host_config_marks_ownership(tmp_path, unit_dir,
     importlib.import_module("zvec_memory_provider.engine")
     host_engine = sys.modules["zvec_memory_provider.engine"]
     fake_runtime(tmp_path)
-    home = tmp_path / "hermes-home"
+    home = Path(os.environ["HERMES_HOME"])
     saved = []
     monkeypatch.setattr(host_engine, "_save_host_config", lambda config: saved.append(config) or True)
     config = {"plugins": {"zvec-memory": {"runtime_dir": str(tmp_path / "runtime_root"),
@@ -187,9 +188,9 @@ def test_post_setup_activating_a_host_config_marks_ownership(tmp_path, unit_dir,
               "memory": {}}
     result = _mod.post_setup(home, config)
     assert result["owns_config"] is True and result["provider"] == "zvec-memory"
-    assert config["memory"]["provider"] == "zvec-memory"
-    assert config["plugins"]["zvec-memory"]["vault"] == "$HERMES_HOME/zvec-memory"
-    assert saved == [config]
+    assert config["memory"] == {}
+    assert "vault" not in config["plugins"]["zvec-memory"]
+    assert saved == [home]
 
 
 def test_provider_instance_exposes_post_setup_for_the_host_hook(tmp_path, unit_dir, monkeypatch):
@@ -206,24 +207,24 @@ def test_provider_instance_exposes_post_setup_for_the_host_hook(tmp_path, unit_d
         config = {"plugins": {"zvec-memory": {"runtime_dir": str(tmp_path / "runtime_root"),
                                               "engine_home": str(tmp_path / "engine-home")}},
                   "memory": {}}
-        result = provider.post_setup(str(tmp_path / "hermes-home"), config)
+        result = provider.post_setup(os.environ["HERMES_HOME"], config)
         assert result["provider"] == "zvec-memory" and result["owns_config"] is True
-        assert config["memory"]["provider"] == "zvec-memory"
+        assert config["memory"] == {}
         assert Path(result["zg_bin"]).is_file()
     finally:
         provider.shutdown()
 
 
-def test_provider_package_exports_post_setup_for_a_bare_block(tmp_path, unit_dir, monkeypatch):
+def test_provider_package_exports_strict_post_setup_for_a_bare_block(tmp_path, unit_dir, monkeypatch):
     from test_provider import _mod
 
     importlib.import_module("zvec_memory_provider.engine")
     host_engine = sys.modules["zvec_memory_provider.engine"]
     monkeypatch.setattr(host_engine, "_save_host_config", lambda config: pytest.fail("must not save"))
-    result = _mod.post_setup(str(tmp_path / "hermes-home"),
-                             {"runtime_dir": str(tmp_path / "runtime_root")})
-    assert result["status"] == "missing-engine" and result["provider"] == "zvec-memory"
-    assert result["owns_config"] is False
+    with pytest.raises(RuntimeError, match="missing-engine"):
+        _mod.post_setup(os.environ["HERMES_HOME"],
+                        {"runtime_dir": str(tmp_path / "runtime_root")})
+    assert not (Path(os.environ["HERMES_HOME"]) / "zvec-memory/config.json").exists()
 
 
 def test_install_engine_resolves_npm_from_path(tmp_path, monkeypatch, default_node):
@@ -248,7 +249,7 @@ def test_install_engine_resolves_npm_from_path(tmp_path, monkeypatch, default_no
         return engine.subprocess.CompletedProcess(argv, 1, "", "registry unreachable")
 
     monkeypatch.setattr(engine.subprocess, "run", npm_failure)
-    result = engine.install_engine(tmp_path / "hermes-home", config_for(tmp_path))
+    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path))
     assert result["status"] == "install-failed"
     argv, environment = seen[0]["argv"], seen[0]["env"]
     assert argv[:2] == [str(default_node), "/opt/node/bin/npm"], \
@@ -510,5 +511,5 @@ def test_requested_package_version_must_be_exact_before_npm(tmp_path, monkeypatc
 def test_install_engine_without_npm_says_so(tmp_path, monkeypatch, default_node):
     engine = load_engine()
     monkeypatch.setattr(engine.shutil, "which", lambda name: None)
-    result = engine.install_engine(tmp_path / "hermes-home", config_for(tmp_path, node_bin=str(default_node)))
+    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(default_node)))
     assert result["status"] == "no-npm" and "Node.js" in result["detail"]

@@ -49,18 +49,22 @@ def make_provider(tmp_path, start_index=False, **overrides):
     return p
 
 
-def test_reindex_request_is_consumed_once(tmp_path):
+def test_reindex_request_is_observed_until_success(tmp_path):
     p = make_provider(tmp_path)
     marker = Path(p._vault) / _mod.REINDEX_REQUEST_FILE
     assert p._consume_reindex_request() is False
     marker.write_text("{}")
     assert p._consume_reindex_request() is True
+    assert marker.exists()
+    assert p._consume_reindex_request() is True
+    p._maybe_reindex(force=True)
+    assert p._index_worker.drain(5)
     assert not marker.exists()
     assert p._consume_reindex_request() is False
     p.shutdown()
 
 
-def test_initialize_consumes_a_pending_reindex_request_and_forces_rebuild(tmp_path, monkeypatch):
+def test_initialize_preserves_a_pending_reindex_request_until_rebuild(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     index = vault / ".zvec-grep"
     index.mkdir(parents=True)
@@ -71,8 +75,8 @@ def test_initialize_consumes_a_pending_reindex_request_and_forces_rebuild(tmp_pa
     calls = []
     monkeypatch.setattr(p, "_maybe_reindex", lambda *args, **kwargs: calls.append((args, kwargs)))
     p.initialize("test-session", hermes_home=str(tmp_path))
-    assert not marker.exists()
-    assert calls == [((), {"force": True})]
+    assert marker.exists()
+    assert calls == [((), {"force": True, "extra_args": ["--rebuild", "--embedding", _mod.DEFAULT_EMBEDDING]})]
     p.shutdown()
 
 

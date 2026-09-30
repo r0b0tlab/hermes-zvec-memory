@@ -247,3 +247,50 @@ def test_demand_recovers_inbox_after_worker_sqlite_timeout(tmp_path, monkeypatch
         if child is not None:
             _join(child)
         p.shutdown()
+
+
+def _write_new_request(vault, completed):
+    from zvec_memory_provider.maintenance import request_rebuild
+    request_rebuild(Path(vault), by="second process")
+    completed.set()
+
+
+def test_request_writer_does_not_wait_for_native_vault_lock(tmp_path, monkeypatch):
+    from zvec_memory_provider.maintenance import request_rebuild, read_request
+    p = make_provider(tmp_path)
+    path = request_rebuild(p._vault, by="first process")
+    first = read_request(p._vault)
+    entered, release = threading.Event(), threading.Event()
+    ctx = multiprocessing.get_context("spawn")
+    completed = ctx.Event()
+    child = ctx.Process(target=_write_new_request, args=(str(p._vault), completed))
+    def blocked(args, timeout):
+        entered.set()
+        assert release.wait(5)
+        return 0, "", ""
+    monkeypatch.setattr(p, "_run_zg", blocked)
+    submit = p._index_worker.submit
+    try:
+        p._maybe_reindex(force=True)
+        assert entered.wait(3)
+        monkeypatch.setattr(p._index_worker, "submit", lambda *args: False)
+        child.start()
+        assert completed.wait(3), "request lock must not alias the long native lock"
+        _join(child)
+        second = read_request(p._vault)
+        assert second != first
+        release.set()
+        assert p._index_worker.drain(3)
+        assert path.read_bytes() == second
+        assert p._index_requested and not p._index_running
+        assert p._recall_token() is None
+        monkeypatch.setattr(p._index_worker, "submit", submit)
+        p._maybe_reindex(force=True)
+        assert p._index_worker.drain(3)
+        assert not path.exists()
+        assert p._recall_token() is not None
+    finally:
+        release.set()
+        if child.pid is not None:
+            _join(child)
+        p.shutdown()

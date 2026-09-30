@@ -194,3 +194,49 @@ def test_valid_journal_publishes_and_deletes_expected_files(provider):
         assert (p._vault / "facts" / f"create-{i}.md").read_text() == "create"
         assert not (p._vault / "facts" / f"delete-{i}.md").exists()
     assert list((p._vault / ".mirror-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["delete", "publish-source", "publish-destination"])
+@pytest.mark.parametrize("alias", ["leaf", "ancestor", "dangling"])
+@pytest.mark.parametrize("at_use", [False, True])
+def test_same_root_alias_never_grants_ownership(provider, operation, alias, at_use):
+    p = provider
+    state = journal(p, count=1)
+    if operation == "delete":
+        state["pending_creates"] = []
+    else:
+        state["pending_deletes"] = []
+    directory = ".mirror-staging" if operation == "publish-source" else "facts"
+    root = p._vault / directory
+    sentinel = root / "unrelated.md"
+    sentinel.write_text("protected")
+    name = "delete-0.md" if operation == "delete" else "create-0.md"
+    if alias == "ancestor":
+        real = root / "real"
+        real.mkdir()
+        (real / name).write_text("protected nested")
+        candidate = root / "alias" / name
+        if operation == "delete":
+            state["pending_deletes"] = [str(candidate.relative_to(p._vault))]
+        else:
+            key = "staged" if operation == "publish-source" else "path"
+            state["pending_creates"][0][key] = str(candidate.relative_to(p._vault))
+    else:
+        candidate = root / name
+    p._save_mirror_state(state)
+    validated = p._mirror_state() if at_use else None
+    if alias == "ancestor":
+        (root / "alias").symlink_to(real, target_is_directory=True)
+    else:
+        candidate.unlink(missing_ok=True)
+        candidate.symlink_to(root / "absent.md" if alias == "dangling" else sentinel)
+    before = (p._vault / ".mirror-map.json").read_bytes()
+    with pytest.raises(ValueError, match="symlink|alias|escapes"):
+        if at_use:
+            p._finish_mirror_deletes(validated)
+        else:
+            p._recover_mirrors()
+    assert sentinel.read_text() == "protected"
+    assert (p._vault / ".mirror-map.json").read_bytes() == before
+    if alias == "ancestor":
+        assert (real / name).read_text() == "protected nested"

@@ -34,7 +34,7 @@ def healthy_vault(tmp_path: Path) -> Path:
     (vault / ".zvec-grep" / ".zvec-memory-state.json").write_text(json.dumps(
         {"plugin_schema": 1, "embedding": "local/x", "zg_bin": "/zg"}))
     (vault / ".mirror-map.json").write_text(json.dumps(
-        {"schema_version": 1, "records": {"a": {"path": "facts/one.md"}}, "pending_deletes": [],
+        {"schema_version": 1, "records": {"a": {"path": "facts/one.md", "target": "memory", "content": "something worth recalling"}}, "pending_deletes": [],
          "pending_creates": [], "refresh_required": False}))
     db = sqlite3.connect(vault / ".mirror-inbox.sqlite3")
     db.execute("PRAGMA journal_mode=WAL")
@@ -87,8 +87,10 @@ def test_cli_imports_neither_the_provider_nor_host_runtime_modules():
     assert result.stdout.strip() == "ok", (result.stdout, result.stderr[-1500:])
 
 
-def test_healthy_vault_reports_every_check(tmp_path):
+def test_healthy_vault_reports_every_check(tmp_path, monkeypatch):
     cli = load_cli()
+    # The harmless direct-engine double models a target with adequate headroom.
+    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg", "embedding": "local/x"},
                                 runner=fake_runner())
     result = cli.report(checks)
@@ -110,8 +112,10 @@ def test_doctor_fails_when_the_engine_or_index_is_broken(tmp_path, engine_ok, in
     assert set(failing) <= set(result["failures"])
 
 
-def test_missing_inbox_is_not_a_failure_and_pending_work_is(tmp_path):
+def test_missing_inbox_is_not_a_failure_and_pending_work_is(tmp_path, monkeypatch):
     cli = load_cli()
+    # The harmless direct-engine double models a target with adequate headroom.
+    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     (vault / ".mirror-inbox.sqlite3").unlink()
     assert cli.report(cli.collect_checks(vault, {"zg_bin": "/zg"}, runner=fake_runner()))["ok"] is True
@@ -130,6 +134,7 @@ def test_delivery_marker_and_pending_mirror_work_fail_the_check(tmp_path):
 
 def test_doctor_and_status_exit_codes_and_json(tmp_path, monkeypatch, capsys):
     cli = load_cli()
+    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     monkeypatch.setattr(cli, "_configured", lambda: (vault, {"zg_bin": "/zg"}))
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
@@ -143,6 +148,7 @@ def test_doctor_and_status_exit_codes_and_json(tmp_path, monkeypatch, capsys):
 
 def test_reindex_asks_for_a_rebuild_and_reports_state(tmp_path, monkeypatch, capsys):
     cli = load_cli()
+    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     monkeypatch.setattr(cli, "_configured", lambda: (vault, {"zg_bin": "/zg"}))
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
@@ -183,27 +189,33 @@ def systemctl_runner(tasks_max="1024", loaded=True):
     return run
 
 
-def test_tasks_check_reads_the_service_unit(tmp_path):
+def test_tasks_check_reads_the_service_unit(tmp_path, monkeypatch):
+    from test_cli_health_finish import managed_fixture
     cli = load_cli()
-    checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg"}, runner=systemctl_runner())
+    _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch)
+    checks = cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
     tasks = [c for c in checks if c["name"] == "tasks"][0]
     assert tasks["ok"] is True
     assert tasks["detail"] == "hermes-zvec-memory.service TasksMax=1024"
 
 
-def test_tasks_check_fails_on_a_low_service_ceiling(tmp_path):
+def test_tasks_check_fails_on_a_low_service_ceiling(tmp_path, monkeypatch):
+    from test_cli_health_finish import managed_fixture
     cli = load_cli()
-    checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg"}, runner=systemctl_runner("128"))
+    _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch, tasks="128")
+    checks = cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
     assert "tasks" in cli.report(checks)["failures"]
 
 
-def test_tasks_check_falls_back_to_the_caller_cgroup(tmp_path, monkeypatch):
+def test_tasks_check_does_not_substitute_caller_for_missing_managed_service(tmp_path, monkeypatch):
+    from test_cli_health_finish import managed_fixture
     cli = load_cli()
     monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
-    checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg"}, runner=systemctl_runner(loaded=False))
-    tasks = [c for c in checks if c["name"] == "tasks"][0]
-    assert tasks["ok"] is True
-    assert tasks["detail"] == "caller cgroup pids.max=1024"
+    _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch, LoadState="not-found")
+    tasks = next(c for c in cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
+                 if c["name"] == "tasks")
+    assert tasks["ok"] is False
+    assert "unknown" in tasks["detail"]
 
 
 @pytest.mark.parametrize("raw", ["$HERMES_HOME/zvec-memory", "${HERMES_HOME}/vault", "~/vault", "/abs/vault", "relative/vault"])

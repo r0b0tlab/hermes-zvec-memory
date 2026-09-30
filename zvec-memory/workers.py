@@ -1,8 +1,9 @@
 """Bounded FIFO execution with captured caller context and honest shutdown."""
 from contextvars import copy_context
 from queue import Queue, Empty, Full
-from threading import Event, Lock, Thread
+from threading import Lock, Thread
 import logging
+import time
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,17 @@ class Worker:
                 self._queue.task_done()
 
     def drain(self, timeout=5):
-        done = Event()
-        return self.submit(done.set) and done.wait(timeout)
+        # A queued sentinel can run before a task's newly submitted continuation.
+        # unfinished_tasks includes the running owner until it has enqueued any
+        # continuation, so zero is a real quiescent point, not a queue position.
+        deadline = time.monotonic() + max(0, timeout)
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._queue.all_tasks_done.wait(remaining)
+            return True
 
     def close(self, timeout=5):
         with self._lock:
