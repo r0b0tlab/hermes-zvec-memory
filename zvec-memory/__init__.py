@@ -158,6 +158,7 @@ class ZvecMemoryProvider(MemoryProvider):
         self._lock = threading.Lock()
         self._index_state_lock = threading.Lock()
         self._index_requested = False
+        self._index_mutation_requested = False
         self._index_running = False
         self._index_extra_args = []
         self._index_extra_identity = None
@@ -260,7 +261,7 @@ class ZvecMemoryProvider(MemoryProvider):
             # fresh permission to overwrite the interrupted owner's identity.
             self._checked_identity = self._engine_identity()
             self._mirror_ready = False
-            self._maybe_reindex(force=True)
+            self._maybe_reindex(force=True, validation_only=True)
         elif not (self._vault / ".zvec-grep" / "manifest.json").exists():
             self._build_index()
         elif self._mirror_refresh_required:
@@ -346,7 +347,7 @@ class ZvecMemoryProvider(MemoryProvider):
         # startup; the existing coalesced worker revalidates when it owns it.
         if not self._vault_lock.acquire(blocking=False):
             self._mirror_ready = False
-            self._maybe_reindex(force=True)
+            self._maybe_reindex(force=True, validation_only=True)
             return
         try:
             self._ensure_engine_identity_locked()
@@ -366,7 +367,7 @@ class ZvecMemoryProvider(MemoryProvider):
         if self._refresh_pending():
             self._checked_identity = configured
             self._mirror_ready = False
-            self._maybe_reindex(force=True)
+            self._maybe_reindex(force=True, validation_only=True)
             return
         wanted = dict(configured)
         request = None
@@ -389,7 +390,7 @@ class ZvecMemoryProvider(MemoryProvider):
             if request is not None:
                 self._checked_identity = configured
                 self._mirror_ready = False
-                self._maybe_reindex(force=True)
+                self._maybe_reindex(force=True, validation_only=True)
                 return
             if not recorded:
                 self._record_engine_state()
@@ -412,7 +413,7 @@ class ZvecMemoryProvider(MemoryProvider):
             self._checked_identity = configured
         # Failed observation is unknown, not absence. Defer validation without
         # granting this automatic caller unconditional supersession authority.
-        self._maybe_reindex(force=True)
+        self._maybe_reindex(force=True, validation_only=True)
 
     def _record_engine_state(self, identity=None) -> None:
         with self._vault_lock:
@@ -981,7 +982,7 @@ class ZvecMemoryProvider(MemoryProvider):
                 if not pending:
                     return
             self._next_index_retry = time.monotonic() + 1.0
-        self._maybe_reindex(force=True)
+        self._maybe_reindex(force=True, validation_only=True)
 
     @staticmethod
     def _merge_index_args(older, newer):
@@ -1004,13 +1005,15 @@ class ZvecMemoryProvider(MemoryProvider):
             combined.extend(["--embedding", embedding])
         return combined
 
-    def _maybe_reindex(self, force=False, extra_args=None):
+    def _maybe_reindex(self, force=False, extra_args=None, *, validation_only=False):
         interval = finite_number(self._config.get("reindex_min_seconds", 600), 600.0)
         with self._index_state_lock:
             if self._shutdown:
                 return
             self._index_requested = True
-            if self._vault is not None and self._index_running:
+            if not validation_only:
+                self._index_mutation_requested = True
+            if self._vault is not None and self._index_running and not validation_only:
                 # Persist continuation admission before the running owner can
                 # acknowledge. Idle validation alone must not dirty a peer's
                 # compatible index; the dispatch gate covers initial work.
@@ -1040,6 +1043,8 @@ class ZvecMemoryProvider(MemoryProvider):
             self._index_extra_args = []
             self._index_extra_identity = None
             self._index_requested = False
+            mutation = self._index_mutation_requested
+            self._index_mutation_requested = False
         succeeded = False
         try:
             with self._vault_lock:
@@ -1104,6 +1109,22 @@ class ZvecMemoryProvider(MemoryProvider):
                 if recorded and not self._engine_state_matches(identity):
                     extra = self._merge_index_args(extra, [
                         "--rebuild", "--embedding", identity["embedding"]])
+                # Demand behind a peer is validation, not new source intent.
+                # Adopt only after revalidating under the existing vault lock.
+                if (not mutation and not extra and request is None and refresh is None
+                        and recorded and self._engine_state_matches(identity)
+                        and self._index_ready() and not state.get("refresh_required")
+                        and not state["pending_deletes"] and not state["pending_creates"]
+                        and self._mirror_inbox is not None and not self._mirror_inbox.pending()
+                        and self._vault is not None
+                        and not (self._vault / ".mirror-delivery-failed.json").exists()):
+                    self._validate_replay_history(state)
+                    self._index_generation()
+                    self._mirror_refresh_required = False
+                    self._mirror_ready = True
+                    self._invalidate_prefetch()
+                    succeeded = True
+                    return
                 if "--rebuild" in extra:
                     extra = self._merge_index_args(extra, ["--embedding", identity["embedding"]])
                     self._mirror_ready = False
@@ -1167,6 +1188,7 @@ class ZvecMemoryProvider(MemoryProvider):
                 if not succeeded:
                     self._mirror_ready = False
                     self._index_requested = True
+                    self._index_mutation_requested |= mutation
                     if "--embedding" not in self._index_extra_args:
                         self._index_extra_identity = extra_identity
                     self._index_extra_args = self._merge_index_args(extra, self._index_extra_args)
