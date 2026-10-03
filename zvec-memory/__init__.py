@@ -51,6 +51,7 @@ from .transactions import VaultLock
 from .inbox import MirrorInbox
 from .settings import DEFAULT_EMBEDDING, finite_number, validate_core_config
 from .journal import validate_journal
+from .cli import _read_engine_state
 from .maintenance import (read_request, request_rebuild, request_identity, acknowledge_request,
                           REFRESH_FILE, read_refresh, request_refresh, begin_refresh, acknowledge_refresh)
 
@@ -236,6 +237,15 @@ class ZvecMemoryProvider(MemoryProvider):
         self._mirror_ready = False
         try:
             self._mirror_inbox = MirrorInbox(self._vault)
+            try:
+                self._engine_state()
+            except (OSError, ValueError, TypeError) as exc:
+                # Do not replay/publish against present-invalid index identity,
+                # even when an explicit request is already waiting. Recovery
+                # requires separate evidence, not a cold metadata overwrite.
+                logger.warning("zvec-memory index identity unreadable; recall disabled: %s",
+                               type(exc).__name__)
+                return
             # Never wait on a peer's long native index transaction at startup.
             # A closed local gate is a demand-driven recovery obligation too.
             if self._vault_lock.acquire(blocking=False):
@@ -286,11 +296,7 @@ class ZvecMemoryProvider(MemoryProvider):
         return self._vault / ".zvec-grep" / ENGINE_STATE_FILE
 
     def _engine_state(self) -> dict:
-        try:
-            value = json.loads(self._engine_state_path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return value if isinstance(value, dict) else {}
+        return _read_engine_state(self._engine_state_path()) or {}
 
     def _engine_state_matches(self, wanted: dict) -> bool:
         """True when the recorded engine/embedding identity still describes this index.
@@ -370,6 +376,16 @@ class ZvecMemoryProvider(MemoryProvider):
             self._maybe_reindex(force=True, validation_only=True)
             return
         wanted = dict(configured)
+        try:
+            recorded = self._engine_state()
+        except (OSError, ValueError, TypeError) as exc:
+            # Present-invalid metadata is not legacy absence or new rebuild
+            # intent. Preserve it for a separately justified recovery.
+            self._mirror_ready = False
+            self._invalidate_prefetch()
+            logger.warning("zvec-memory index identity unreadable; recall disabled: %s",
+                           type(exc).__name__)
+            return
         request = None
         observed_request = False
         try:
@@ -378,7 +394,6 @@ class ZvecMemoryProvider(MemoryProvider):
             version = self._zg_version()
             if version:
                 wanted["zg_version"] = version
-            recorded = self._engine_state()
             # An unchanged live configuration is not a fresh model-change
             # instruction. A peer's established model wins ordinary refresh.
             if recorded and self._checked_identity == configured:
@@ -445,12 +460,9 @@ class ZvecMemoryProvider(MemoryProvider):
             raise ValueError("Index requires a different engine version")
 
     def _index_generation(self):
-        try:
-            value = json.loads(self._engine_state_path().read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None  # Legacy indexes predate plugin bookkeeping.
-        if not isinstance(value, dict):
-            raise ValueError("Invalid index generation state")
+        value = self._engine_state()
+        if not value:
+            return None  # Only absent legacy indexes predate bookkeeping.
         self._check_recall_engine(value)
         generation = value.get("index_generation")
         if "index_generation" in value and (not isinstance(generation, str) or not generation):

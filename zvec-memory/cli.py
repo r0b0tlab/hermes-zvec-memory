@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +78,62 @@ def _default_runner(args, timeout: int = 15):
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+def _read_engine_state(path: Path) -> Dict | None:
+    """Share the cold read contract without importing the provider initializer.
+
+    Only a missing directory entry is legacy absence. A failed read after
+    observing that entry, an alias, or malformed identity is not adoption
+    authority; callers must retain the evidence and keep recall closed.
+    """
+    if path.parent.resolve() != path.parent:
+        raise ValueError("Aliased index state directory")
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise ValueError("Index state is not a regular file")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(value, dict) or type(value.get("plugin_schema")) is not int
+            or value["plugin_schema"] != 1
+            or not isinstance(value.get("embedding"), str)
+            or not isinstance(value.get("zg_bin"), str) or not value["zg_bin"]):
+        raise ValueError("Invalid index identity")
+    version = value.get("zg_version")
+    if version is not None and (not isinstance(version, str) or not version):
+        raise ValueError("Invalid index engine version")
+    generation = value.get("index_generation")
+    if "index_generation" in value and (not isinstance(generation, str) or not generation):
+        raise ValueError("Invalid index generation")
+    return value
+
+
+def _validate_mirror_paths(vault: Path, value: Dict) -> None:
+    """Read-only equivalent of provider live containment, including staging."""
+    roots = {}
+    for directory in ("facts", ".mirror-staging"):
+        root = vault / directory
+        if root.is_symlink() or root.resolve() != root:
+            raise ValueError("Aliased mirror root")
+        roots[directory] = root
+
+    def owned(relative, directory):
+        rel = Path(relative)
+        path = vault / rel
+        if (rel.is_absolute() or ".." in rel.parts or path.is_symlink()
+                or path.resolve() != path or not path.is_relative_to(roots[directory])
+                or path.suffix != ".md"):
+            raise ValueError("Invalid scoped mirror path")
+
+    for record in value["records"].values():
+        owned(record["path"], "facts")
+    for relative in value["pending_deletes"]:
+        owned(relative, "facts")
+    for item in value["pending_creates"]:
+        owned(item["path"], "facts")
+        owned(item["staged"], ".mirror-staging")
+
+
 def vault_state(vault: Path) -> Dict[str, object]:
     """Durable state that does not need the engine."""
     facts = vault / "facts"
@@ -85,8 +142,13 @@ def vault_state(vault: Path) -> Dict[str, object]:
         "facts": len(list(facts.glob("*.md"))) if facts.is_dir() else None,
         "sessions": len(list(sessions.glob("*.md"))) if sessions.is_dir() else None,
         "inbox_journal": None, "inbox_pending": None,
+        "inbox_high_watermark": 0,
         "mirror_records": None, "mirror_pending": None,
         "delivery_failed": (vault / ".mirror-delivery-failed.json").exists(),
+        "rebuild_pending": ((vault / REINDEX_REQUEST).exists() or
+                            (vault / REINDEX_REQUEST).is_symlink()),
+        "refresh_pending": ((vault / ".index-refresh.json").exists() or
+                            (vault / ".index-refresh.json").is_symlink()),
         "index_manifest": (vault / ".zvec-grep" / "manifest.json").exists(),
         "engine_state": None,
     }
@@ -95,6 +157,7 @@ def vault_state(vault: Path) -> Dict[str, object]:
         inbox.stat()
         db = sqlite3.connect(inbox.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
         try:
+            db.execute("BEGIN")  # Count and allocated history share one read snapshot.
             columns = {row[1]: row for row in db.execute("PRAGMA table_info(notifications)")}
             if (set(columns) != {"id", "payload"} or
                     columns["id"][2].upper() != "INTEGER" or columns["id"][5] != 1 or
@@ -104,17 +167,27 @@ def vault_state(vault: Path) -> Dict[str, object]:
                 raise sqlite3.DatabaseError("Invalid inbox")
             state["inbox_journal"] = db.execute("PRAGMA journal_mode").fetchone()[0]
             state["inbox_pending"] = db.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+            row = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'notifications'").fetchone()
+            high = row[0] if row else 0
+            if type(high) is not int or high < 0:
+                raise sqlite3.DatabaseError("Invalid inbox allocated history")
+            state["inbox_high_watermark"] = high
         finally:
             db.close()
     except FileNotFoundError:
         pass
     except (OSError, sqlite3.Error) as exc:
         state["inbox_journal"] = f"unreadable: {type(exc).__name__}"
+        state["inbox_high_watermark"] = None
     mapping = vault / ".mirror-map.json"
     try:
         mapping.stat()
         value = _plugin_module("journal").validate_journal(
             json.loads(mapping.read_text(encoding="utf-8")))
+        _validate_mirror_paths(vault, value)
+        high = state["inbox_high_watermark"]
+        if high is None or value.get("last_notification", 0) > high:
+            raise ValueError("Mirror watermark exceeds or cannot verify inbox history")
         state["mirror_records"] = len(value["records"])
         state["mirror_pending"] = sum(len(value[key]) for key in
                                        ("pending_creates", "pending_deletes"))
@@ -125,10 +198,8 @@ def vault_state(vault: Path) -> Dict[str, object]:
         state["mirror_error"] = type(exc).__name__
     sidecar = vault / ".zvec-grep" / ".zvec-memory-state.json"
     try:
-        state["engine_state"] = json.loads(sidecar.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError) as exc:
+        state["engine_state"] = _read_engine_state(sidecar)
+    except (OSError, ValueError, TypeError) as exc:
         state["engine_state_error"] = type(exc).__name__
     return state
 
@@ -231,7 +302,10 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) ->
     add("vault", state["facts"] is not None and state["sessions"] is not None,
         f"{vault} facts={state['facts']} sessions={state['sessions']}")
     engine_rc, engine_out, engine_err = run([zg, "--version"]) if zg else (127, "", "no zg_bin")
-    add("engine", engine_rc == 0, (engine_out.strip() or engine_err.strip() or "unavailable").splitlines()[0][:60])
+    settings = _plugin_module("settings")
+    version = engine_out.strip() if engine_rc == 0 else None
+    add("engine", engine_rc == 0 and version == settings.PINNED_ENGINE_VERSION,
+        (engine_out.strip() or engine_err.strip() or "unavailable").splitlines()[0][:60])
     index_rc, index_out, index_err = run([zg, "status", str(vault), "--check-ready"]) if zg else (127, "", "no zg_bin")
     ready = index_rc == 0
     add("index", ready, (index_err.strip().splitlines()[0] if index_err.strip() else
@@ -245,9 +319,26 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) ->
     add("mirror", not state.get("mirror_error") and
         not state.get("mirror_refresh_required") and (pending in (0, None)),
         f"records={state['mirror_records']} pending={pending} error={state.get('mirror_error')}")
-    add("identity", not state["delivery_failed"] and not state.get("engine_state_error"),
-        f"unreadable engine state: {state['engine_state_error']}" if state.get("engine_state_error") else
-        ("no delivery-failure marker" if not state["delivery_failed"] else "delivery FAILED marker present"))
+    identity_issues = []
+    if state["delivery_failed"]:
+        identity_issues.append("delivery FAILED marker present")
+    if state["rebuild_pending"]:
+        identity_issues.append("pending rebuild marker")
+    if state["refresh_pending"]:
+        identity_issues.append("pending refresh marker")
+    if state.get("engine_state_error"):
+        identity_issues.append(f"unreadable engine state: {state['engine_state_error']}")
+    recorded = state["engine_state"]
+    if recorded is not None:
+        if recorded["zg_bin"] != zg:
+            identity_issues.append("configured engine identity mismatch")
+        if recorded["embedding"] != config.get("embedding", settings.DEFAULT_EMBEDDING):
+            identity_issues.append("configured model identity mismatch")
+        if recorded.get("zg_version") and version and recorded["zg_version"] != version:
+            identity_issues.append("executable version identity mismatch")
+    add("identity", not identity_issues, "; ".join(identity_issues) if identity_issues else
+        ("legacy index metadata absent (identity unverified)" if state["engine_state"] is None
+         else "recorded index identity; no pending publication markers"))
     service_ok, service_detail, managed = _service_diagnostics(config, run)
     add("service", service_ok, service_detail)
     if managed is None:
