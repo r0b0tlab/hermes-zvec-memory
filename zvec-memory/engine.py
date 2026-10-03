@@ -134,6 +134,18 @@ def launcher_script(hermes_home, config=None, *, node=None) -> str:
         f'export ZVEC_GREP_SERVER_URL={shlex.quote(server_url(config))}\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
+        # Server bootstrap is plugin-owned. Never let `server on`/stdio
+        # silently spawn an upstream watcher-enabled daemon behind systemd.
+        'if [[ "${1:-}" == "server" ]]; then\n'
+        '  case "${2:-}" in\n'
+        '    run) '
+        f'exec {shlex.quote(str(node))} '
+        f'{shlex.quote(str(runtime_root(hermes_home, config) / "managed-server.mjs"))} '
+        f'{shlex.quote(str(entry_path(hermes_home, config)))} "$@" ;;\n'
+        '    status|off) ;;\n'
+        '    *) printf "%s\\n" "Managed daemon requires foreground server run via its service" >&2; exit 2 ;;\n'
+        '  esac\n'
+        'fi\n'
         f'exec {shlex.quote(str(node))} {shlex.quote(str(entry_path(hermes_home, config)))} "$@"\n'
     )
 
@@ -207,8 +219,12 @@ def _artifact_set(hermes_home, config, *, node, version):
                 "engine_home": str(engine_home(hermes_home, config)),
                 "server_url": server_url(config), "launcher": str(launcher),
                 "unit": str(unit), "unit_status": "generated", "tasks_max": TASKS_MAX}
+    assets = [(name, runtime_root(hermes_home, config) / name,
+               Path(__file__).with_name(name).read_text(encoding="utf-8"), 0o600)
+              for name in ("managed-server.mjs", "managed-policy.mjs", "managed-server-LICENSE.txt")]
     return [("launcher", launcher, launcher_script(hermes_home, config, node=node), 0o700),
             ("unit", unit, unit_template(hermes_home, config), 0o600),
+            *assets,
             ("manifest", runtime_root(hermes_home, config) / MANIFEST_NAME,
              json.dumps(manifest, indent=2, ensure_ascii=False), 0o600)]
 
