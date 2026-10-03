@@ -20,7 +20,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED = {'successor-required': 120, 'deferred': 57, 'asset-replay': 2}
-CASE_MATRIX_SHA256 = '31721f02a67b3f80663e842a525d74085dd4190add3f4e53b8be9a11f6cd5275'
+CASE_MATRIX_SHA256 = 'e6fe0ab38fc8e9915d358748dcb5d30faef41a83368b938c5a4acb7aecd362ce'
 
 
 def _source(root: Path, relative: str) -> Path:

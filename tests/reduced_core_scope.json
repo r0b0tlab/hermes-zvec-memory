@@ -9,6 +9,13 @@
     "embedding": "local/potion-retrieval-32m"
   },
   "stable_vault_required": true,
+  "source_binding_amendment": {
+    "candidate": "0.3.1-rc.1",
+    "authority": "AUTONOMOUS-FINISH.txt:3; narrow fixture/schema/artifact corrections only",
+    "predecessor_case_matrix_sha256": "31721f02a67b3f80663e842a525d74085dd4190add3f4e53b8be9a11f6cd5275",
+    "unchanged": "All 179 literal IDs, dispositions, reasons and successor mappings; identical pytest argv",
+    "historical_source": "Frozen f28abfc and private combined-integration/original-source preserve exact predecessor bytes"
+  },
   "original_full_offline_outcome": {
     "passed": 1891,
     "failed": 133,
@@ -107,7 +114,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_finish.py",
         "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
-        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+        "sha256": "f3a6c90300db41c58c6a0c27e232ed75bc6e00325edf57ff5596a2e480e1a1d1"
       }
     },
     {
@@ -118,7 +125,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_finish.py",
         "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
-        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+        "sha256": "f3a6c90300db41c58c6a0c27e232ed75bc6e00325edf57ff5596a2e480e1a1d1"
       }
     },
     {
@@ -129,7 +136,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_finish.py",
         "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
-        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+        "sha256": "f3a6c90300db41c58c6a0c27e232ed75bc6e00325edf57ff5596a2e480e1a1d1"
       }
     },
     {
@@ -140,7 +147,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_finish.py",
         "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
-        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+        "sha256": "f3a6c90300db41c58c6a0c27e232ed75bc6e00325edf57ff5596a2e480e1a1d1"
       }
     },
     {
@@ -151,7 +158,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_finish.py",
         "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
-        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+        "sha256": "f3a6c90300db41c58c6a0c27e232ed75bc6e00325edf57ff5596a2e480e1a1d1"
       }
     },
     {
@@ -162,7 +169,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_real_malformed_legacy_yaml_migration_is_private_json_without_publication",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -173,7 +180,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_real_malformed_legacy_yaml_migration_is_private_json_without_publication",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -184,7 +191,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -195,7 +202,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -206,7 +213,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -217,7 +224,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -228,7 +235,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -239,7 +246,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -250,7 +257,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -261,7 +268,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -272,7 +279,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -283,7 +290,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -294,7 +301,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -305,7 +312,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -316,7 +323,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -327,7 +334,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_migration_present_native_authority_never_parses_bad_legacy",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -338,7 +345,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_valid_legacy_yaml_migrates_losslessly_without_provider_or_health",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -349,7 +356,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_new_yaml_boundary_does_not_swallow_logic_assertions",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -360,7 +367,7 @@
       "source_binding": {
         "file": "tests/test_cli_health_io_finish.py",
         "function": "test_new_yaml_boundary_does_not_swallow_logic_assertions",
-        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+        "sha256": "14ed5b14bf86190a9b11dde33c68c453e6f14d2c83861e4073f891190bb77407"
       }
     },
     {
@@ -550,7 +557,7 @@
       "source_binding": {
         "file": "tests/test_engine.py",
         "function": "test_post_setup_preserves_user_settings_and_records_the_launcher",
-        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+        "sha256": "1c3ced09c8610434beee6d476dd9abe388ef3b0a8b680b20d430e853bb95af53"
       }
     },
     {
@@ -561,7 +568,7 @@
       "source_binding": {
         "file": "tests/test_engine.py",
         "function": "test_node_path_selected_for_install_readiness_and_launcher",
-        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+        "sha256": "1c3ced09c8610434beee6d476dd9abe388ef3b0a8b680b20d430e853bb95af53"
       }
     },
     {
@@ -572,7 +579,7 @@
       "source_binding": {
         "file": "tests/test_engine.py",
         "function": "test_node_path_selected_for_install_readiness_and_launcher",
-        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+        "sha256": "1c3ced09c8610434beee6d476dd9abe388ef3b0a8b680b20d430e853bb95af53"
       }
     },
     {
@@ -596,7 +603,7 @@
       "source_binding": {
         "file": "tests/test_engine_setup_finish.py",
         "function": "test_shared_settings_presence_and_lossless_legacy_setup",
-        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+        "sha256": "c2b408d298727e0e3f4ddfde163f629e3c4301e0277de28b5c89d0e49721320f"
       }
     },
     {
@@ -609,7 +616,7 @@
       "source_binding": {
         "file": "tests/test_engine_setup_finish.py",
         "function": "test_shared_settings_presence_and_lossless_legacy_setup",
-        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+        "sha256": "c2b408d298727e0e3f4ddfde163f629e3c4301e0277de28b5c89d0e49721320f"
       }
     },
     {
@@ -622,7 +629,7 @@
       "source_binding": {
         "file": "tests/test_engine_setup_finish.py",
         "function": "test_shared_settings_presence_and_lossless_legacy_setup",
-        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+        "sha256": "c2b408d298727e0e3f4ddfde163f629e3c4301e0277de28b5c89d0e49721320f"
       }
     },
     {
@@ -685,7 +692,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_native_config_roundtrip",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -698,7 +705,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_explicit_empty_config_ignores_ambient",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -709,7 +716,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_cold_backup_resolves_profile_paths",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -720,7 +727,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_cold_backup_resolves_profile_paths",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -731,7 +738,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_cold_backup_resolves_profile_paths",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -744,7 +751,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_legacy_config_migrates_only_on_save",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -757,7 +764,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_corrupt_native_config_is_not_silently_replaced",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -770,7 +777,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_legacy_mirror_ownership_requires_explicit_migration",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
@@ -781,7 +788,7 @@
       "source_binding": {
         "file": "tests/test_provider.py",
         "function": "test_backup_paths",
-        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+        "sha256": "ad3e2ea2300f186002122a8dbcd3fe9c7559e270f74f0f633f588900635cbc21"
       }
     },
     {
