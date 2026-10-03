@@ -4,7 +4,8 @@ Recall layer is a Markdown vault (``facts/`` + ``sessions/``) indexed by the
 ``zg`` CLI (BM25 + vector search with RRF fusion, plus managed ripgrep).
 Every ``zg`` invocation runs with cwd set to the vault root in
 ``--mode auto``: it uses the shared ``zg server`` daemon when one is running
-(shared loaded models, background refresh) and otherwise runs in-process.
+(shared loaded models) and otherwise runs in-process. Queries request
+``--refresh off``; the provider's index worker owns tracked refresh publication.
 No daemon is required.
 
 Config in ``$HERMES_HOME/config.yaml`` (profile-scoped)::
@@ -38,6 +39,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -47,10 +49,13 @@ from .hostio import atomic_json_write, cfg_get, is_truthy_value, tool_error
 from .workers import Worker
 from .transactions import VaultLock
 from .inbox import MirrorInbox
+from .settings import DEFAULT_EMBEDDING, finite_number, validate_core_config
+from .journal import validate_journal
+from .maintenance import (read_request, request_rebuild, request_identity, acknowledge_request,
+                          REFRESH_FILE, read_refresh, request_refresh, begin_refresh, acknowledge_refresh)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
 QUERY_TIMEOUT_S = 60
 PREFETCH_TIMEOUT_S = 2
 INDEX_TIMEOUT_S = 900
@@ -120,18 +125,11 @@ MEMORY_STORE_SCHEMA = {
 
 
 def _load_plugin_config(hermes_home=None) -> dict:
-    from hermes_constants import get_hermes_home
-    from .hostio import read_user_config_raw
-    home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
-    path = home / "zvec-memory" / "config.json"
-    if path.exists():
-        value = json.loads(path.read_text(encoding="utf-8"))
-    else:
-        value = cfg_get(read_user_config_raw(home / "config.yaml"),
-                        "plugins", "zvec-memory", default={})
-    if not isinstance(value, dict):
-        raise ValueError("zvec-memory configuration must contain an object")
-    return dict(value)
+    from .settings import load_settings
+    if hermes_home is None:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+    return load_settings(hermes_home)
 
 
 def _utc_stamp() -> str:
@@ -153,20 +151,24 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def __init__(self, config: dict | None = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
+        validate_core_config(self._config)
         self._vault: Path | None = None
         self._session_id = ""
         self._automatic_writes = False
         self._lock = threading.Lock()
         self._index_state_lock = threading.Lock()
         self._index_requested = False
+        self._index_mutation_requested = False
         self._index_running = False
         self._index_extra_args = []
+        self._index_extra_identity = None
         self._prefetch_cache: Dict[str, tuple] = {}
         self._prefetch_inflight = set()
         self._cache_generation = 0
         self._mirror_ready = True
         self._mirror_refresh_required = False
         self._zg_version_cache = None
+        self._checked_identity = None
         self._observed_mirror_token = None
         self._disk_worker = None
         self._index_worker = None
@@ -203,7 +205,7 @@ class ZvecMemoryProvider(MemoryProvider):
         return _post_setup(hermes_home, config)
 
     def _resolve_vault(self, hermes_home: str | None) -> Path:
-        raw = str(self._config.get("vault", "")).strip()
+        raw = str(self._config.get("vault", "") or "").strip()
         if not hermes_home:
             try:
                 from hermes_constants import get_hermes_home
@@ -247,9 +249,22 @@ class ZvecMemoryProvider(MemoryProvider):
         # on an embedding-model download. Claimed per-vault so two handles on
         # the same vault never run concurrent builds against each other.
         reindex_requested = self._consume_reindex_request()
-        if not (self._vault / ".zvec-grep" / "manifest.json").exists():
+        if reindex_requested:
+            # Joining existing durable work is not permission to republish this
+            # handle's stale configuration after the request owner completes.
+            self._checked_identity = self._engine_identity()
+            self._mirror_ready = False
+            self._maybe_reindex(force=True, extra_args=[
+                "--rebuild", "--embedding", str(self._config.get("embedding", DEFAULT_EMBEDDING))])
+        elif self._refresh_pending():
+            # Managed first-build/refresh recovery is not legacy adoption or
+            # fresh permission to overwrite the interrupted owner's identity.
+            self._checked_identity = self._engine_identity()
+            self._mirror_ready = False
+            self._maybe_reindex(force=True, validation_only=True)
+        elif not (self._vault / ".zvec-grep" / "manifest.json").exists():
             self._build_index()
-        elif reindex_requested or self._mirror_refresh_required:
+        elif self._mirror_refresh_required:
             self._maybe_reindex(force=True)
         else:
             self._ensure_engine_identity()
@@ -294,6 +309,11 @@ class ZvecMemoryProvider(MemoryProvider):
             return False
         return True
 
+    def _effective_identity(self):
+        recorded = self._engine_state()
+        return {k: recorded.get(k) for k in
+                ("plugin_schema", "embedding", "zg_bin", "zg_version")}
+
     def _engine_identity(self) -> dict:
         """The cheap identity of what this index was built by: no subprocess.
 
@@ -302,10 +322,39 @@ class ZvecMemoryProvider(MemoryProvider):
         its version never thrashes rebuilds.
         """
         return {"plugin_schema": ENGINE_STATE_SCHEMA,
-                "embedding": str(self._config.get("embedding", "")),
+                "embedding": str(self._config.get("embedding", DEFAULT_EMBEDDING)),
                 "zg_bin": str(self._zg())}
 
     def _ensure_engine_identity(self) -> None:
+        configured = self._engine_identity()
+        if self._checked_identity is not None and self._checked_identity != configured:
+            # A live configuration edit is explicit new intent, not legacy
+            # adoption. Admit it without waiting behind the current mutation.
+            if self._checked_identity.get("zg_bin") != configured["zg_bin"]:
+                self._zg_version_cache = None
+            wanted = {**configured, **({"zg_version": self._zg_version_cache}
+                                      if self._zg_version_cache else {})}
+            request = read_request(self._vault)
+            request_rebuild(self._vault, by="engine identity changed", identity=wanted,
+                            expected=request)
+            self._checked_identity = configured
+            self._mirror_ready = False
+            self._invalidate_prefetch()
+            self._maybe_reindex(force=True, extra_args=[
+                "--rebuild", "--embedding", configured["embedding"]])
+            return
+        # Adoption is a writer too. Never wait for the native transaction on
+        # startup; the existing coalesced worker revalidates when it owns it.
+        if not self._vault_lock.acquire(blocking=False):
+            self._mirror_ready = False
+            self._maybe_reindex(force=True, validation_only=True)
+            return
+        try:
+            self._ensure_engine_identity_locked()
+        finally:
+            self._vault_lock.__exit__()
+
+    def _ensure_engine_identity_locked(self) -> None:
         """Rebuild when the engine identity changed since the index was built.
 
         The engine version probe costs one short subprocess per provider instance;
@@ -314,25 +363,99 @@ class ZvecMemoryProvider(MemoryProvider):
         With no recorded identity yet (an index that predates this bookkeeping),
         adopt the existing index and start tracking instead of rebuilding it.
         """
-        wanted = {**self._engine_identity(), "zg_version": self._zg_version()}
-        recorded = self._engine_state()
-        if not recorded:
-            self._record_engine_state()
+        configured = self._engine_identity()
+        if self._refresh_pending():
+            self._checked_identity = configured
+            self._mirror_ready = False
+            self._maybe_reindex(force=True, validation_only=True)
             return
-        if self._engine_state_matches(wanted):
-            return
-        logger.info("zvec-memory: engine or embedding identity changed; rebuilding the index")
-        self._maybe_reindex(force=True)
-
-    def _record_engine_state(self) -> None:
+        wanted = dict(configured)
+        request = None
+        observed_request = False
         try:
+            request = read_request(self._vault)
+            observed_request = True
+            version = self._zg_version()
+            if version:
+                wanted["zg_version"] = version
+            recorded = self._engine_state()
+            # An unchanged live configuration is not a fresh model-change
+            # instruction. A peer's established model wins ordinary refresh.
+            if recorded and self._checked_identity == configured:
+                wanted["embedding"] = recorded.get("embedding", wanted["embedding"])
+            if recorded and self._engine_state_matches(wanted):
+                self._checked_identity = configured
+                return
+            # Automatic mismatch/adoption must join already captured intent.
+            if request is not None:
+                self._checked_identity = configured
+                self._mirror_ready = False
+                self._maybe_reindex(force=True, validation_only=True)
+                return
+            if not recorded:
+                self._record_engine_state()
+                self._checked_identity = configured
+                return
+        except Exception as exc:
+            logger.warning("zvec-memory identity adoption deferred: %s", str(exc)[-300:])
+        logger.info("zvec-memory: engine identity changed or unavailable; rebuilding the index")
+        self._mirror_ready = False
+        self._invalidate_prefetch()
+        if observed_request:
+            # A probe/adoption exception does not authorize superseding a
+            # request that was already present in the captured observation.
+            if request is None:
+                request_rebuild(self._vault, by="engine identity changed", identity=wanted,
+                                expected=request)
+            # The short-lock producer may have superseded our observation.
+            # Re-read/join its durable intent; never queue stale model flags.
+            read_request(self._vault)
+            self._checked_identity = configured
+        # Failed observation is unknown, not absence. Defer validation without
+        # granting this automatic caller unconditional supersession authority.
+        self._maybe_reindex(force=True, validation_only=True)
+
+    def _record_engine_state(self, identity=None) -> None:
+        with self._vault_lock:
+            identity = self._engine_identity() if identity is None else identity
             atomic_json_write(self._engine_state_path(),
-                              {**self._engine_identity(),
-                               "zg_version": self._zg_version(),
-                               "updated": datetime.now(timezone.utc).isoformat()},
-                              mode=0o600)
-        except OSError:
-            logger.warning("zvec-memory: could not record the engine identity", exc_info=True)
+                              {**identity,
+                               "zg_version": identity.get("zg_version") or self._zg_version(),
+                               "index_generation": uuid.uuid4().hex,
+                               "updated": datetime.now(timezone.utc).isoformat()}, mode=0o600)
+
+    def _check_recall_engine(self, recorded):
+        """Cheap compatibility only; an embedding difference is intentional.
+
+        Missing legacy fields and an attempted-but-unavailable version probe
+        are unknown, not incompatibility. An unprobed known version defers to
+        the coalesced index worker (cached 5s probe, 1s demand retry cooldown).
+        Neither native probing nor the long vault lock belongs on recall.
+        """
+        if ("plugin_schema" in recorded and
+                (type(recorded["plugin_schema"]) is not int or
+                 recorded["plugin_schema"] != ENGINE_STATE_SCHEMA)):
+            raise ValueError("Index requires a different plugin schema")
+        if recorded.get("zg_bin") and recorded["zg_bin"] != self._zg():
+            raise ValueError("Index requires a differently configured engine")
+        version = recorded.get("zg_version")
+        if version and self._zg_version_cache is None:
+            raise ValueError("Index engine validation deferred")
+        if version and self._zg_version_cache and version != self._zg_version_cache:
+            raise ValueError("Index requires a different engine version")
+
+    def _index_generation(self):
+        try:
+            value = json.loads(self._engine_state_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None  # Legacy indexes predate plugin bookkeeping.
+        if not isinstance(value, dict):
+            raise ValueError("Invalid index generation state")
+        self._check_recall_engine(value)
+        generation = value.get("index_generation")
+        if "index_generation" in value and (not isinstance(generation, str) or not generation):
+            raise ValueError("Invalid index generation")
+        return generation
 
     def _zg_version(self) -> Optional[str]:
         cached = self._zg_version_cache
@@ -344,17 +467,8 @@ class ZvecMemoryProvider(MemoryProvider):
         return version or None
 
     def _consume_reindex_request(self) -> bool:
-        """Honour (and clear) a `hermes zvec-memory reindex` request from disk."""
-        if self._vault is None:
-            return False
-        try:
-            marker = self._vault / REINDEX_REQUEST_FILE
-            if marker.is_file():
-                marker.unlink()
-                return True
-        except OSError:
-            logger.warning("zvec-memory: could not clear the reindex request", exc_info=True)
-        return False
+        """Observe a durable rebuild request without acknowledging it early."""
+        return self._vault is not None and read_request(self._vault) is not None
 
     def _index_ready(self) -> bool:
         try:
@@ -363,10 +477,7 @@ class ZvecMemoryProvider(MemoryProvider):
             return False
 
     def _prefetch_cache_ttl(self) -> float:
-        try:
-            return max(0.0, float(self._config.get("prefetch_cache_seconds", 120)))
-        except (TypeError, ValueError):
-            return 120.0
+        return finite_number(self._config.get("prefetch_cache_seconds", 120), 120.0)
 
     def _invalidate_prefetch(self):
         with self._lock:
@@ -417,7 +528,7 @@ class ZvecMemoryProvider(MemoryProvider):
         try:
             cached = self._cached_prefetch(query)
             if cached is not None:
-                return cached
+                return cached if self._recall_token() == token else ""
             with self._lock:
                 generation = self._cache_generation
             text = self._run_prefetch_query(query)
@@ -451,6 +562,8 @@ class ZvecMemoryProvider(MemoryProvider):
 
         def _warm() -> None:
             try:
+                if self._recall_token() != token:
+                    return
                 text = self._run_prefetch_query(query)
                 if text is not None and self._recall_token() == token:
                     self._store_prefetch(query, text, generation)
@@ -529,28 +642,23 @@ class ZvecMemoryProvider(MemoryProvider):
         with self._vault_lock:
             if self._mirror_inbox is None:
                 self._mirror_inbox = MirrorInbox(self._vault)
+            state = self._mirror_state()
+            self._validate_replay_history(state)
             while (item := self._mirror_inbox.first()) is not None:
                 number, payload = item
                 self._apply_mirror(*payload, notification_id=number)
                 self._mirror_inbox.acknowledge(number)
+
+    def _validate_replay_history(self, state, *, nonblocking=False):
+        if state.get("last_notification", 0) > self._mirror_inbox.high_watermark(nonblocking=nonblocking):
+            raise ValueError("Mirror watermark exceeds durable inbox history")
 
     def _mirror_state(self):
         path = self._vault / ".mirror-map.json"
         if not path.exists():
             return {"schema_version": MIRROR_MAP_SCHEMA, "records": {}, "pending_deletes": [],
                     "pending_creates": [], "refresh_required": False}
-        value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError("Invalid mirror map; refusing destructive recovery")
-        recorded_schema = value.get("schema_version", MIRROR_MAP_SCHEMA)
-        if not isinstance(recorded_schema, int) or recorded_schema > MIRROR_MAP_SCHEMA:
-            raise ValueError("mirror map was written by a newer plugin; refusing recovery")
-        if not isinstance(value.get("records"), dict) or not isinstance(value.get("pending_deletes"), list):
-            raise ValueError("Invalid mirror map; refusing destructive recovery")
-        value.setdefault("schema_version", MIRROR_MAP_SCHEMA)
-        value.setdefault("pending_creates", [])
-        if not isinstance(value["pending_creates"], list) or not isinstance(value.get("refresh_required", False), bool):
-            raise ValueError("Invalid mirror journal")
+        value = validate_journal(json.loads(path.read_text(encoding="utf-8")))
         # Share only containment roots within this full validation; each
         # candidate still resolves against the live filesystem on every read.
         facts_root = self._mirror_root("facts")
@@ -568,16 +676,24 @@ class ZvecMemoryProvider(MemoryProvider):
             self._mirror_staged_file(item["staged"], root=staging_root)
         return value
 
+    def _refresh_pending(self):
+        path = self._vault / REFRESH_FILE
+        return path.exists() or path.is_symlink()
+
     def _recall_token(self):
         # Atomic journal reads close recall on other handles without waiting
         # on a potentially long-running native index lock.
         if self._vault is None or not self._mirror_ready:
             return None
         try:
+            request_path = self._vault / REINDEX_REQUEST_FILE
+            if request_path.exists() or request_path.is_symlink() or self._refresh_pending():
+                return None
             if (self._vault / ".mirror-delivery-failed.json").exists() or self._mirror_inbox.pending():
                 return None
             state = self._mirror_state()
-            token = json.dumps(state, sort_keys=True)
+            self._validate_replay_history(state, nonblocking=True)
+            token = json.dumps([state, self._index_generation()], sort_keys=True)
             with self._lock:
                 if token != self._observed_mirror_token:
                     self._observed_mirror_token = token
@@ -605,23 +721,25 @@ class ZvecMemoryProvider(MemoryProvider):
             raise ValueError(f"Mirror {directory} root escapes canonical vault")
         return resolved
 
-    def _mirror_file(self, relative, *, root=None):
+    def _owned_file(self, relative, directory, *, root=None):
         if not isinstance(relative, str):
             raise ValueError("Invalid mirror path")
-        if root is None:
-            root = self._mirror_root("facts")
-        path = (self._vault / relative).resolve()
-        if not path.is_relative_to(root) or path.suffix != ".md":
-            raise ValueError("Mirror path escapes facts directory")
+        rel = Path(relative)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError("Mirror path escapes its root")
+        root = self._mirror_root(directory) if root is None else root
+        path = self._vault / rel
+        resolved = path.resolve()
+        if (path.is_symlink() or resolved != path or
+                not path.is_relative_to(root) or path.suffix != ".md"):
+            raise ValueError("Mirror path is a symlink/alias or escapes its root")
         return path
 
+    def _mirror_file(self, relative, *, root=None):
+        return self._owned_file(relative, "facts", root=root)
+
     def _mirror_staged_file(self, relative, *, root=None):
-        if root is None:
-            root = self._mirror_root(".mirror-staging")
-        path = (self._vault / relative).resolve()
-        if not path.is_relative_to(root) or path.suffix != ".md":
-            raise ValueError("Mirror staging path escapes staging directory")
-        return path
+        return self._owned_file(relative, ".mirror-staging", root=root)
 
     def _apply_mirror(self, action, target, content, metadata, notification_id=None):
         import hashlib
@@ -635,15 +753,26 @@ class ZvecMemoryProvider(MemoryProvider):
             records = state["records"]
             old_key = None
             if action in {"replace", "remove"}:
-                old_text = metadata.get("old_text", "")
+                authoritative = "previous_content" in metadata
+                previous = metadata.get("previous_content") if authoritative else metadata.get("old_text")
+                if not isinstance(previous, str) or not previous:
+                    raise ValueError("Exact previous memory content is required for destructive mirroring")
                 matches = [key for key, record in records.items()
-                           if record["target"] == target and isinstance(old_text, str)
-                           and old_text and old_text in record["content"]]
-                if len(matches) != 1:
-                    logger.warning("Mirror %s needs one match; found %d", action, len(matches))
-                    self._save_mirror_state(state)
-                    return
-                old_key = matches[0]
+                           if record["target"] == target and record["content"] == previous]
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous exact mirror ownership")
+                if not matches:
+                    if not authoritative and any(record["target"] == target and previous in record["content"]
+                                                 for record in records.values()):
+                        raise ValueError("Legacy selector is not an exact mirror identity")
+                    # No owned record: never adopt/delete a lookalike or an explicit fact.
+                    if authoritative and action == "replace":
+                        old_key = None  # The committed new entry may be mirrored as a new add.
+                    else:
+                        self._save_mirror_state(state)
+                        return
+                else:
+                    old_key = matches[0]
             if action != "remove":
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("Empty mirrored content")
@@ -674,29 +803,8 @@ class ZvecMemoryProvider(MemoryProvider):
         self._maybe_reindex(force=True)
 
     def migrate_legacy_mirrors(self, entries):
-        """Explicit maintenance API: adopt only operator-specified legacy files.
-
-        Entries supply exact path, target and original content. Never invoked
-        during startup, extraction, or normal memory notifications.
-        """
-        import hashlib
-        with self._vault_lock:
-            state = self._mirror_state()
-            for entry in entries:
-                path = self._mirror_file(entry["path"])
-                target, content = entry["target"], entry["content"]
-                text = path.read_text(encoding="utf-8")
-                if target not in {"user", "memory"} or not isinstance(content, str) or not content:
-                    raise ValueError("Invalid legacy mirror entry")
-                if "\ntags: mirror\n" not in text or not text.endswith("\n\n" + content + "\n"):
-                    raise ValueError("Legacy mirror content does not match the specified file")
-                key = hashlib.sha256((target + "\0" + content).encode()).hexdigest()
-                record = {"path": str(path.relative_to(self._vault)), "target": target, "content": content}
-                if key in state["records"] and state["records"][key] != record:
-                    raise ValueError("Legacy mirror conflicts with existing ownership")
-                state["records"][key] = record
-            self._save_mirror_state(state)
-        self._invalidate_prefetch()
+        """Legacy adoption is not an operational API in the reduced core."""
+        raise NotImplementedError("Reduced core does not support legacy mirror migration")
 
     def _finish_mirror_deletes(self, state):
         # Stage outside the indexed scope, commit the map, then publish.
@@ -745,42 +853,25 @@ class ZvecMemoryProvider(MemoryProvider):
         return ""
 
     def backup_paths(self) -> List[str]:
-        vault = self._vault if self._vault is not None else self._resolve_vault(None)
-        return [str(vault.resolve())]
+        """Do not advertise a coherent snapshot to the host backup collector."""
+        raise NotImplementedError("Reduced core does not support provider backup/restore")
 
     def get_config_schema(self):
-        from hermes_constants import display_hermes_home
-
-        _default_vault = f"{display_hermes_home()}/zvec-memory"
-        return [
-            {"key": "vault", "description": "Memory vault directory", "default": _default_vault},
-            {"key": "embedding", "description": "Embedding model for new indexes", "default": DEFAULT_EMBEDDING},
-            {"key": "recall_limit", "description": "Default recall result count", "default": "5"},
-            {"key": "context_chars", "description": "Max chars of injected recall", "default": "2000"},
-            {"key": "auto_extract", "description": "Extract facts at session end", "default": "false",
-             "choices": ["true", "false"]},
-        ]
+        # The pinned CLI calls post_setup before its generic schema writer.
+        # Empty here also prevents the legacy desktop config panel fallback.
+        return []
 
     def save_config(self, values, hermes_home):
-        path = Path(hermes_home) / "zvec-memory" / "config.json"
-        current = _load_plugin_config(hermes_home)
-        current.update(values)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, current, mode=0o600)
+        raise NotImplementedError("Reduced core configuration requires CLI setup")
 
     # -- config helpers -----------------------------------------------------
 
     def _recall_limit(self) -> int:
-        try:
-            return max(1, min(50, int(self._config.get("recall_limit", 5))))
-        except (TypeError, ValueError):
-            return 5
+        return finite_number(self._config.get("recall_limit", 5), 5,
+                             minimum=1, maximum=50, integer=True)
 
     def _cap(self, text: str) -> str:
-        try:
-            budget = max(0, int(self._config.get("context_chars", 2000)))
-        except (TypeError, ValueError, OverflowError):
-            budget = 2000
+        budget = finite_number(self._config.get("context_chars", 2000), 2000, integer=True)
         if len(text) <= budget:
             return text
         marker = " […]"
@@ -794,26 +885,31 @@ class ZvecMemoryProvider(MemoryProvider):
     # -- zg subprocess layer --------------------------------------------------
 
     def _run_zg(self, args: List[str], timeout: int) -> tuple:
-        """Run zg with cwd at the vault root. Never raises FileNotFoundError."""
+        """Noninteractive argv execution with explicit binary decoding."""
         try:
             proc = subprocess.run(
                 [self._zg(), *args],
                 cwd=str(self._vault),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
-                text=True,
+                text=False,
                 timeout=timeout,
             )
-            return proc.returncode, proc.stdout or "", proc.stderr or ""
-        except FileNotFoundError:
-            return 127, "", "zg binary not found"
+            out = (proc.stdout or b"").decode("utf-8", errors="replace")
+            err = (proc.stderr or b"").decode("utf-8", errors="replace")
+            return proc.returncode, out, err
         except subprocess.TimeoutExpired:
             return 124, "", "zg timed out"
+        except OSError as exc:
+            return 127, "", f"zg could not execute: {type(exc).__name__}"
 
     def _search_cmd(self, query: str, mode: str, limit: int) -> List[str]:
         preview = str(self._config.get("preview", "short"))
         if preview not in ("none", "short", "full"):
             preview = "short"
-        cmd = ["query", "--mode", "auto", "--refresh", "background",
+        # Only _index_job may request native mutations: server-side background
+        # refresh cannot participate in this plugin's durable generation gate.
+        cmd = ["query", "--mode", "auto", "--refresh", "off",
                "--preview", preview, "--limit", str(limit)]
         # Verified zg 0.2.2 parser: equals binding prevents option injection.
         cmd += [f"--{mode}={query}"]
@@ -840,7 +936,12 @@ class ZvecMemoryProvider(MemoryProvider):
                     return
                 try:
                     state = self._mirror_state()
+                    self._validate_replay_history(state, nonblocking=True)
+                    self._index_generation()  # Cheap known-compatibility validation.
                     pending = (not self._mirror_ready or state.get("refresh_required")
+                               or self._refresh_pending()
+                               or (self._vault / REINDEX_REQUEST_FILE).exists()
+                               or (self._vault / REINDEX_REQUEST_FILE).is_symlink()
                                or state["pending_deletes"] or state["pending_creates"]
                                or self._mirror_inbox is None or self._mirror_inbox.pending())
                 except Exception:
@@ -848,75 +949,226 @@ class ZvecMemoryProvider(MemoryProvider):
                 if not pending:
                     return
             self._next_index_retry = time.monotonic() + 1.0
-        self._maybe_reindex(force=True)
+        self._maybe_reindex(force=True, validation_only=True)
 
-    def _maybe_reindex(self, force=False, extra_args=None):
-        try:
-            interval = max(0.0, float(self._config.get("reindex_min_seconds", 600)))
-        except (TypeError, ValueError):
-            interval = 600.0
+    @staticmethod
+    def _merge_index_args(older, newer):
+        combined = ["--rebuild"] if "--rebuild" in older or "--rebuild" in newer else []
+        embedding = None
+        for args in (older, newer):
+            position = 0
+            while position < len(args):
+                flag = args[position]
+                if flag == "--rebuild":
+                    position += 1
+                elif flag == "--embedding":
+                    if position + 1 >= len(args):
+                        raise ValueError("Missing embedding argument")
+                    embedding = args[position + 1]
+                    position += 2
+                else:
+                    raise ValueError("Unsupported internal index flag")
+        if embedding is not None:
+            combined.extend(["--embedding", embedding])
+        return combined
+
+    def _maybe_reindex(self, force=False, extra_args=None, *, validation_only=False):
+        interval = finite_number(self._config.get("reindex_min_seconds", 600), 600.0)
         with self._index_state_lock:
             if self._shutdown:
                 return
             self._index_requested = True
+            if not validation_only:
+                self._index_mutation_requested = True
+            if self._vault is not None and self._index_running and not validation_only:
+                # Persist continuation admission before the running owner can
+                # acknowledge. Idle validation alone must not dirty a peer's
+                # compatible index; the dispatch gate covers initial work.
+                request_refresh(self._vault)
             if extra_args:
-                self._index_extra_args = list(extra_args)
+                self._index_extra_args = self._merge_index_args(self._index_extra_args, extra_args)
+                if "--embedding" in extra_args:
+                    self._index_extra_identity = self._effective_identity()
             if self._index_running:
                 return
             if not force and time.monotonic() - self._last_reindex < interval:
                 return
             self._index_running = True
-            if self._index_worker is None or not self._index_worker.submit(self._index_job):
+            try:
+                accepted = self._index_worker is not None and self._index_worker.submit(self._index_job)
+            except Exception:
+                accepted = False
+                logger.warning("zvec-memory index submission deferred", exc_info=True)
+            if not accepted:
                 self._index_running = False
                 logger.warning("zvec-memory index request deferred: worker unavailable")
 
     def _index_job(self):
-        while True:
-            with self._index_state_lock:
-                if not self._index_requested:
-                    self._index_running = False
+        with self._index_state_lock:
+            extra = list(self._index_extra_args)
+            extra_identity = self._index_extra_identity
+            self._index_extra_args = []
+            self._index_extra_identity = None
+            self._index_requested = False
+            mutation = self._index_mutation_requested
+            self._index_mutation_requested = False
+        succeeded = False
+        try:
+            with self._vault_lock:
+                self._drain_mirror_inbox()
+                state = self._mirror_state()
+                self._finish_mirror_deletes(state)
+                request = read_request(self._vault)
+                refresh = read_refresh(self._vault)
+                interrupted = request_identity(refresh)
+                wanted = request_identity(request)
+                if request is not None:
+                    extra = self._merge_index_args(extra, ["--rebuild"])
+                configured = self._engine_identity()
+                version = self._zg_version()
+                current = {**configured, **({"zg_version": version} if version else {})}
+                recorded = self._engine_state()
+                if interrupted is not None and wanted is None:
+                    # Plain refresh preserves an established model, including
+                    # a same-engine handle with stale embedding configuration.
+                    # Uncertain first/rebuild work needs a matching owner and
+                    # an explicit rebuild; its manifest is not legacy evidence.
+                    self._checked_identity = configured
+                    if (json.loads(refresh)["operation"] != "refresh" or
+                            not self._engine_state_matches(interrupted)):
+                        wanted = interrupted
+                        extra = self._merge_index_args(extra, [
+                            "--rebuild", "--embedding", wanted["embedding"]])
+                if (extra_identity is not None
+                        and extra_identity != self._effective_identity()):
+                    # The established identity moved after enqueue. Retain
+                    # rebuild strength but not superseded captured model args.
+                    extra = ["--rebuild"] if "--rebuild" in extra else []
+                # Startup mirror recovery can bypass _ensure_engine_identity.
+                # Admit configuration intent once, under the index transaction;
+                # never replace another owner's already bound durable intent.
+                if wanted is None and self._checked_identity != configured:
+                    if recorded and not self._engine_state_matches(current):
+                        request_rebuild(self._vault, by="engine identity changed", identity=current,
+                                        expected=request)
+                        request = read_request(self._vault)
+                        wanted = request_identity(request)
+                    self._checked_identity = configured
+                if wanted is not None and any(current.get(k) != v for k, v in wanted.items()):
+                    # A marker cannot select an executable or change this
+                    # handle's configuration. Leave it for a matching owner.
+                    raise ValueError("Rebuild requires a differently configured provider")
+                if wanted is None:
+                    self._check_recall_engine(recorded)
+                # Incremental native indexing retains its established model.
+                # Legacy markers also rebuild that model, not a stale peer's
+                # captured configuration. An explicit bound request wins args.
+                identity = dict(wanted or recorded or configured)
+                identity = {k: identity[k] for k in configured}
+                identity["zg_version"] = version or recorded.get("zg_version")
+                if identity["zg_bin"] != configured["zg_bin"]:
+                    raise ValueError("Index requires a differently configured engine")
+                if request is not None:
+                    extra = self._merge_index_args(extra, [
+                        "--rebuild", "--embedding", identity["embedding"]])
+                elif "--embedding" in extra:
+                    identity["embedding"] = extra[extra.index("--embedding") + 1]
+                if recorded and not self._engine_state_matches(identity):
+                    extra = self._merge_index_args(extra, [
+                        "--rebuild", "--embedding", identity["embedding"]])
+                # Demand behind a peer is validation, not new source intent.
+                # Adopt only after revalidating under the existing vault lock.
+                if (not mutation and not extra and request is None and refresh is None
+                        and recorded and self._engine_state_matches(identity)
+                        and self._index_ready() and not state.get("refresh_required")
+                        and not state["pending_deletes"] and not state["pending_creates"]
+                        and self._mirror_inbox is not None and not self._mirror_inbox.pending()
+                        and self._vault is not None
+                        and not (self._vault / ".mirror-delivery-failed.json").exists()):
+                    self._validate_replay_history(state)
+                    self._index_generation()
+                    self._mirror_refresh_required = False
+                    self._mirror_ready = True
+                    self._invalidate_prefetch()
+                    succeeded = True
                     return
-                self._index_requested = False
-                extra = self._index_extra_args
-                self._index_extra_args = []
-            try:
-                with self._vault_lock:
-                    self._drain_mirror_inbox()
-                    state = self._mirror_state()
-                    self._finish_mirror_deletes(state)
-                    for attempt in range(4):
-                        rc, _out, err = self._run_zg(
-                            ["index", str(self._vault), "--reset-paths",
-                             "-g", "facts/**/*.md", "-g", "sessions/**/*.md", *extra],
-                            timeout=INDEX_TIMEOUT_S,
-                        )
-                        transient = any(code in err for code in (
-                            "ZVEC_GREP.ENGINE.LOCK.BUSY",
-                            "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE",
-                        ))
-                        if rc == 0 or not transient or attempt == 3:
-                            break
-                        time.sleep(0.1 * 2 ** attempt)
-                    if rc == 0:
-                        if state.get("refresh_required", False):
-                            state["refresh_required"] = False
-                            self._save_mirror_state(state)
-                        self._mirror_refresh_required = False
-                        self._mirror_ready = True
-            except Exception as exc:
-                rc, err = 1, str(exc)
-            if rc != 0:
-                logger.warning("zvec-memory index failed: %s", err[-300:])
-                with self._index_state_lock:
+                if "--rebuild" in extra:
+                    extra = self._merge_index_args(extra, ["--embedding", identity["embedding"]])
+                    self._mirror_ready = False
+                    self._invalidate_prefetch()
+                    if request is None:
+                        # Even internal rebuild flags need a persistent peer
+                        # gate if native work or generation publication fails.
+                        request_rebuild(self._vault, by="index rebuild", expected=None,
+                                        identity={k: v for k, v in identity.items() if v is not None})
+                        request = read_request(self._vault)
+                        desired = request_identity(request)
+                        if request is None or (desired is not None and any(
+                                identity.get(k) != v for k, v in desired.items())):
+                            raise ValueError("Rebuild intent changed before dispatch")
+                # Separate from explicit model-change requests: every native
+                # mutation has a bound process-persistent publication gate.
+                operation = ("rebuild" if "--rebuild" in extra else
+                             "refresh" if self._index_ready() else "first")
+                refresh = begin_refresh(self._vault,
+                                        {k: v for k, v in identity.items() if v is not None}, operation)
+                self._mirror_ready = False
+                self._invalidate_prefetch()
+                # Stamp only the identity dispatched by this invocation.
+                for attempt in range(4):
+                    rc, _out, err = self._run_zg(
+                        ["index", str(self._vault), "--reset-paths",
+                         "-g", "facts/**/*.md", "-g", "sessions/**/*.md", *extra],
+                        timeout=INDEX_TIMEOUT_S)
+                    transient = any(code in err for code in (
+                        "ZVEC_GREP.ENGINE.LOCK.BUSY",
+                        "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE"))
+                    if rc == 0 or not transient or attempt == 3:
+                        break
+                    time.sleep(0.1 * 2 ** attempt)
+                if rc != 0:
+                    raise RuntimeError(err[-300:] or f"index exited {rc}")
+                self._record_engine_state(identity)
+                if state.get("refresh_required", False):
+                    state["refresh_required"] = False
+                    self._save_mirror_state(state)
+                acknowledge_request(self._vault, request, identity=identity)
+                acknowledge_refresh(self._vault, refresh)
+                newer_request = read_request(self._vault) is not None
+                more_refresh = read_refresh(self._vault) is not None
+                if newer_request or more_refresh:
+                    with self._index_state_lock:
+                        self._index_requested = True
+                        if newer_request:
+                            self._index_extra_args = self._merge_index_args(
+                                ["--rebuild"], self._index_extra_args)
+                self._mirror_refresh_required = False
+                self._mirror_ready = not (newer_request or more_refresh)
+                self._last_reindex = time.monotonic()
+                self._invalidate_prefetch()
+                succeeded = True
+        except Exception as exc:
+            logger.warning("zvec-memory index failed: %s", str(exc)[-300:])
+        finally:
+            with self._index_state_lock:
+                self._index_running = False
+                if not succeeded:
+                    self._mirror_ready = False
                     self._index_requested = True
-                    self._index_running = False
+                    self._index_mutation_requested |= mutation
+                    if "--embedding" not in self._index_extra_args:
+                        self._index_extra_identity = extra_identity
+                    self._index_extra_args = self._merge_index_args(extra, self._index_extra_args)
                     self._next_index_retry = time.monotonic() + 1.0
-                    if not self._index_extra_args:
-                        self._index_extra_args = extra
-                return
-            self._last_reindex = time.monotonic()
-            self._record_engine_state()
-            self._invalidate_prefetch()
+                elif self._index_requested and not self._shutdown:
+                    self._index_running = True
+                    try:
+                        accepted = self._index_worker is not None and self._index_worker.submit(self._index_job)
+                    except Exception:
+                        accepted = False
+                        logger.warning("zvec-memory index continuation deferred", exc_info=True)
+                    if not accepted:
+                        self._index_running = False
 
     # -- tool handlers --------------------------------------------------------
 
@@ -934,7 +1186,7 @@ class ZvecMemoryProvider(MemoryProvider):
             mode = str(args.get("mode", "hybrid"))
             if mode not in ("hybrid", "fts", "vector"):
                 return tool_error(f"Unknown mode: {mode}")
-            limit = args.get("limit", self._recall_limit())
+            limit = args["limit"] if "limit" in args else self._recall_limit()
             if isinstance(limit, bool) or not isinstance(limit, int):
                 return tool_error("'limit' must be an integer")
             limit = max(1, min(50, limit))
@@ -968,7 +1220,11 @@ class ZvecMemoryProvider(MemoryProvider):
                 return tool_error("'tags' must be a string")
             tags = tags.strip()
             path = self._write_fact(content[:MAX_STORED_CHARS], category, tags)
-            self._maybe_reindex()
+            try:
+                self._maybe_reindex()
+            except Exception:
+                logger.warning("zvec-memory: fact stored; indexing deferred", exc_info=True)
+                return json.dumps({"status": "stored", "path": str(path), "reindex_pending": True})
             return json.dumps({"status": "stored", "path": str(path)})
         except Exception as exc:
             return tool_error(str(exc))
@@ -976,8 +1232,11 @@ class ZvecMemoryProvider(MemoryProvider):
     # -- vault writers --------------------------------------------------------
 
     def _write_fact(self, content: str, category: str, tags: str, *, directory="facts") -> Path:
-        facts = self._vault / directory
+        if directory not in {"facts", ".mirror-staging"}:
+            raise ValueError("Invalid fact directory")
+        facts = self._mirror_root(directory)
         facts.mkdir(parents=True, exist_ok=True)
+        facts = self._mirror_root(directory)
         fd, filename = tempfile.mkstemp(prefix=f"{_utc_stamp()}-{category}-", suffix=".md", dir=facts)
         path = Path(filename)
         body = (
@@ -989,23 +1248,45 @@ class ZvecMemoryProvider(MemoryProvider):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
         except Exception:
             path.unlink(missing_ok=True)
             raise
+        if directory == "facts":
+            # All fact producers (store and extraction) admit shared work
+            # before local scheduling/debounce. Staged mirrors instead carry
+            # their durable inbox/journal obligation under the vault lock.
+            request_refresh(self._vault)
         self._invalidate_prefetch()
         return path
 
     def _append_turn(self, user_content: str, assistant_content: str, session_id: str) -> None:
-        sessions = self._vault / "sessions"
+        import stat
+        sessions = self._mirror_root("sessions")
         sessions.mkdir(parents=True, exist_ok=True)
+        sessions = self._mirror_root("sessions")
         path = sessions / f"{_today()}.md"
         record = f"\n## {_utc_stamp()} session {session_id}\n\n"
         if user_content:
             record += f"**user:** {user_content[:MAX_TURN_CHARS]}\n\n"
         if assistant_content:
             record += f"**assistant:** {assistant_content[:MAX_TURN_CHARS]}\n\n"
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(record)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT |
+                     os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("Session target is not a regular file")
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as stream:
+                fd = -1
+                stream.write(record)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        # Session writes are independent producers too: publication by an
+        # older native job must not acknowledge this newly flushed source.
+        request_refresh(self._vault)
         self._invalidate_prefetch()
         self._maybe_reindex()
 

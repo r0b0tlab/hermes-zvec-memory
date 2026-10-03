@@ -5,12 +5,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent"))
 sys.path.insert(0, HOST)
 
-spec = importlib.util.spec_from_file_location("zvec_hostio", ROOT / "zvec-memory/hostio.py")
+spec = importlib.util.spec_from_file_location("zvec_hostio", PROVIDER_ROOT / "zvec-memory/hostio.py")
 assert spec is not None and spec.loader is not None
 hostio = importlib.util.module_from_spec(spec)
 sys.modules["zvec_hostio"] = hostio
@@ -102,6 +103,6 @@ def test_runtime_path_needs_no_forbidden_host_modules():
     code = PROBE.format(host=HOST,
                         forbidden=("hermes_cli.config", "tools.registry", "utils",
                                    "agent.context_compressor"),
-                        provider=str(ROOT / "zvec-memory/__init__.py"))
+                        provider=str(PROVIDER_ROOT / "zvec-memory/__init__.py"))
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.stdout.strip() == "ok", (result.stdout, result.stderr[-2000:])

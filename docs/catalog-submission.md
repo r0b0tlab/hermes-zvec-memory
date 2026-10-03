@@ -1,86 +1,78 @@
-# Catalog submission — requirement check (2026-09-11)
+# Catalog submission policy and release gates
 
-What the Hermes plugin catalog requires of an entry, where each rule is
-published, and the evidence that this repository satisfies it. Re-run the
-commands below after any new pin.
+Policy checked against Hermes commit
+`bfda74c71acd884f170345064d537bc0d3a30d20`. Re-read upstream before any
+submission: admission policy can change independently of this plugin.
 
-Sources (all authoritative, all read for this check):
+## Authorities
 
-| Source | What it governs |
-| --- | --- |
-| `plugin-catalog/README.md` in hermes-agent | Admission policy (6 rules) + entry schema |
-| `website/docs/user-guide/features/plugin-catalog.md` (published at `/docs/user-guide/features/plugin-catalog`) | Public submission checklist (5 conditions) |
-| `.github/workflows/plugin-catalog-ci.yml` in hermes-agent | The two admission gates that must be green on the PR |
-| `hermes_cli/plugin_validate.py` (`hermes plugins validate`) | Manifest schema + declared-vs-registered capability probe |
-| `scripts/validate_plugin_catalog.py` in hermes-agent | Standalone structural validator the CI runs first |
+- [Catalog admission policy and entry schema](https://github.com/NousResearch/hermes-agent/blob/bfda74c71acd884f170345064d537bc0d3a30d20/plugin-catalog/README.md)
+- [Public submission checklist](https://github.com/NousResearch/hermes-agent/blob/bfda74c71acd884f170345064d537bc0d3a30d20/website/docs/user-guide/features/plugin-catalog.md#submitting-a-plugin-to-the-catalog)
+- [Admission CI](https://github.com/NousResearch/hermes-agent/blob/bfda74c71acd884f170345064d537bc0d3a30d20/.github/workflows/plugin-catalog-ci.yml)
+- [Structural validator](https://github.com/NousResearch/hermes-agent/blob/bfda74c71acd884f170345064d537bc0d3a30d20/scripts/validate_plugin_catalog.py)
 
-## Status
+## Current requirements
 
-| # | Requirement | Status | Evidence |
-| --- | --- | --- | --- |
-| 1 | **Owner-submitted** — PR author owns or maintains the plugin repo | ✅ | `gh api orgs/r0b0tlab/memberships/am423` → `role: admin`, `state: active` |
-| 2 | **Public repository**, publicly cloneable, `https://` URL | ✅ | `gh api repos/r0b0tlab/hermes-zvec-memory` → `private: false`, `license: MIT`; a fresh full clone was performed during this check |
-| 3 | **Released** — real releases/tags, not just a branch tip | ✅ | annotated tag `v0.2.0` + published GitHub release, `git rev-list -n1 v0.2.0` = `36fdba7…` |
-| 4 | **Passing validation** — structural schema + pinned-source `hermes plugins validate` | ✅ | both gates run locally at the pin, zero errors, zero warnings (commands below) |
-| 5 | **Pinned to settled code** — the pinned SHA is at least 2 weeks old | ⏳ **not yet** | pin `36fdba7…` was committed 2026-09-11T10:49:09-05:00 → eligible from **2026-09-25T10:49-05:00** |
-| 6 | **Exact 40-hex SHA pin**, mandatory | ✅ | `sha: 36fdba76e1693ac8f9da14e0f0f88438aba43757` |
-| 7 | **Human-merged gate** — entry + every pin bump land via reviewed PR | ✅ (process) | submission is a PR to `plugin-catalog/`; no self-serve path exists |
-| 8 | **Declared capabilities match reality** at the pinned commit | ✅ | at the pin: `get_tool_schemas()` → `memory_search`, `memory_store`; `plugin.yaml` hooks → `on_session_end`, `on_memory_write`; nothing required from the environment |
-| 9 | Entry schema fields valid | ✅ | `name` matches `[a-z0-9_-]{1,64}`; `repo` https; `tier: community`; `description`/`maintainer` non-empty; `platforms: []` (= all); capability lists are strings |
-| 10 | Not on the kill list (`plugin-catalog/removed.yaml`) | ✅ | `removed.yaml` currently has 0 entries; no name/repo match |
-| 11 | Plugin passes the manifest checks the CI gate runs | ✅ | `hermes plugins validate` at the pin: manifest parses; `name`/`version`/`description` present; `requires_env` all UPPER_SNAKE; capability probe runs `register()` in isolation; no built-in tool collisions |
+- Human-maintainer review is required for a new entry and every SHA bump.
+  Submissions come from the owner/major contributor or a maintainer-curated sweep.
+- The repository must be public and cloneable, with a real release/tag.
+- Pin the exact reachable **40-hex lowercase commit SHA**, not a tag, branch,
+  short SHA, or unreleased working tree. Use `subdir: zvec-memory`.
+- **No self-updating code:** the catalog build must not download and replace
+  its own plugin files. Updates go through a reviewed catalog SHA bump and
+  `hermes plugins update <name>`. An explicit engine dependency installation
+  is not permission to add a plugin self-updater.
+- Declared tools, hooks, middleware and required environment variables must
+  match the pinned source. The install scanner rejects `dangerous` findings;
+  `caution` warnings require reviewer assessment, not dismissal.
+- Review dependency bounds and security policy. Hermes's own dependency
+  quarantine is **not a plugin commit-age waiting period**. The former age
+  rule was replaced by the no-self-updater rule in
+  [48763a4](https://github.com/NousResearch/hermes-agent/commit/48763a4d019a88626123c2eb3933e7a9900db0db).
+- Check the catalog's blocklist and provider-name conflicts. Desktop SDK rules
+  apply if desktop code is introduced; this provider does not gain permission
+  to bypass them.
 
-### Deliberate omissions
+## Historical pin versus the pending release
 
-- `subdir` is **not** optional for us: the plugin lives in `zvec-memory/` of this
-  repository, and the CI looks for `plugin.yaml` at `<repo>/<subdir>`. It is set.
-- `requires_hermes` is omitted. No entry in the catalog declares it, our
-  manifest declares none, and asserting a floor we have not tested against
-  would either exclude working hosts or silently gate the plugin (the manifest
-  field is load-blocking). `hermes plugins validate` reports "not declared" as a
-  pass.
-- No `capabilities:` block in `plugin.yaml`. The manifest field takes ids from
-  the host's capability registry (`tools.override`, `llm.*`, `gateway.platform_actions`)
-  and this plugin uses none of them; the catalog entry's `capabilities:` block is
-  a different shape and is what reviewers read.
-- `platforms: [linux, macos]` rather than empty (= all OSes). Windows is
-  excluded by design (POSIX filesystem locking in the transaction layer); macOS
-  is POSIX-compatible but not yet exercised. Checked in
-  `hermes_cli/plugin_catalog.py` + `plugins_cmd_catalog.py`: the field is
-  informational (shown in `hermes plugins info` and the install prompt) and does
-  not block installation on a listed-unsupported OS.
-- `hermes-zvec-memory` (not `zvec-memory`) as the catalog key: it matches the
-  repository name. The install directory does **not** come from this key — the
-  installer uses the manifest `name`, so a catalog install still lands in
-  `$HERMES_HOME/plugins/zvec-memory/` and `memory.provider: zvec-memory` resolves.
+`plugin-catalog-entry.yaml` still records the historical **v0.2.0** commit
+`36fdba76e1693ac8f9da14e0f0f88438aba43757`. Earlier owner/public-repository and
+validation observations apply to that historical check, not a new release.
+Do not copy this entry unchanged as a v0.3.0 submission, relabel its old SHA,
+or treat the historical validation as current certification.
 
-## How this was verified
+The **v0.3.0 candidate is not yet certified or published**. Publication,
+production deployment and catalog submission are separate approval gates.
+No catalog PR is authorized by release publication alone.
 
-```sh
-# Gate 1 — structural (identical to the CI's first job)
-python3 scripts/validate_plugin_catalog.py plugin-catalog/          # in hermes-agent
-# with this entry staged into a copy of plugin-catalog/: "OK: 11 file(s) valid"
+After the release is verified, resolve its actual landing commit with
+`git rev-list -n1 v0.3.0` and compare it with the remote annotated tag's peeled
+commit. Only then prepare the catalog entry with that literal SHA,
+`version: "0.3.0"`, `category: memory`, and `subdir: zvec-memory`. Re-prove
+capabilities and platform support at that pin. Keep any host-compatibility
+limitations explicit; do not invent an untested `requires_hermes` floor.
+A follow-up metadata commit may name the release SHA; never move a published
+tag to solve the self-reference problem.
 
-# Gate 2 — pinned-source (identical to the CI's second job)
-git clone https://github.com/r0b0tlab/hermes-zvec-memory /tmp/x
-git -C /tmp/x checkout --detach 36fdba76e1693ac8f9da14e0f0f88438aba43757
-hermes plugins validate /tmp/x/zvec-memory        # "Validation passed." (10/10 checks, no warnings)
-```
+## Fresh admission checks, after separate submission approval
 
-## Submitting (on or after 2026-09-25)
+1. Re-read the authorities and current CI, verify repository ownership,
+   public cloneability, release existence and blocklist/name status.
+2. In a disposable validation environment, stage the proposed entry alongside
+   the current catalog and run the structural gate from the host checkout:
+   `python3 scripts/validate_plugin_catalog.py "$STAGED_CATALOG"`.
+3. Fresh-clone the plugin, detach at the exact proposed SHA, and validate the
+   installed subtree. Current CI uses
+   `hermes plugins validate --install-deps "$PIN_CHECKOUT/zvec-memory"`.
+   This can install dependencies: use an explicitly prepared isolated host
+   environment and approved dependency inputs, never the active profile or
+   live Hermes interpreter. Capture the command, source identity, exit status,
+   warnings and capability/security checks.
+4. Inspect for self-updaters beyond CI's JavaScript fetch-plus-file-write
+   heuristic. A grep result alone is not a policy or security approval.
+5. Review the old-to-new pinned diff and fix or explicitly disposition every
+   warning. Open the catalog PR only with fresh evidence for both gates and
+   the pinned capability surface. Maintainer review remains required.
 
-1. Fork `NousResearch/hermes-agent`, branch from `main`.
-2. Add `plugin-catalog/hermes-zvec-memory.yaml` with the exact contents of this
-   repository's `plugin-catalog-entry.yaml`.
-3. Open the PR titled **"plugin-catalog: add hermes-zvec-memory"** with a body
-   stating: what the plugin does, that the author (`am423`) owns
-   `r0b0tlab/hermes-zvec-memory`, that the pin is tag `v0.2.0`
-   (`git rev-list -n1 v0.2.0`), that the pinned commit is ≥ 2 weeks old, which
-   capabilities are declared and how they were verified at the pin, and that
-   both admission gates pass locally (paste the `hermes plugins validate` output).
-4. Expect a maintainer to read the pinned commit range; the diff is the review
-   surface. Pin bumps are new PRs with the same evidence.
-
-Anything that changes the plugin's registered tools or hooks changes this
-entry's `capabilities:` block in the same PR — capability creep is treated as a
-security issue by the admission policy.
+These are required future checks, not commands claimed to have passed for
+v0.3.0. Source retrieval and documentation checks do not certify admission.

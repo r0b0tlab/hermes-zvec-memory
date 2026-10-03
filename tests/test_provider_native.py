@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 import shutil
 import sys
 
@@ -9,8 +10,21 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent")))
+sys.path.insert(0, str(ROOT / "scripts"))
+from retrieval_evidence import capture_sources, cited_lines, cited_sections
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(
     os.environ.get("ZVEC_RUN_NATIVE") != "1", reason="requires opt-in local model integration")]
+
+
+def _cited_observation(home, vault, query, response, *, surface="memory_search", raw_native=False):
+    sources = capture_sources(response, vault)
+    lines = cited_lines(response, sources)
+    observation = {"query": query, "response": response, "sources": sources,
+                   "cited_paths": [section[0] for section in cited_sections(response["results"])],
+                   "returned_lines": lines, "public_surface": surface, "raw_native": raw_native}
+    with (home / "retrieval-observations.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(observation) + "\n")
+    return observation
 
 
 def _native_mirror_process(home, content, start, errors):
@@ -39,8 +53,12 @@ def test_native_two_processes_preserve_mirror_ownership(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("ZVEC_GREP_MODE", "direct")
-    monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", os.environ["ZVEC_TEST_MODEL_CACHE"])
-    shutil.copytree(ROOT / "zvec-memory", home / "plugins/zvec-memory")
+    # 0.2.2 revalidates completion-marker ctimes even for offline cached models.
+    # Keep those writes under the controlled home, never in read-only inputs.
+    model_cache = home / "native-model-cache"
+    shutil.copytree(os.environ["ZVEC_TEST_MODEL_CACHE"], model_cache)
+    monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", str(model_cache))
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", home / "plugins/zvec-memory")
     vault = home / "zvec-memory"
     vault.mkdir()
     (vault / "config.json").write_text(json.dumps({
@@ -88,10 +106,14 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("ZVEC_GREP_MODE", "direct")
-    monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", os.environ["ZVEC_TEST_MODEL_CACHE"])
+    # 0.2.2 revalidates completion-marker ctimes even for offline cached models.
+    # Keep those writes under the controlled home, never in read-only inputs.
+    model_cache = home / "native-model-cache"
+    shutil.copytree(os.environ["ZVEC_TEST_MODEL_CACHE"], model_cache)
+    monkeypatch.setenv("ZVEC_GREP_MODEL_CACHE", str(model_cache))
     for key in ("ZVEC_GREP_API_KEY", "ZVEC_GREP_ENDPOINT", "ZVEC_GREP_HOME"):
         monkeypatch.delenv(key, raising=False)
-    shutil.copytree(ROOT / "zvec-memory", home / "plugins/zvec-memory")
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", home / "plugins/zvec-memory")
     vault = home / "zvec-memory"
     vault.mkdir()
     config = {"zg_bin": os.environ["ZVEC_TEST_BIN"], "reindex_min_seconds": 0,
@@ -99,10 +121,23 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
     (vault / "config.json").write_text(json.dumps(config))
     from plugins.memory import load_memory_provider
     from agent.memory_manager import MemoryManager
+    from tools.memory_tool import MemoryStore, memory_tool
     p = load_memory_provider("zvec-memory", register_skills=False)
     assert p is not None and p.is_available()
+    store = MemoryStore()
+    assert store._path_for("user").resolve().is_relative_to(home)
     manager = MemoryManager()
     manager.add_provider(p)
+    native = p._run_zg
+
+    def record_native(args, timeout):
+        result = native(args, timeout)
+        with (home / "native-calls.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"args": args, "argv": [p._zg(), *args],
+                "cwd": str(p._vault), "pid": os.getpid(), "timeout": timeout, "result": result}) + "\n")
+        return result
+
+    monkeypatch.setattr(p, "_run_zg", record_native)
     manager.initialize_all(session_id="origin-session", hermes_home=str(home))
 
     def refresh():
@@ -110,12 +145,27 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
         p._maybe_reindex(force=True)
         assert p._index_worker.drain(120)
 
-    def search(query):
+    def search(query, glob="facts/**"):
         result = json.loads(manager.handle_tool_call("memory_search", {
-            "query": query, "mode": "fts", "globs": ["facts/**"]}))
+            "query": query, "mode": "fts", "globs": [glob], "limit": 5}))
         assert "error" not in result, result
-        # zg echoes the query before hits; never count that echo as retrieval.
-        return result["results"].partition("\n#1 ")[2]
+        return _cited_observation(home, vault, query, result)
+
+    def positive(query, path, content):
+        observation = search(query, path)
+        assert observation["cited_paths"] == [path], observation
+        assert content in observation["returned_lines"], observation
+
+    def negative(query, path):
+        observation = search(query, path)
+        assert observation["cited_paths"] == [], observation
+        assert observation["returned_lines"] == [], observation
+
+    def owned_path(content):
+        paths = [r["path"] for r in p._mirror_state()["records"].values()
+                 if (r["target"], r["content"]) == ("user", content)]
+        assert len(paths) == 1, paths
+        return paths[0]
 
     try:
         result = json.loads(manager.handle_tool_call("memory_store", {
@@ -123,10 +173,16 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
             "category": "project"}))
         assert result["status"] == "stored", result
         assert Path(result["path"]).is_file()
+        explicit_path = Path(result["path"]).relative_to(vault).as_posix()
+        explicit_bytes = Path(result["path"]).read_bytes()
         refresh()
-        assert "copper canary" in search("copper canary")
+        positive("copper canary", explicit_path,
+                 "The synthetic lunar deployment requires a copper canary gate.")
         context = manager.prefetch_all("What gate does the lunar deployment require?", session_id="origin-session")
         assert "copper canary" in context and len(context) <= 2000
+        observation = _cited_observation(home, vault, "What gate does the lunar deployment require?",
+            {"results": context.removeprefix("## Zvec Memory\n")}, surface="prefetch_all")
+        assert "The synthetic lunar deployment requires a copper canary gate." in observation["returned_lines"]
         manager.sync_all("synthetic old question", "synthetic old reply", session_id="origin-session")
         assert manager.flush_pending(timeout=60)
         p.on_session_switch("new-session")
@@ -136,20 +192,44 @@ def test_real_host_provider_native_lifecycle(tmp_path, monkeypatch):
         assert "session new-session" not in session_text
 
         def mirror(action, content="", old_text=""):
-            operation = {"action": action, "target": "user", "content": content}
+            operation = {"action": action, "target": "user"}
+            if action != "remove":
+                operation["content"] = content
             if old_text:
                 operation["old_text"] = old_text
-            manager.notify_memory_tool_write({"success": True}, operation)
+            committed = json.loads(memory_tool(store=store, **operation))
+            assert committed.get("success") is True, committed
+            manager.notify_memory_tool_write(committed, operation)
+            assert manager.flush_pending(timeout=60)
             refresh()
+            with (home / "committed-writes.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"operation": operation, "committed": committed}) + "\n")
+            return committed
 
-        mirror("add", "User prefers synthetic scarlet marmalade.")
-        assert "scarlet marmalade" in search("scarlet marmalade")
-        mirror("replace", "User prefers synthetic violet marzipan.", "scarlet marmalade")
-        assert "scarlet marmalade" not in search("scarlet marmalade")
-        assert "violet marzipan" in search("violet marzipan")
-        mirror("remove", old_text="violet marzipan")
-        assert "violet marzipan" not in search("violet marzipan")
-        assert "copper canary" in search("copper canary")
+        selected = "User prefers synthetic scarlet marmalade."
+        replacement = "User prefers synthetic violet marzipan."
+        longer = "Independent quotation: " + selected + " Preserve this longer record."
+        mirror("add", selected)
+        selected_path = owned_path(selected)
+        positive("scarlet marmalade", selected_path, selected)
+        mirror("add", longer)
+        longer_path = owned_path(longer)
+        longer_bytes = (vault / longer_path).read_bytes()
+        replaced = mirror("replace", replacement, selected)
+        assert replaced["replaced_entry"] == selected
+        negative("scarlet marmalade", selected_path)
+        replacement_path = owned_path(replacement)
+        positive("violet marzipan", replacement_path, replacement)
+        positive("scarlet marmalade", longer_path, longer)
+        removed = mirror("remove", old_text=replacement)
+        assert removed["removed_entry"] == replacement
+        negative("violet marzipan", replacement_path)
+        positive("scarlet marmalade", longer_path, longer)
+        assert (vault / longer_path).read_bytes() == longer_bytes
+        assert set(store.user_entries) == {longer}
+        assert (vault / explicit_path).read_bytes() == explicit_bytes
+        positive("copper canary", explicit_path,
+                 "The synthetic lunar deployment requires a copper canary gate.")
     finally:
         manager.shutdown_all()
     assert not p._disk_worker._thread.is_alive()

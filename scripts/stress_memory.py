@@ -21,6 +21,10 @@ import tempfile
 import time
 import traceback
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import new_workload_run, provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from retrieval_evidence import capture_sources, cited_lines, response_text
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/stress-runs"
 ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
@@ -29,17 +33,27 @@ ZG = ROOT / ".test-tools/node_modules/@zvec/zvec-grep/dist/cli/index.js"
 HOST = Path(os.environ.get("HERMES_AGENT_DIR", str(Path.home() / ".hermes/hermes-agent"))).resolve()
 
 
-def environment(run, repo):
+def environment(run, repo, selected_source=None):
     home = run / "home"
     return {"PATH": "/usr/bin:/bin", "HOME": str(home),
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
             "XDG_CACHE_HOME": str(home / "cache"), "ZVEC_GREP_HOME": str(run / "zg-state"),
+            "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
+            "ZVEC_TEST_ROOT": str(run), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(repo, selected_source)),
+            "HERMES_ZVEC_RUNTIME_DIR": str(run / "runtime"),
+            "HERMES_ZVEC_MODEL_CACHE": str(run / "models"),
+            "ZVEC_TEST_NODE_MODULES": str(repo / ".test-tools/node_modules"),
+            "ZVEC_TEST_MODEL_CACHE": str(repo / ".test-tools/models"),
             "ZVEC_GREP_MODEL_CACHE": str(repo / ".test-tools/models"),
             "ZVEC_GREP_MODE": "direct", "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1",
             "LANG": "C.UTF-8", "TZ": "UTC",
             "NODE_OPTIONS": f'--require="{run / "deny-network.cjs"}"'}
+
+
+CORPUS_SEED = "zvec-controlled-corpus-v1"
 
 
 def fact(run_id, worker, number, revised):
@@ -97,7 +111,10 @@ def hit_body(text):
 
 
 def prepare_home(run):
-    (run / "home/hermes").mkdir(parents=True, exist_ok=True)
+    env = environment(run, ROOT)
+    for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                "XDG_STATE_HOME", "TMPDIR", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE"):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
     # Raw direct zg only. Fail closed on JS network access, including cache misses.
     (run / "deny-network.cjs").write_text(
         "const deny = () => { throw new Error('stress: network disabled'); };\n"
@@ -127,7 +144,8 @@ def inventory(run):
 
 def provider(run, mode, session):
     sys.path.insert(0, str(HOST))
-    spec = importlib.util.spec_from_file_location("stress_provider", ROOT / "zvec-memory/__init__.py")
+    source = provider_source(ROOT)
+    spec = importlib.util.spec_from_file_location(source_import_name("stress_provider", source), source / "zvec-memory/__init__.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -154,15 +172,32 @@ def initialize_provider(obj, run, session):
 
 
 def close_provider(obj, result):
-    if obj is not None:
-        try:
-            obj.shutdown()
-            result["live_threads_after_shutdown"] = [w._thread.name for w in
-                (obj._disk_worker, obj._index_worker) if w and w._thread.is_alive()]
-            if result["live_threads_after_shutdown"]:
-                result["errors"].append("provider threads alive after shutdown")
-        except Exception as exc:
-            result["errors"].append(f"shutdown: {exc!r}")
+    result["shutdown_seconds"] = None
+    result["shutdown_failed"] = False
+    if obj is None:
+        return
+
+    started = time.monotonic()
+    try:
+        obj.shutdown()
+    except Exception as exc:
+        result["shutdown_failed"] = True
+        result["errors"].append(f"shutdown: {exc!r}")
+    finally:
+        result["shutdown_seconds"] = time.monotonic() - started
+
+    try:
+        result["live_threads_after_shutdown"] = [
+            worker._thread.name
+            for worker in (obj._disk_worker, obj._index_worker)
+            if worker and worker._thread.is_alive()
+        ]
+        if result["live_threads_after_shutdown"]:
+            result["shutdown_failed"] = True
+            result["errors"].append("provider threads alive after shutdown")
+    except Exception as exc:
+        result["shutdown_failed"] = True
+        result["errors"].append(f"shutdown inspection: {exc!r}")
 
 
 def validate_acceptance(receipt, number, records):
@@ -222,8 +257,8 @@ def worker(run, number, records, mode, shutdown_policy="immediate", timeout=180)
             for n in range(records):
                 if phase == "remove" and n % 2:
                     continue
-                previous = fact(run.name, number, n, phase == "remove")
-                content = "" if phase == "remove" else fact(run.name, number, n, phase == "replace")
+                previous = fact(CORPUS_SEED, number, n, phase == "remove")
+                content = "" if phase == "remove" else fact(CORPUS_SEED, number, n, phase == "replace")
                 t = time.perf_counter()
                 obj.on_memory_write(phase, "user", content, {} if phase == "add" else {"old_text": previous})
                 sample = {"phase": phase, "record": n, "seconds": time.perf_counter()-t, "accepted": True}
@@ -232,7 +267,7 @@ def worker(run, number, records, mode, shutdown_policy="immediate", timeout=180)
                     progress.write(json.dumps(sample) + "\n")
                     progress.flush()
         result["admission_seconds"] = time.monotonic() - admission_start
-        content = f"Explicit control fact for worker {number} in {run.name}."
+        content = f"Explicit control fact for worker {number} in {CORPUS_SEED}."
         out = json.loads(obj.handle_tool_call("memory_store", {"content": content}))
         if out.get("status") != "stored":
             raise RuntimeError(str(out))
@@ -281,12 +316,12 @@ def native_queries(obj, wanted, result, forbidden=()):
         start = time.perf_counter()
         out = json.loads(obj.handle_tool_call("memory_search", {
             "query": key, "mode": "fts", "limit": 5, "globs": ["facts/**"]}))
-        text = out.get("results", "")
-        body = hit_body(text)
-        hit = bool(re.match(r"(?:matchedBy=fts )?facts/[^\n]+:\d+", body)) and content in body
-        result["queries"].append({"key": key, "hit": hit, "chars": len(text),
+        evidence = query_evidence(obj, out)
+        hit = content in evidence.pop("lines") and evidence["valid"]
+        result["queries"].append({"key": key, "hit": hit, **evidence,
+                                  "expected_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                   "seconds": time.perf_counter()-start, "response": out})
-        if out.get("error") or not hit or len(text) > 2000:
+        if not evidence["valid"] or not hit:
             result["errors"].append(f"native query failed: {key}")
     result["hit_at_5"] = sum(q["hit"] for q in result["queries"])/len(selected) if selected else None
     result["query_latency_seconds"] = latency([q["seconds"] for q in result["queries"]])
@@ -296,12 +331,29 @@ def native_queries(obj, wanted, result, forbidden=()):
         start = time.perf_counter()
         out = json.loads(obj.handle_tool_call("memory_search", {
             "query": key, "mode": "fts", "limit": 5, "globs": ["facts/**"]}))
-        text = out.get("results", "")
-        stale = content in hit_body(text)
+        evidence = query_evidence(obj, out)
+        stale = content in evidence.pop("lines")
         result["negative_queries"].append({"key": key, "stale": stale, "response": out,
+                                           **evidence,
+                                           "forbidden_sha256": hashlib.sha256(content.encode()).hexdigest(),
                                            "seconds": time.perf_counter()-start})
-        if stale or out.get("error") or len(text) > 2000:
+        if stale or not evidence["valid"]:
             result["errors"].append(f"stale/failed negative native query: {key}")
+
+
+def query_evidence(obj, response):
+    text = response.get("results") if isinstance(response, dict) else None
+    row = {"sources": {}, "lines": [], "valid": False}
+    if isinstance(text, str):
+        row["chars"] = len(text)  # no character metric exists for non-text output
+    try:
+        response_text(response)
+        row["sources"] = capture_sources(response, obj._vault)
+        row["lines"] = cited_lines(response, row["sources"])
+        row["valid"] = True
+    except (AttributeError, OSError, ValueError):
+        pass  # failed evidence is retained, never a successful absence probe
+    return row
 
 
 def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate"):
@@ -316,7 +368,7 @@ def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate
         drain_provider(obj, start + timeout)
         result["convergence_seconds"] = time.monotonic()-start
         state = obj._mirror_state()
-        wanted = expected(run.name, workers, records)
+        wanted = expected(CORPUS_SEED, workers, records)
         result["mirror_records"] = len(state["records"])
         result["expected_mirror_records"] = len(wanted)
         result["errors"].extend(validate_state(state, wanted))
@@ -325,7 +377,7 @@ def recover(run, workers, records, mode, timeout=120, shutdown_policy="immediate
             result["errors"].append("inbox not drained")
         if (run / "vault/.mirror-delivery-failed.json").exists():
             result["errors"].append("delivery-failure marker present")
-        forbidden = [fact(run.name, w, n, revised) for w in range(workers) for n in range(records)
+        forbidden = [fact(CORPUS_SEED, w, n, revised) for w in range(workers) for n in range(records)
                      for revised in (False, True) if not revised or not n % 2]
         controls = [json.loads((run / f"worker-{n}.json").read_text()).get("control") for n in range(workers)]
         result["errors"].extend(validate_sources(run / "vault", state, forbidden, controls))
@@ -432,14 +484,16 @@ def poll_owned(child):
 
 
 def cleanup_owned(child, deadline=None):
-    # EOF-driven helpers may finish just after their leader. Wait only within
-    # the caller's existing phase deadline, using pinned kernel identities.
+    """Discharge every pinned identity under one bounded cleanup deadline."""
     import select
-    poller = select.poll()
-    pending = set(child._stress_handles.values())
-    for fd in pending:
-        poller.register(fd, select.POLLIN)
+    handles = dict(child._stress_handles)
+    pending = set(handles.values())
+    errors, original = [], None
+    leftover = False
     try:
+        poller = select.poll()
+        for fd in pending:
+            poller.register(fd, select.POLLIN)
         while pending:
             for fd, _ in poller.poll(0):
                 pending.discard(fd)
@@ -448,46 +502,101 @@ def cleanup_owned(child, deadline=None):
             if not pending or remaining <= 0:
                 break
             time.sleep(min(.01, remaining))
+    except BaseException as exc:
+        original = exc
     finally:
-        # Signal live pinned identities ONLY. Readable pidfds include zombies:
-        # successful SIGKILL delivery to a zombie is not evidence of a live leak.
-        # The parent cgroup still catches unobserved/escaped descendants.
-        leftover = False
-        for pid, fd in child._stress_handles.items():
+        for pid, fd in handles.items():
+            if fd not in pending:
+                continue
             try:
-                if fd not in pending:
-                    continue
                 signal.pidfd_send_signal(fd, signal.SIGKILL)
                 leftover |= pid != child.pid
             except ProcessLookupError:
                 pass
-            finally:
-                os.close(fd)
-        child.wait()
-        for pid in child._stress_handles:
-            if pid == child.pid:
-                continue
+            except BaseException as exc:
+                errors.append(exc)
+        awaiting, blocked = set(handles), set()
+        cleanup_deadline = time.monotonic() + 2
+        while awaiting:
+            for pid in list(handles):
+                if pid not in awaiting or pid in blocked:
+                    continue
+                try:
+                    if pid == child.pid:
+                        if child.returncode is not None or child.poll() is not None:
+                            awaiting.discard(pid)
+                    elif os.waitid(os.P_PIDFD, handles[pid], os.WEXITED | os.WNOHANG) is not None:
+                        awaiting.discard(pid)
+                except ChildProcessError:
+                    # POLLIN means dead, NOT reaped: a zombie may still belong
+                    # to an intermediate parent killed in this very round.
+                    # Retain it until adoption lets waitid reap it, or POLLHUP
+                    # proves its original parent already reaped that identity.
+                    try:
+                        reaped = select.poll()
+                        reaped.register(handles[pid], select.POLLIN | select.POLLHUP)
+                        if any(fd == handles[pid] and flags & select.POLLHUP
+                               for fd, flags in reaped.poll(0)):
+                            awaiting.discard(pid)
+                    except BaseException as exc:
+                        errors.append(exc)
+                        blocked.add(pid)
+                except BaseException as exc:
+                    errors.append(exc)
+                    blocked.add(pid)
+            remaining = cleanup_deadline - time.monotonic()
+            active = [handles[pid] for pid in awaiting - blocked]
+            if not awaiting or remaining <= 0 or not active:
+                break
             try:
-                os.waitpid(pid, 0)
-            except ChildProcessError:
-                pass
+                # A not-yet-adopted zombie is permanently readable. Wait on
+                # no descriptors instead of spinning on its readable pidfd.
+                select.select([], [], [], min(.01, remaining))
+            except BaseException as exc:
+                errors.append(exc)
+                break
+        for pid, fd in handles.items():
+            if pid in awaiting:
+                continue  # retain the only pinned identity for unresolved work
+            try:
+                os.close(fd)
+            except BaseException as exc:
+                errors.append(exc)
+        child._stress_handles = {pid: handles[pid] for pid in awaiting}
+        child._stress_unresolved = sorted(awaiting)
+    if original is not None:
+        if errors or awaiting:
+            original.add_note("owned cleanup incomplete; enclosing cgroup remains responsible")
+        raise original
+    if errors or awaiting:
+        for exc in errors:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise exc
+        raise RuntimeError("owned cleanup incomplete: " + ",".join(type(exc).__name__ for exc in errors)
+                           + f" unresolved={len(awaiting)}")
     return leftover
 
 
 def run_command(command, env, logfile, timeout):
     enable_subreaper()
     with logfile.open("w") as log:
-        child = track_child(subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
-                                 stderr=subprocess.STDOUT, start_new_session=True))
-        deadline = time.monotonic() + timeout
+        deadline = None
+        child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
         try:
+            track_child(child)
+            deadline = time.monotonic() + timeout
             while poll_owned(child) is None:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(.01)
             rc = child.returncode if child.returncode is not None else 124
         finally:
-            leftover = cleanup_owned(child, deadline if child.returncode == 0 else None)
+            if getattr(child, "_stress_handles", None):
+                leftover = cleanup_owned(child, deadline if child.returncode == 0 else None)
+            else:
+                stop_direct(child)
+                leftover = False
         return rc or (125 if leftover else 0)
 
 
@@ -502,7 +611,7 @@ def load_campaign(run, args, report):
         (vault / ".zvec-grep").mkdir()
         (vault / ".zvec-grep/manifest.json").write_text("{}")
     report["initial_inventory"] = inventory(run)
-    env = environment(run, ROOT)
+    env = environment(run, ROOT, getattr(args, "provider_source", None))
     children, handles = [], []
     deadline = time.monotonic() + args.timeout
     began = time.monotonic()
@@ -510,12 +619,14 @@ def load_campaign(run, args, report):
         for n in range(args.workers):
             log = (run / f"worker-{n}.log").open("w")
             handles.append(log)
-            cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", str(n), "--run", str(run),
+            cmd = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker", str(n), "--run", str(run),
                    "--records", str(args.records), "--workers", str(args.workers), "--mode", args.mode,
                    "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                    "--timeout", str(args.timeout)]
-            children.append(track_child(subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
-                                             stderr=subprocess.STDOUT, start_new_session=True)))
+            child = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+            children.append(child)
+            track_child(child)
         while any(poll_owned(child) is None for child in children):
             if any(poll_owned(child) not in (None, 0) for child in children):
                 raise RuntimeError("unexpected child exit; aborting peer writers")
@@ -526,10 +637,23 @@ def load_campaign(run, args, report):
         report["errors"].append(f"writers: {exc!r}")
     finally:
         for child in children:
-            if cleanup_owned(child):
-                report["errors"].append(f"leftover descendants of worker pid {child.pid}")
+            try:
+                if getattr(child, "_stress_handles", None):
+                    if cleanup_owned(child):
+                        report["errors"].append(f"leftover descendants of worker pid {child.pid}")
+                else:
+                    stop_direct(child)
+            except BaseException as exc:
+                report["errors"].append("worker cleanup: " + type(exc).__name__)
+                try:
+                    stop_direct(child)
+                except BaseException as fallback:
+                    report["errors"].append("direct cleanup: " + type(fallback).__name__)
         for log in handles:
-            log.close()
+            try:
+                log.close()
+            except BaseException as exc:
+                report["errors"].append("log cleanup: " + type(exc).__name__)
     report["writers_seconds"] = time.monotonic()-began
     for n in range(args.workers):
         path = run / f"worker-{n}.json"
@@ -564,7 +688,7 @@ def load_campaign(run, args, report):
         return
     rc = None
     try:
-        rc = run_command([sys.executable, str(Path(__file__).resolve()), "--recover", "--run", str(run),
+        rc = run_command([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--recover", "--run", str(run),
                           "--workers", str(args.workers), "--records", str(args.records), "--mode", args.mode,
                           "--shutdown-policy", getattr(args, "shutdown_policy", "immediate"),
                           "--recovery-timeout", str(args.recovery_timeout)],
@@ -606,14 +730,14 @@ def regression_campaign(run, args, report):
         root = run / f"iteration-{i}"
         prepare_home(root)
         xml = root / "junit.xml"
-        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+        cmd = [sys.executable, "-I", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                "--basetemp", str(root / "pytest"), "--junitxml", str(xml), *files]
-        env = environment(root, ROOT)
+        env = environment(root, ROOT, getattr(args, "provider_source", None))
         if native:
             env.update(ZVEC_RUN_NATIVE="1", ZVEC_TEST_BIN=str(ZG),
                        ZVEC_TEST_MODEL_CACHE=str(ROOT / ".test-tools/models"))
         began = time.monotonic()
-        receipt = {"number": i, "errors": []}
+        receipt = {"number": i, "diagnostic_errors": []}
         try:
             receipt["exit"] = run_command(cmd, env, root / "pytest.log", args.timeout)
             if receipt["exit"]:
@@ -621,14 +745,14 @@ def regression_campaign(run, args, report):
             receipt.update(read_junit(xml))
             report["completed_iterations"] += 1
         except Exception as exc:
-            receipt["errors"].append(repr(exc))
+            receipt["diagnostic_errors"].append(repr(exc))
             receipt["traceback"] = traceback.format_exc()
             report["errors"].append(f"iteration {i}: {exc!r}")
         finally:
             receipt["elapsed_seconds"] = time.monotonic()-began
             write_json(root / "receipt.json", receipt)
             report["iterations"].append(receipt)
-        if receipt["errors"]:
+        if receipt["diagnostic_errors"]:
             break
 
 
@@ -637,7 +761,7 @@ def interrupted(signum, frame):
     raise RuntimeError(reason)
 
 
-def main(argv=None):
+def argument_parser():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--lane", choices=["regression", "native-regression", "load"], default="regression")
     ap.add_argument("--mode", choices=["offline", "native"], default="offline")
@@ -653,6 +777,12 @@ def main(argv=None):
     ap.add_argument("--worker", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--recover", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--run", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
+    return ap
+
+
+def main(argv=None):
+    ap = argument_parser()
     args = ap.parse_args(argv)
     if not (1 <= args.workers <= 8 and 1 <= args.records <= 1000 and 0 <= args.seed_facts <= 10000
             and 1 <= args.iterations <= 500 and 1 <= args.timeout <= 1800
@@ -673,8 +803,9 @@ def main(argv=None):
                     raise ValueError("symlink inside run")
         except Exception as exc:
             ap.error(f"refusing invalid owned run: {exc}")
+        env = environment(args.run, ROOT, args.provider_source)
         os.environ.clear()
-        os.environ.update(environment(args.run, ROOT))
+        os.environ.update(env)
         if args.worker is not None:
             return worker(args.run, args.worker, args.records, args.mode, args.shutdown_policy, args.timeout)
         return recover(args.run, args.workers, args.records, args.mode, args.recovery_timeout, args.shutdown_policy)
@@ -682,13 +813,12 @@ def main(argv=None):
         ap.error("regression is offline; choose native-regression for native evidence")
     if args.lane == "native-regression":
         args.mode = "native"
-    RUNS.mkdir(parents=True, exist_ok=True)
-    run = Path(tempfile.mkdtemp(prefix="stress-", dir=RUNS))
+    run, attempt_id = new_workload_run(RUNS, "stress")
     prepare_home(run)
     write_json(run / "OWNER.json", {"kind": "zvec-stress", "repo": str(ROOT)})
-    report = {"lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
+    report = {"attempt_id": attempt_id, "lane": args.lane, "mode": args.mode, "run": str(run), "errors": [], "workers": [],
               "shutdown_policy": args.shutdown_policy,
-              "arguments": vars(args), "python": sys.version,
+              "arguments": {**vars(args), "corpus_seed": CORPUS_SEED}, "python": sys.version,
               "evidence": "offline engine mock; NOT native evidence" if args.mode == "offline" else "native direct engine"}
     report.update(status="running", passed=False)
     write_json(run / "report.json", report)
@@ -703,8 +833,13 @@ def main(argv=None):
             report["zg_version"] = package["version"]
             if report["zg_version"] != "0.2.2":
                 raise RuntimeError("reviewed native engine version must be 0.2.2")
-        for key, repo in (("plugin_sha", ROOT), ("host_sha", HOST)):
-            report[key] = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=5).strip()
+        report["host_provenance"] = host_provenance(HOST)
+        if "git_sha" in report["host_provenance"]:
+            report["host_sha"] = report["host_provenance"]["git_sha"]
+        report["product_identity"] = product_identity(provider_source(ROOT, args.provider_source))
+        report["harness_identity"] = harness_identity(ROOT)
+        if "git_sha" in report["product_identity"]:
+            report["plugin_sha"] = report["product_identity"]["git_sha"]
         if args.lane == "load":
             load_campaign(run, args, report)
         else:

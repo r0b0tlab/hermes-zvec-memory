@@ -47,11 +47,19 @@ query_gate_failures separately checks required hits and required absences.
 Only known complete metric schemas may claim success; unsupported/incomplete
 successful receipts raise ValueError (CLI exit 2), never pass with empty metrics.
 Partial failed receipts retain failure/status metadata without inferred metrics.
+Successful native probes require returned numbered source lines matching private
+query-time source snapshots, not producer flags or requested-content digests.
+Successful soak receipts additionally require the complete observed phase ledger;
+historical successes without these observations must not be upgraded by inference.
 Parent service/cgroup unit envelopes are NOT supported: point manifest paths at
 inner receipts and propagate outer failures with passed=false/failure_category.
 Cgroup cleanup verification and cgroup peak memory are not exported by this
 adapter; concurrent sampled RSS is a distinct measurement, not cgroup peak.
-No resource JSONL, production snapshot, native command log or private file is read.
+Controller-owned manifests require a complete durable inventory and confirmed
+finalization under existing controller/manifest leases. Busy or inconsistent
+campaigns fail closed; export never reconciles them. Generic hand-authored
+manifests remain supported. No production snapshot, resource JSONL, or native
+command log is read.
 Errors are lists of arbitrary objects (counted as other) or {category: known_enum};
 error_counts maps categories to nonnegative integer occurrence counts. Supply one
 representation per occurrence to avoid double counting. All totals cover observed
@@ -73,6 +81,11 @@ import math
 from pathlib import Path
 import re
 import zipfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from retrieval_evidence import cited_lines, response_text
+from campaign_inventory import manifest_read
 
 # Extension contract: metrics is a mapping from these names to nonnegative raw
 # numeric sample lists. Add names here with tests; never pass arbitrary keys through.
@@ -122,12 +135,161 @@ def samples(report):
     return [s for w in report.get("workers", []) for s in w.get("samples", [])]
 
 
+def complete_native_queries(raw, workers, records):
+    """Independent expected source oracle; query keys alone are not identities."""
+    import hashlib
+    run_id = raw.get("arguments", {}).get("corpus_seed", Path(raw["run"]).name)
+    def text(worker, record, revised):
+        token = hashlib.sha256(f"{run_id}:{worker}:{record}".encode()).hexdigest()[:20]
+        adjective = "verified" if revised else "obsolete"
+        return f"For key stress{token}, the {adjective} answer is payload{token}."
+    wanted = [text(w, n, True) for w in range(workers) for n in range(records) if n % 2]
+    if not wanted:
+        wanted = [f"Explicit control fact for worker {w} in {run_id}." for w in range(workers)]
+    forbidden = [text(w, n, revised) for w in range(workers) for n in range(records)
+                 for revised in (False, True) if not revised or not n % 2]
+    recovery = raw["recovery"]
+    status = recovery["native_status"]["exit"]
+    if type(status) is not int or status != 0:
+        return False
+    for label, source, digest_name in (("queries", wanted, "expected_sha256"),
+                                        ("negative_queries", forbidden, "forbidden_sha256")):
+        selected = source[::max(1, len(source)//20)][:20]
+        expected = {(content.split(",", 1)[0].removeprefix("For key "),
+                     hashlib.sha256(content.encode()).hexdigest()): content for content in selected}
+        rows = recovery[label]
+        if not isinstance(rows, list) or len(rows) != len(expected):
+            return False
+        observed = set()
+        for row in rows:
+            identity = (row["key"], row[digest_name])
+            observed.add(identity)
+            content = expected[identity]
+            response = row["response"]
+            body = response_text(response)
+            lines = cited_lines(response, row["sources"])
+            if count(row["chars"]) != len(body):
+                return False
+            hit = content in lines
+            if label == "queries" and (not hit or row.get("hit") is not hit):
+                return False
+            if label != "queries" and (hit or row.get("stale") is not hit):
+                return False
+        if observed != set(expected):
+            return False
+    return True
+
+
+def complete_coverage(raw):
+    """Validate successful stress coverage, independently of its passed flag."""
+    try:
+        lane = raw["lane"]
+        workers = raw["workers"]
+        planned = count(raw["planned_callbacks"])
+        successful = count(raw["successful_callbacks"])
+        number(raw["elapsed_seconds"])
+        if not isinstance(workers, list) or any(not isinstance(w, dict) for w in workers):
+            return False
+
+        if lane == "load":
+            args = raw["arguments"]
+            nw, nr = count(args["workers"]), count(args["records"])
+            if not nw or not nr or len(workers) != nw:
+                return False
+            operations = [
+                (phase, record)
+                for phase in ("add", "replace", "remove")
+                for record in range(nr)
+                if phase != "remove" or record % 2 == 0
+            ]
+            if planned != successful or planned != nw * len(operations):
+                return False
+            by_id = {worker["worker"]: worker for worker in workers
+                     if type(worker.get("worker")) is int}
+            if set(by_id) != set(range(nw)):
+                return False
+            for ordinal in range(nw):
+                worker = by_id[ordinal]
+                observed = worker["samples"]
+                if (not isinstance(observed, list) or any(
+                        not isinstance(s, dict) or type(s.get("record")) is not int
+                        for s in observed)):
+                    return False
+                if count(worker["planned_callbacks"]) != len(operations):
+                    return False
+                if count(worker["successful_callbacks"]) != len(observed):
+                    return False
+                if [(s["phase"], s["record"]) for s in observed] != operations:
+                    return False
+                if any(s.get("accepted") is not True for s in observed):
+                    return False
+                for sample in observed:
+                    number(sample["seconds"])
+            recovery = raw["recovery"]
+            if recovery.get("inbox_empty") is not True:
+                return False
+            expected = nw * (nr // 2)
+            if count(recovery["mirror_records"]) != expected:
+                return False
+            if count(recovery["expected_mirror_records"]) != expected:
+                return False
+            if raw["mode"] == "native":
+                if not complete_native_queries(raw, nw, nr):
+                    return False
+            return True
+
+        if lane in {"regression", "native-regression"}:
+            iterations = raw["iterations"]
+            n = count(raw["planned_iterations"])
+            if not n or count(raw["completed_iterations"]) != n:
+                return False
+            if count(raw["arguments"]["iterations"]) != n:
+                return False
+            if workers or planned or successful or len(iterations) != n:
+                return False
+            for ordinal, iteration in enumerate(iterations):
+                if iteration["number"] != ordinal or iteration["exit"] != 0:
+                    return False
+                if count(iteration["tests"]) <= 0:
+                    return False
+                if any(count(iteration[k]) != 0
+                       for k in ("skipped", "failures", "errors")):
+                    return False
+                if iteration.get("diagnostic_errors", []):
+                    return False
+                number(iteration["elapsed_seconds"])
+            return True
+        return False
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def error_counts(report):
     counts = Counter()
-    for section in [report, *report.get("workers", []), report.get("recovery", {})]:
-        for error in section.get("errors", []):
+    ordinary = [
+        report, *report.get("workers", []), report.get("recovery", {})
+    ]
+    sections = [(section, False) for section in ordinary]
+    sections += [(section, True) for section in report.get("iterations", [])]
+
+    for section, junit in sections:
+        values = section.get("errors", [])
+        if junit and type(values) is int:
+            counts["child_exit"] += count(values)
+        else:
+            if not isinstance(values, list):
+                raise ValueError("invalid errors collection")
+            for error in values:
+                category = error.get("category") if isinstance(error, dict) else None
+                counts[enum(category, ERRORS, "other")] += 1
+        diagnostics = section.get("diagnostic_errors", [])
+        if not isinstance(diagnostics, list):
+            raise ValueError("invalid diagnostics collection")
+        for error in diagnostics:
             category = error.get("category") if isinstance(error, dict) else None
             counts[enum(category, ERRORS, "other")] += 1
+        if junit:
+            counts["child_exit"] += count(section.get("failures", 0))
         for category, value in section.get("error_counts", {}).items():
             counts[enum(category, ERRORS, "other")] += count(value)
     return +counts
@@ -138,6 +300,20 @@ def phase_stats(samples):
     for sample in samples:
         phases[enum(sample.get("phase"), PHASES, "other")].append(sample["seconds"])
     return {k: stats(v) for k, v in sorted(phases.items())}
+
+
+def sanitize_identity(identity):
+    if (not isinstance(identity, dict) or not isinstance(identity.get("content_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", identity["content_sha256"])):
+        raise ValueError("invalid source fingerprint")
+    result = {"kind": enum(identity.get("kind"), {"git", "source_snapshot", "installed_snapshot"}),
+              "content_sha256": identity["content_sha256"]}
+    sha = identity.get("git_sha")
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        result["git_sha"] = sha
+    if type(identity.get("dirty")) is bool:
+        result["dirty"] = identity["dirty"]
+    return result
 
 
 def summarize(report, index):
@@ -151,6 +327,18 @@ def summarize(report, index):
         value = report.get(key)
         if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
             row[key] = value
+    for key in ("product_identity", "harness_identity", "host_provenance"):
+        if key not in report:
+            continue
+        row[key] = sanitize_identity(report[key])
+    if report.get("lane") in {"regression", "native-regression"}:
+        for key in ("planned_iterations", "completed_iterations"):
+            if key in report:
+                row[key] = count(report[key])
+        iterations = report.get("iterations", [])
+        row["junit"] = {key: sum(count(item[key]) for item in iterations)
+                        if iterations and all(type(item.get(key)) is int for item in iterations)
+                        else None for key in ("tests", "skipped", "failures", "errors")}
     value = report.get("python_version", report.get("python"))
     if isinstance(value, str):
         match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)(?: |$)", value)
@@ -163,7 +351,8 @@ def summarize(report, index):
                          for section in [*report.get("workers", []), report.get("recovery", {}),
                                          *report.get("iterations", [])])
     row["passed"] = (report.get("passed", report.get("pass")) is True and not errors
-                     and not nested_failure and (planned is None or successful == planned))
+                     and not nested_failure and (planned is None or successful == planned)
+                     and (report.get("lane") == "long_lived_soak" or complete_coverage(report)))
     row["callback_seconds"] = stats([s["seconds"] for s in samples(report)])
     row["callback_by_phase"] = phase_stats(samples(report))
     row["callback_by_worker"] = [
@@ -179,9 +368,11 @@ def summarize(report, index):
     if "convergence_seconds" in report.get("recovery", {}):
         row["convergence_seconds"] = number(report["recovery"]["convergence_seconds"])
     row["arguments"] = {k: number(v) for k, v in report.get("arguments", {}).items() if k in ARGUMENTS and v is not None}
-    for name in ("admission_seconds", "drain_seconds"):
+    for name in ("admission_seconds", "drain_seconds", "shutdown_seconds"):
         row["worker_" + name] = stats([w[name] for w in report.get("workers", [])
                                      if w.get(name) is not None])
+    shutdown = report.get("recovery", {}).get("shutdown_seconds")
+    row["recovery_shutdown_seconds"] = number(shutdown) if shutdown is not None else None
     if "shutdown_policy" in report.get("arguments", {}):
         row["arguments"]["shutdown_policy"] = enum(report["arguments"]["shutdown_policy"], {"immediate", "drain"})
     if report.get("lane") == "long_lived_soak":
@@ -206,22 +397,40 @@ def comparisons(reports, rows, tags):
     for i, (raw, row, tag) in enumerate(zip(reports, rows, tags)):
         variant = enum(tag.get("variant"), {"baseline", "fix"})
         args = raw.get("arguments", {})
-        if (variant == "unknown" or not tag.get("scenario") or "host_sha" not in row
+        if (variant == "unknown" or not tag.get("scenario")
                 or row["lane"] == "unknown" or row["mode"] == "unknown"
                 or not {"workers", "records", "seed_facts", "timeout"} <= args.keys()):
             continue
         # Compare even unknown conditions privately; don't silently ignore them.
-        conditions = {k: v for k, v in args.items() if k not in {"run", "worker", "recover"}}
+        identity_keys = {"product_identity", "harness_identity", "host_provenance"}
+        modern = bool(identity_keys & row.keys())
+        excluded = {"run", "worker", "recover"}
+        if modern:
+            if not identity_keys <= row.keys():
+                continue
+            source_context = [row["host_provenance"]["content_sha256"], row["harness_identity"]["content_sha256"]]
+            excluded.add("provider_source")  # differing products are the paired variable
+        elif "host_sha" in row:
+            source_context = [row["host_sha"]]
+        else:
+            continue
+        conditions = {k: v for k, v in args.items() if k not in excluded}
         context = {k: v for k, v in tag.items() if k not in {"variant", "failure_category"}}
-        key = json.dumps([row["lane"], row["mode"], row["host_sha"], conditions, context], sort_keys=True)
+        key = json.dumps([row["lane"], row["mode"], source_context, conditions, context], sort_keys=True)
         groups[key][variant].append(i)
     result = []
-    for group in groups.values():
+    for signature, group in groups.items():
         if not group["baseline"] or not group["fix"]:
             continue
-        item: dict = {"comparison": len(result) + 1}
+        item: dict = {"comparison": len(result) + 1,
+                      "identity_basis": "content_fingerprints" if len(json.loads(signature)[2]) == 2 else "legacy_git_only"}
         means = {}
         for variant, indices in group.items():
+            if item["identity_basis"] == "content_fingerprints":
+                fingerprints = {rows[i]["product_identity"]["content_sha256"] for i in indices}
+                if len(fingerprints) != 1:
+                    raise ValueError("multiple product fingerprints on one comparison side")
+                item[variant + "_product_content_sha256"] = next(iter(fingerprints))
             item[variant + "_attempts"] = len(indices)
             item[variant + "_failed_attempts"] = sum(not rows[i]["passed"] for i in indices)
             item[variant + "_attempt_ids"] = [rows[i]["attempt"] for i in indices]
@@ -285,6 +494,136 @@ def soak_metrics(raw):
     return result
 
 
+def validate_soak_ledger(raw):
+    """Reconcile observed operations, not a plan inferred from summary flags."""
+    w, args = raw["worker"], raw["arguments"]
+    sections = ("operations", "callbacks", "convergence", "queries", "prefetch", "restarts")
+    offsets = dict.fromkeys(sections, 0)
+    observed = []
+    generation, removal = 1, None
+    files = [f"background-{n:06d}.md" for n in range(count(args["seed_facts"]))]
+    control = "soakcontrolanchor confirms synthetic durable control is violet."
+    for section, index in w["ledger"]:
+        if section not in offsets or type(index) is not int or index != offsets[section]:
+            raise ValueError("invalid ledger reference")
+        row = w[section][index]
+        offsets[section] += 1
+        cycle, stage = row["cycle"], row["stage"]
+        if cycle is not None and (type(cycle) is not int or not 0 <= cycle < count(w["cycles"])):
+            raise ValueError("invalid observed cycle")
+        action = row.get("action")
+        if section == "operations" and action == "corpus_remove":
+            if removal is not None or row["files"] != files or stage not in {"revise", "cleanup"}:
+                raise ValueError("corpus removal mismatch")
+            removal = row
+        phase = ("cold_start" if stage == "initial" else "warm" if removal is None else
+                 "warm_after_removal" if stage == "final" or cycle != removal["cycle"] else "corpus_removal")
+        if row["phase"] != phase:
+            raise ValueError("phase disagrees with observed removals")
+        if section == "restarts":
+            generation += 1
+            requested = args.get("engine_restart_at")
+            if (requested is None or stage == "initial" or
+                    not number(requested) <= number(row["active_seconds"]) <= number(w["active_seconds"])):
+                raise ValueError("unrequested or mistimed restart")
+        if count(row["generation"]) != generation:
+            raise ValueError("restart generation mismatch")
+        if section != "operations": number(row["seconds"] if section != "restarts" else row["restart_seconds"])
+        if section == "restarts" or (section == "operations" and action == "corpus_remove"):
+            continue
+        slot = row.get("slot")
+        if slot is not None and (type(slot) is not int or slot not in (0, 1)):
+            raise ValueError("invalid slot")
+        label = action
+        if section == "convergence": label = count(row["records"])
+        elif section == "prefetch":
+            label = row["kind"]
+            if count(row["chars"]) > 2000: raise ValueError("prefetch overflow")
+        elif section == "queries":
+            if row.get("valid") is False:
+                raise ValueError("invalid attempted query is not ledger coverage")
+            label = row["probe"]
+            positive = label in {"control", "revised"}
+            content = (control if label == "control" else
+                       f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo." if label == "revised" else
+                       {"obsolete": "obsoleteanswer", "deleted": "revisedanswer",
+                        "background": "soakbackground000000", "cleanup": "soakcleanupanchor"}[label])
+            body = response_text(row["response"])
+            lines = cited_lines(row["response"], row["sources"])
+            hit = content in lines if positive else any(content in line for line in lines)
+            key = ("soakcontrolanchor" if label == "control" else "soakcleanupanchor"
+                   if label == "cleanup" else "soakbackground000000"
+                   if label == "background" else f"soakslot{slot:02d}")
+            if (row["required"] is not positive or row["absent"] is not (not positive)
+                    or row["hit"] is not hit or hit is not positive
+                    or row["key"] != key
+                    or count(row["chars"]) != len(body)
+                    or row["kind"] != ("hybrid" if label == "control" else "fts")):
+                raise ValueError("invalid observed retrieval probe")
+        elif section == "callbacks":
+            revised = (f"soakslot{slot:02d} revisedanswer cycle{cycle:08d} is indigo."
+                       if cycle is not None else "soakcleanupanchor synthetic cleanup marker.")
+            old = revised.replace("revisedanswer", "obsoleteanswer")
+            content, previous = {"add": (old, ""), "replace": (revised, old), "remove": ("", revised)}[action]
+            if row["content"] != content or row["previous"] != previous:
+                raise ValueError("observed callback content mismatch")
+        elif action == "seed" and row["files"] != files:
+            raise ValueError("seed observations mismatch")
+        elif action == "final_state" and count(row["records"]) != count(w["final_mirror_records"]):
+            raise ValueError("final observations mismatch")
+        observed.append((section, cycle, stage, label, slot))
+    if any(offsets[s] != len(w[s]) for s in sections):
+        raise ValueError("unreferenced observations")
+    if offsets["restarts"] != int(args.get("engine_restart_at") is not None) or removal is None:
+        raise ValueError("missing restart or removal")
+    expected = []
+    def add(section, cycle, stage, label, slot=None):
+        expected.append((section, cycle, stage, label, slot))
+    add("operations", None, "initial", "seed")
+    add("operations", None, "initial", "control_store")
+    add("convergence", None, "initial", 0)
+    add("queries", None, "initial", "control")
+    for cycle in range(count(w["cycles"])):
+        for slot in range(2):
+            for action in ("add", "replace"): add("callbacks", cycle, "revise", action, slot)
+        add("convergence", cycle, "revise", 2)
+        for slot in range(2):
+            for probe in ("revised", "obsolete"): add("queries", cycle, "revise", probe, slot)
+        for slot in range(2): add("callbacks", cycle, "remove", "remove", slot)
+        add("convergence", cycle, "remove", 0)
+        for slot in range(2): add("queries", cycle, "remove", "deleted", slot)
+        add("queries", cycle, "remove", "control")
+        for kind in ("repeated_query", "distinct_query"): add("prefetch", cycle, "remove", kind)
+        add("operations", cycle, "remove", "cycle_complete")
+    if removal["stage"] == "cleanup":
+        for action in ("add", "remove"): add("callbacks", None, "cleanup", action)
+        add("convergence", None, "cleanup", 0)
+    add("convergence", None, "final", 0)
+    add("queries", None, "final", "control")
+    if files: add("queries", None, "final", "background")
+    if removal["stage"] == "cleanup": add("queries", None, "final", "cleanup")
+    add("operations", None, "final", "final_state")
+    if observed != expected:
+        raise ValueError("incomplete observed soak workload")
+
+
+def complete_soak_coverage(raw):
+    try:
+        worker, args = raw["worker"], raw["arguments"]
+        if number(worker["active_seconds"]) < number(args["duration"]):
+            return False
+        if count(raw["resources"]["sample_count"]) <= 0 or count(worker["cycles"]) <= 0:
+            return False
+        if args.get("engine_restart_at") is not None and not worker["restarts"]:
+            return False
+        if count(args["seed_facts"]) and worker.get("corpus_removed") is not True:
+            return False
+        validate_soak_ledger(raw)
+        return count(worker["final_mirror_records"]) == 0
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
 def adapt_report(raw):
     """Only known schemas can claim success; incomplete failures stay attempts."""
     soak = raw.get("lane") == "long_lived_soak"
@@ -305,12 +644,23 @@ def adapt_report(raw):
             and {"planned_callbacks", "successful_callbacks", "elapsed_seconds", "workers"} <= raw.keys()
             and isinstance(raw["workers"], list)
             and all(isinstance(w, dict) and isinstance(w.get("samples"), list) for w in raw["workers"]))
+    if soak and raw.get("passed") is True:
+        supported = supported and complete_soak_coverage(raw)
+    if not soak and raw.get("passed", raw.get("pass")) is True:
+        supported = supported and complete_coverage(raw)
     if not supported:
         if raw.get("passed", raw.get("pass")) is True:
             raise ValueError("unsupported or incomplete receipt schema")
         # Failure-only envelope: do not interpret unknown metrics or parent units.
         result = {k: raw[k] for k in ("lane", "mode", "source_sha", "plugin_sha", "host_sha",
                                       "errors", "error_counts") if k in raw}
+        # Source evidence is independent of workload schema completeness. Keep
+        # each valid identity, even if another was unavailable or malformed.
+        for key in ("product_identity", "harness_identity", "host_provenance"):
+            try:
+                result[key] = sanitize_identity(raw.get(key))
+            except ValueError:
+                pass
         result["passed"] = False
         if soak:
             result["lane"] = "soak"
@@ -418,7 +768,11 @@ def load_manifest(path):
     reports remain failed attempts. Metadata may supply report fields for failed
     attempts without receipts; all export still goes through the same allowlist.
     """
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    with manifest_read(path) as manifest:
+        return load_entries(path, manifest)
+
+
+def load_entries(path, manifest):
     entries = manifest if isinstance(manifest, list) else manifest["reports"]
     if not isinstance(entries, list):
         raise ValueError("manifest reports must be a list")
@@ -450,8 +804,10 @@ def render(data):
               "records", "seed_facts", "planned_callbacks", "successful_callbacks",
               "elapsed_seconds", "callback_mean_seconds", "callback_p99_seconds",
               "convergence_seconds", "worker_admission_p99_seconds", "worker_drain_p99_seconds",
+              "worker_shutdown_p99_seconds", "recovery_shutdown_seconds",
               "shutdown_policy", "query_hit_rate", "artifact_bytes",
-              "peak_single_reaped_child_rss_kib", "error_counts", "plugin_sha", "source_sha", "host_sha"]
+              "peak_single_reaped_child_rss_kib", "error_counts", "plugin_sha", "source_sha", "host_sha",
+              "product_content_sha256", "harness_content_sha256", "host_content_sha256"]
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
@@ -477,15 +833,20 @@ def render(data):
         flat["callback_p99_seconds"] = row["callback_seconds"]["p99"]
         flat["worker_admission_p99_seconds"] = row["worker_admission_seconds"]["p99"]
         flat["worker_drain_p99_seconds"] = row["worker_drain_seconds"]["p99"]
+        flat["worker_shutdown_p99_seconds"] = row["worker_shutdown_seconds"]["p99"]
         flat["shutdown_policy"] = row["arguments"].get("shutdown_policy")
         flat["error_counts"] = json.dumps(row["error_counts"], sort_keys=True)
+        for name, field in (("product", "product_identity"), ("harness", "harness_identity"), ("host", "host_provenance")):
+            flat[name + "_content_sha256"] = row.get(field, {}).get("content_sha256")
         writer.writerow(flat)
         lines.append("| " + " | ".join(str(flat[k]) for k in (
             "attempt", "scenario", "variant", "lane", "mode", "passed",
             "successful_callbacks", "callback_p99_seconds", "error_counts")) + " |")
     lines.extend(["", "## Matched baseline/fix comparisons", "",
                   "Deltas are fix minus baseline; they are descriptive, not causal claims.",
-                  "Matching requires scenario/context tags, host SHA, lane, mode, and full workload arguments.",
+                  "New receipts match host and harness content fingerprints, lane, mode, workload (except selected product path), and context tags.",
+                  "Each comparison side is bound to one exported product content fingerprint; mixed-product retries are rejected.",
+                  "Legacy Git-only comparisons are labelled and are not repaired-instrument evidence.",
                   "Machine/cache/environment equality must be supplied in context tags when they vary.",
                   "Missing required conditions produce no comparison.", "",
                   "```json", json.dumps(data["comparisons"], indent=2, allow_nan=False), "```", ""])
@@ -512,7 +873,7 @@ def main(argv=None):
             with zipfile.ZipFile(args.output_dir / "share.zip", "x", zipfile.ZIP_DEFLATED) as bundle:
                 for name, text in artifacts.items():
                     bundle.writestr(name, text)
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, RuntimeError):
         # Do not leak paths, values, or exception strings to captured share logs.
         parser.exit(2, "report export failed: invalid input or output unavailable\n")
     print(json.dumps({"attempts": data["attempts"], "failed_attempts": data["failed_attempts"],

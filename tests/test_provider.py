@@ -13,13 +13,14 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
-PROVIDER_SRC = REPO_ROOT / "zvec-memory" / "__init__.py"
+PROVIDER_SRC = PROVIDER_ROOT / "zvec-memory" / "__init__.py"
 
 sys.path.insert(0, str(HERMES_AGENT_DIR))
 
@@ -48,18 +49,22 @@ def make_provider(tmp_path, start_index=False, **overrides):
     return p
 
 
-def test_reindex_request_is_consumed_once(tmp_path):
+def test_reindex_request_is_observed_until_success(tmp_path):
     p = make_provider(tmp_path)
     marker = Path(p._vault) / _mod.REINDEX_REQUEST_FILE
     assert p._consume_reindex_request() is False
     marker.write_text("{}")
     assert p._consume_reindex_request() is True
+    assert marker.exists()
+    assert p._consume_reindex_request() is True
+    p._maybe_reindex(force=True)
+    assert p._index_worker.drain(5)
     assert not marker.exists()
     assert p._consume_reindex_request() is False
     p.shutdown()
 
 
-def test_initialize_consumes_a_pending_reindex_request_and_forces_rebuild(tmp_path, monkeypatch):
+def test_initialize_preserves_a_pending_reindex_request_until_rebuild(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     index = vault / ".zvec-grep"
     index.mkdir(parents=True)
@@ -70,8 +75,8 @@ def test_initialize_consumes_a_pending_reindex_request_and_forces_rebuild(tmp_pa
     calls = []
     monkeypatch.setattr(p, "_maybe_reindex", lambda *args, **kwargs: calls.append((args, kwargs)))
     p.initialize("test-session", hermes_home=str(tmp_path))
-    assert not marker.exists()
-    assert calls == [((), {"force": True})]
+    assert marker.exists()
+    assert calls == [((), {"force": True, "extra_args": ["--rebuild", "--embedding", _mod.DEFAULT_EMBEDDING]})]
     p.shutdown()
 
 
@@ -745,7 +750,8 @@ def test_mirror_matching_is_targeted_unambiguous_and_idempotent(tmp_path):
         before = set((p._vault / "facts").glob("*.md"))
         assert len(before) == 2
         p._apply_mirror("remove", "memory", "", {"old_text": "shared preference first"})
-        p._apply_mirror("remove", "user", "", {"old_text": "shared preference"})
+        with pytest.raises(ValueError, match="Legacy selector"):
+            p._apply_mirror("remove", "user", "", {"old_text": "shared preference"})
         assert set((p._vault / "facts").glob("*.md")) == before
     finally:
         p.shutdown()
@@ -1022,3 +1028,37 @@ def test_mirror_map_records_its_schema_and_refuses_newer_layouts(tmp_path):
             provider._mirror_state()
     finally:
         provider.shutdown()
+
+
+@pytest.mark.parametrize("metadata,target,remaining", [
+    ({"old_text": "Other preference.", "previous_content": "Chosen preference."}, "user", {"Other preference."}),
+    ({"old_text": "Chosen preference."}, "user", {"Other preference."}),
+    ({"previous_content": "Chosen preference."}, "memory", {"Chosen preference.", "Other preference."}),
+    ({"previous_content": "Missing preference."}, "user", {"Chosen preference.", "Other preference."}),
+])
+def test_destructive_mirror_identity_is_authoritative_and_target_scoped(tmp_path, metadata, target, remaining):
+    p = make_provider(tmp_path)
+    try:
+        for content in ("Chosen preference.", "Other preference."):
+            p._apply_mirror("add", "user", content, {})
+        p._apply_mirror("remove", target, "", metadata)
+        assert {record["content"] for record in p._mirror_state()["records"].values()} == remaining
+    finally:
+        p.shutdown()
+
+
+@pytest.mark.parametrize("action", ["replace", "remove"])
+def test_authoritative_previous_content_selects_exact_record(tmp_path, monkeypatch, action):
+    p = make_provider(tmp_path)
+    monkeypatch.setattr(p, "_maybe_reindex", lambda *a, **k: None)
+    selected = "Uses the blue interface."
+    other = "A quote: " + selected + " Independent fact."
+    try:
+        for content in (selected, other):
+            p._apply_mirror("add", "memory", content, {})
+        p._apply_mirror(action, "memory", "Uses the green interface.",
+                        {"old_text": selected, "previous_content": selected})
+        wanted = {other, "Uses the green interface."} if action == "replace" else {other}
+        assert {r["content"] for r in p._mirror_state()["records"].values()} == wanted
+    finally:
+        p.shutdown()

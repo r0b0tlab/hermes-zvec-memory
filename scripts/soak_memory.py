@@ -15,7 +15,12 @@ command/phase, resources (sample count, peak sampled RSS sum, grouped slopes),
 versions and arguments. resources.jsonl retains actual sample times and each
 PID/start-time's RSS, CPU, FDs and threads. native-commands.jsonl contains only
 safe command kinds/timings/status, never argv or output. *.private.log, token,
-and the generated vault are PRIVATE; report.json has no absolute paths/secrets.
+and the generated vault are PRIVATE. Query response/source snapshots in raw
+receipts are private too; report_stress.py exports only allowlisted metrics.
+worker.ledger is an ordered list of [section, index] references to observed
+operations/callbacks/convergence/queries/prefetch/restarts. Each referenced row
+records its cycle, stage, phase and engine generation; nothing is prefilled from
+a workload plan. Failed workers retain only the prefix actually observed.
 
 RSS sum double-counts shared pages and is NOT PSS. Sampled CPU can miss short
 children. Slopes are diagnostics, not proof of a leak or its absence. Warm
@@ -40,6 +45,10 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import new_workload_run, provider_source, product_identity, harness_identity, source_import_name, host_provenance, stop_direct
+from retrieval_evidence import capture_sources, cited_lines, response_text
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / ".test-tools/soak-runs"
@@ -107,14 +116,18 @@ def selected_entrypoint(run, allowed_root=None):
     return resolved
 
 
-def environment(run, port):
+def environment(run, port, selected_source=None):
     if not 1024 <= port <= 65535 or port == 17999:
         raise ValueError("unsafe test port")
     home = run / "home"
     return {"PATH": "/usr/bin:/bin", "HOME": str(home),
             "HERMES_HOME": str(home / "hermes"), "HERMES_AGENT_DIR": str(HOST),
+            "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(ROOT, selected_source)),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
             "XDG_DATA_HOME": str(home / "data"), "LANG": "C.UTF-8", "TZ": "UTC",
+            "XDG_STATE_HOME": str(home / "state"), "TMPDIR": str(run / "tmp"),
+            "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "ZVEC_GREP_HOME": str(run / "zg-state"),
             "ZVEC_GREP_MODEL_CACHE": str(ROOT / ".test-tools/models"),
             "ZVEC_GREP_MODE": "server", "ZVEC_GREP_DEVICE": "cpu",
@@ -209,29 +222,54 @@ class ProcessTree:
                 "process_count": len(rows), "processes": list(rows.values())}
 
     def stop(self, grace=2):
+        errors = []
         def live():
-            return {p: r for p, r in self.identities().items() if r.get("state") != "Z"}
+            try:
+                return {p: r for p, r in self.identities().items() if r.get("state") != "Z"}
+            except BaseException as exc:
+                errors.append(exc)
+                return {}
         def send(sig):
             for pid, row in reversed(list(live().items())):
+                fd = None
                 try:
                     fd = os.pidfd_open(pid)
-                    try:
-                        now = proc_rows().get(pid)
-                        if now and now["start_ticks"] == row["start_ticks"]:
-                            signal.pidfd_send_signal(fd, sig)
-                    finally:
-                        os.close(fd)
+                    now = proc_rows().get(pid)
+                    if now and now["start_ticks"] == row["start_ticks"]:
+                        signal.pidfd_send_signal(fd, sig)
                 except ProcessLookupError:
                     pass
-        send(signal.SIGTERM)
-        deadline = time.monotonic() + grace
-        while live() and time.monotonic() < deadline:
-            time.sleep(.02)
-        send(signal.SIGKILL)
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except BaseException as exc:
+                            errors.append(exc)
+        try:
+            send(signal.SIGTERM)
+            deadline = time.monotonic() + grace
+            while live() and time.monotonic() < deadline:
+                time.sleep(.02)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            send(signal.SIGKILL)
         deadline = time.monotonic() + 1
         while live() and time.monotonic() < deadline:
-            time.sleep(.02)
-        return list(live())
+            try:
+                time.sleep(.02)
+            except BaseException as exc:
+                errors.append(exc)
+                break
+        remaining = list(live())
+        if errors:
+            for exc in errors:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise exc
+            raise RuntimeError("tree cleanup incomplete: " + ",".join(sorted({type(exc).__name__ for exc in errors})))
+        return remaining
 
 
 def trend(samples):
@@ -288,40 +326,60 @@ class Daemon:
         url = self.env["ZVEC_GREP_SERVER_URL"]
         listen = url.removeprefix("http://").removesuffix("/mcp")
         self.log = (self.run / f"daemon-{self.generation}.private.log").open("w")
-        self.process = subprocess.Popen([str(selected_entrypoint(self.run)), "server", "run",
-            "--listen", listen, "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
-            cwd=self.run, env=self.env, stdout=self.log, stderr=subprocess.STDOUT,
-            start_new_session=True)
-        self.tree = ProcessTree(self.process.pid)
-        token = Path(self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]).read_text().strip()
-        lock = Path(self.env["ZVEC_GREP_HOME"]) / "daemon/instance.lock"
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise RuntimeError("owned_daemon_exited_during_startup")
+        self.tree = None
+        try:
+            self.process = subprocess.Popen([str(selected_entrypoint(self.run)), "server", "run",
+                "--listen", listen, "--token-file", self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]],
+                cwd=self.run, env=self.env, stdout=self.log, stderr=subprocess.STDOUT,
+                start_new_session=True)
+            self.tree = ProcessTree(self.process.pid)
+            token = Path(self.env["ZVEC_GREP_SERVER_TOKEN_FILE"]).read_text().strip()
+            lock = Path(self.env["ZVEC_GREP_HOME"]) / "daemon/instance.lock"
+            while time.monotonic() < deadline:
+                if self.process.poll() is not None:
+                    raise RuntimeError("owned_daemon_exited_during_startup")
+                try:
+                    record = json.loads(lock.read_text())
+                    if ready_identity(record, self.process.pid, url):
+                        if http_status(url.replace("/mcp", "/healthz")) == 200:
+                            unauth, auth = http_status(url), http_status(url, token)
+                            if unauth != 401 or auth not in (200, 400, 405, 406):
+                                raise RuntimeError("daemon_authentication_gate_failed")
+                            if record["instanceToken"] == self.instance_token:
+                                raise RuntimeError("daemon_instance_identity_reused")
+                            self.instance_token = record["instanceToken"]
+                            return {"pid": self.process.pid, "generation": self.generation,
+                                    "unauthenticated_status": unauth, "authenticated_status": auth,
+                                    "ready_monotonic_seconds": time.monotonic()}
+                except (OSError, ValueError, urllib.error.URLError):
+                    pass
+                time.sleep(.05)
+            raise TimeoutError("owned_daemon_readiness_timeout")
+        except BaseException as exc:
             try:
-                record = json.loads(lock.read_text())
-                if ready_identity(record, self.process.pid, url):
-                    if http_status(url.replace("/mcp", "/healthz")) == 200:
-                        unauth, auth = http_status(url), http_status(url, token)
-                        if unauth != 401 or auth not in (200, 400, 405, 406):
-                            raise RuntimeError("daemon_authentication_gate_failed")
-                        if record["instanceToken"] == self.instance_token:
-                            raise RuntimeError("daemon_instance_identity_reused")
-                        self.instance_token = record["instanceToken"]
-                        return {"pid": self.process.pid, "generation": self.generation,
-                                "unauthenticated_status": unauth, "authenticated_status": auth,
-                                "ready_monotonic_seconds": time.monotonic()}
-            except (OSError, ValueError, urllib.error.URLError):
-                pass
-            time.sleep(.05)
-        raise TimeoutError("owned_daemon_readiness_timeout")
+                self.stop()
+            except BaseException as cleanup:
+                exc.add_note("daemon cleanup: " + type(cleanup).__name__)
+            raise
 
     def stop(self):
-        remaining = self.tree.stop() if self.tree else []
-        if self.process:
-            self.process.wait(timeout=2)
-        if self.log:
-            self.log.close()
+        remaining, errors = [], []
+        try:
+            if self.tree:
+                remaining = self.tree.stop()
+        except BaseException as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            try:
+                if self.process:
+                    stop_direct(self.process)
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+            finally:
+                if self.log:
+                    self.log.close()
+        if errors:
+            raise RuntimeError("daemon cleanup incomplete: " + ",".join(errors))
         return remaining
 
     def restart(self, deadline):
@@ -341,11 +399,37 @@ def retrieval_hit(text, content):
     return bool(body) and "facts/" in body.splitlines()[0] and content in body
 
 
+def owned_worker_environment(candidate, selected_source=None):
+    candidate = Path(candidate)
+    run = candidate.resolve()
+    if candidate.is_symlink() or candidate.absolute() != run or run.parent != RUNS.resolve():
+        raise ValueError("non-owned worker run")
+    if any(path.is_symlink() for path in run.rglob("*")):
+        raise ValueError("symlink inside worker run")
+
+    marker = json.loads((run / "OWNER.json").read_text())
+    if not isinstance(marker, dict):
+        raise ValueError("invalid owner marker")
+    expected = {
+        "kind": "zvec-long-lived-soak",
+        "version": 2,
+        "repo": str(ROOT),
+        "port": marker.get("port"),
+    }
+    if marker != expected or type(marker["port"]) is not int:
+        raise ValueError("owner marker mismatch")
+    env = environment(run, marker["port"], selected_source)
+    os.environ.clear()
+    os.environ.update(env)
+    return run, env
+
+
 def provider_factory(run, number):
     sys.path.insert(0, str(HOST))
-    name = "soak_provider"
+    source = provider_source(ROOT)
+    name = source_import_name("soak_provider", source)
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, ROOT / "zvec-memory/__init__.py")
+        spec = importlib.util.spec_from_file_location(name, source / "zvec-memory/__init__.py")
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
@@ -373,13 +457,33 @@ def workload(run, args, report, daemon, factory=provider_factory):
     vault = run / "vault"
     (vault / "facts").mkdir(parents=True, exist_ok=True)
     (vault / "sessions").mkdir(exist_ok=True)
+    phase, stage, cycle = "cold_start", "initial", None
+    report.update(cycles=0, corpus_removed=False, prefetch=[], operations=[], ledger=[])
+
+    def record(section, row):
+        # Append only after the observed operation returns. Ledger references are
+        # compact and reconcile one-to-one with the original metric samples.
+        row.update(phase=phase, stage=stage, cycle=cycle, generation=daemon.generation)
+        report["ledger"].append([section, len(report[section])])
+        report[section].append(row)
+
+    seeded = []
     for n in range(args.seed_facts):
-        (vault / "facts" / f"background-{n:06d}.md").write_text(
+        path = vault / "facts" / f"background-{n:06d}.md"
+        path.write_text(
             f"# Synthetic archive {n}\nsoakbackground{n:06d} stores synthetic shade amber.\n")
+        seeded.append(path.name)
+    record("operations", {"action": "seed", "files": seeded})
     handles = []
-    phase = "cold_start"
     active_start = None
-    report.update(cycles=0, corpus_removed=False, prefetch=[])
+
+    def remove_corpus():
+        removed = []
+        for path in sorted((vault / "facts").glob("background-*.md")):
+            path.unlink()
+            removed.append(path.name)
+        record("operations", {"action": "corpus_remove", "files": removed})
+        report["corpus_removed"] = True
 
     def heartbeat():
         nonlocal phase
@@ -391,7 +495,8 @@ def workload(run, args, report, daemon, factory=provider_factory):
             started = time.monotonic()
             event = daemon.restart(started + 30)
             event["restart_seconds"] = time.monotonic()-started
-            report["restarts"].append(event)
+            event["active_seconds"] = started-active_start
+            record("restarts", event)
         write_json(run / "phase.json", {"phase": phase, "generation": daemon.generation})
 
     def converge(wanted):
@@ -420,29 +525,45 @@ def workload(run, args, report, daemon, factory=provider_factory):
                 if "obsoleteanswer" in source:
                     raise RuntimeError("obsolete_source_remains")
                 validate_sources(vault, wanted)
-                report["convergence"].append({"phase": phase, "seconds": time.monotonic()-start})
+                record("convergence", {"records": len(rows), "seconds": time.monotonic()-start})
                 return
             time.sleep(.05)
         raise TimeoutError("automatic_convergence_timeout")
 
-    def search(p, query, content, required=True, absent=False, kind="fts"):
+    def search(p, query, content, required=True, absent=False, kind="fts", probe="control", slot=None):
         heartbeat()
         start = time.monotonic()
-        result = json.loads(p.handle_tool_call("memory_search", {
-            "query": query, "mode": kind, "limit": 5, "globs": ["facts/**"]}))
-        body = result.get("results", "")
-        hit = retrieval_hit(body, content)
-        report["queries"].append({"phase": phase, "generation": daemon.generation,
-            "kind": kind, "seconds": time.monotonic()-start, "hit": hit,
-            "required": required, "absent": absent, "chars": len(body)})
-        if result.get("error") or len(body) > 2000 or (required and not hit) or (absent and hit):
-            (run / "retrieval-error.private.log").write_text(json.dumps(result))
-            raise RuntimeError("native_retrieval_gate_failed")
+        returned = p.handle_tool_call("memory_search", {
+            "query": query, "mode": kind, "limit": 5, "globs": ["facts/**"]})
+        # Preserve the attempt before JSON/source validation. Failed observations
+        # remain private diagnostics, deliberately unreferenced by the ledger.
+        row = {"probe": probe, "slot": slot, "key": query, "response": returned,
+               "sources": {}, "valid": False, "kind": kind, "required": required, "absent": absent,
+               "phase": phase, "stage": stage, "cycle": cycle, "generation": daemon.generation}
+        index = len(report["queries"])
+        report["queries"].append(row)
+        try:
+            result = json.loads(returned)
+            row["response"] = result
+            if isinstance(result, dict) and isinstance(result.get("results"), str):
+                row["chars"] = len(result["results"])
+            response_text(result)
+            row["sources"] = capture_sources(result, vault)
+            lines = cited_lines(result, row["sources"])
+            hit = any(content in line for line in lines) if absent else content in lines
+            row["hit"] = hit
+            if (required and not hit) or (absent and hit):
+                (run / "retrieval-error.private.log").write_text(json.dumps(result))
+                raise RuntimeError("native_retrieval_gate_failed")
+            row["valid"] = True
+            report["ledger"].append(["queries", index])
+        finally:
+            row["seconds"] = time.monotonic()-start
 
-    def notify(p, action, text, previous=""):
+    def notify(p, action, text, previous="", slot=None):
         start = time.monotonic()
         p.on_memory_write(action, "user", text, {"old_text": previous} if previous else {})
-        report["callbacks"].append({"action": action, "phase": phase,
+        record("callbacks", {"action": action, "slot": slot, "content": text, "previous": previous,
             "seconds": time.monotonic()-start})
 
     try:
@@ -453,6 +574,7 @@ def workload(run, args, report, daemon, factory=provider_factory):
         stored = json.loads(handles[0].handle_tool_call("memory_store", {"content": control}))
         if stored.get("status") != "stored":
             raise RuntimeError("control_store_failed")
+        record("operations", {"action": "control_store", "path": stored["path"]})
         converge([])
         search(handles[1], "soakcontrolanchor", control, kind="hybrid")
         phase = "warm"
@@ -461,26 +583,26 @@ def workload(run, args, report, daemon, factory=provider_factory):
         # Always finish at least one bounded cycle, then remove the seeded corpus
         # and keep these SAME handles and daemon warm for the remaining phase.
         while time.monotonic()-active_start < args.duration or not report["cycles"]:
+            cycle, stage = report["cycles"], "revise"
             heartbeat()
             if not report["corpus_removed"] and time.monotonic()-active_start >= args.duration * .8:
                 phase = "corpus_removal"
-                for path in (vault / "facts").glob("background-*.md"):
-                    path.unlink()
-                report["corpus_removed"] = True
+                remove_corpus()
             revised = [f"soakslot{n:02d} revisedanswer cycle{report['cycles']:08d} is indigo." for n in range(2)]
             old = [t.replace("revisedanswer", "obsoleteanswer") for t in revised]
             for n, p in enumerate(handles):
-                notify(p, "add", old[n])
-                notify(p, "replace", revised[n], old[n])
+                notify(p, "add", old[n], slot=n)
+                notify(p, "replace", revised[n], old[n], slot=n)
             converge(revised)
             for n in range(2):
-                search(handles[1-n], f"soakslot{n:02d}", revised[n])
-                search(handles[1-n], f"soakslot{n:02d}", "obsoleteanswer", required=False, absent=True)
+                search(handles[1-n], f"soakslot{n:02d}", revised[n], probe="revised", slot=n)
+                search(handles[1-n], f"soakslot{n:02d}", "obsoleteanswer", required=False, absent=True, probe="obsolete", slot=n)
+            stage = "remove"
             for n, p in enumerate(handles):
-                notify(p, "remove", "", revised[n])
+                notify(p, "remove", "", revised[n], slot=n)
             converge([])
             for n in range(2):
-                search(handles[1-n], f"soakslot{n:02d}", "revisedanswer", required=False, absent=True)
+                search(handles[1-n], f"soakslot{n:02d}", "revisedanswer", required=False, absent=True, probe="deleted", slot=n)
             search(handles[1], "soakcontrolanchor", control, kind="hybrid")
             # Cache-warmed identical query vs a genuinely distinct next-turn
             # prompt. Empty 2s prefetch is diagnostic, never false retrieval PASS.
@@ -488,34 +610,38 @@ def workload(run, args, report, daemon, factory=provider_factory):
                                 ("distinct_query", f"soakcontrolanchor cycle {report['cycles']}")):
                 started = time.monotonic()
                 text = handles[1].prefetch(query)
-                report["prefetch"].append({"kind": kind, "phase": phase,
-                    "generation": daemon.generation, "seconds": time.monotonic()-started,
+                record("prefetch", {"kind": kind, "seconds": time.monotonic()-started,
                     "chars": len(text), "hit": retrieval_hit(text, control)})
                 if len(text) > 2000:
                     raise RuntimeError("prefetch_context_cap_exceeded")
+            record("operations", {"action": "cycle_complete"})
             report["cycles"] += 1
             if report["corpus_removed"]:
                 phase = "warm_after_removal"
             time.sleep(min(.05, args.duration/10))
         # Short mode may spend the whole duration in one native cycle. Still
         # perform the corpus-removal gate, but do not pretend it is a long trend.
-        if not report["corpus_removed"]:
+        cycle, stage = None, "cleanup"
+        cleanup_marker = not report["corpus_removed"]
+        if cleanup_marker:
             phase = "corpus_removal"
-            for path in (vault / "facts").glob("background-*.md"):
-                path.unlink()
+            remove_corpus()
             notify(handles[0], "add", "soakcleanupanchor synthetic cleanup marker.")
             notify(handles[0], "remove", "", "soakcleanupanchor synthetic cleanup marker.")
             converge([])
-            report["corpus_removed"] = True
+        stage = "final"
         phase = "warm_after_removal"
         heartbeat()
         converge([])
         search(handles[1], "soakcontrolanchor", control, kind="hybrid")
         if args.seed_facts:
-            search(handles[1], "soakbackground000000", "soakbackground000000", required=False, absent=True)
+            search(handles[1], "soakbackground000000", "soakbackground000000", required=False, absent=True, probe="background")
+        if cleanup_marker:
+            search(handles[1], "soakcleanupanchor", "soakcleanupanchor", required=False, absent=True, probe="cleanup")
         if args.engine_restart_at is not None and len(report["restarts"]) != 1:
             raise RuntimeError("requested_restart_not_exercised")
         report["final_mirror_records"] = len(handles[1]._mirror_state()["records"])
+        record("operations", {"action": "final_state", "records": report["final_mirror_records"]})
         report["active_seconds"] = time.monotonic()-active_start
     finally:
         for p in handles:
@@ -632,11 +758,12 @@ def supervise(run, command, env, budget, interval):
                 report["errors"].append("tree_cleanup_exception:" + type(exc).__name__)
         if child:
             try:
-                report["worker_exit"] = child.wait(timeout=2)
+                stop_direct(child)
+                report["worker_exit"] = child.returncode
                 if child.returncode:
                     report["errors"].append("worker_nonzero_exit")
-            except subprocess.TimeoutExpired:
-                report["errors"].append("worker_reap_timeout")
+            except BaseException as exc:
+                report["errors"].append("worker_cleanup_exception:" + type(exc).__name__)
         try:
             report["worker"] = json.loads((run / "worker.json").read_text())
             if not report["worker"].get("passed"):
@@ -669,7 +796,7 @@ def supervise(run, command, env, budget, interval):
     return report
 
 
-def main(argv=None):
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, default=60, help="active seconds, 1..1800 (default 60)")
     parser.add_argument("--seed-facts", type=int, default=200, help="fixed synthetic corpus, 0..1000")
@@ -679,6 +806,12 @@ def main(argv=None):
     parser.add_argument("--runtime-manifest", type=Path,
                         help="prepared private runtime manifest; default raw test package")
     parser.add_argument("--worker-run", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(ROOT)))
+    return parser
+
+
+def main(argv=None):
+    parser = argument_parser()
     args = parser.parse_args(argv)
     if not (1 <= args.duration <= 1800 and 0 <= args.seed_facts <= 1000
             and .1 <= args.sample_interval <= 30 and 1 <= args.convergence_timeout <= 120
@@ -689,27 +822,25 @@ def main(argv=None):
     except ValueError as exc:
         parser.error(str(exc))
     if args.worker_run:
-        run = args.worker_run.resolve()
-        if (run.parent != RUNS.resolve() or not (run / "OWNER.json").is_file()
-                or os.environ.get("HERMES_HOME") != str(run / "home/hermes")
-                or os.environ.get("HOME") != str(run / "home")):
+        try:
+            run, env = owned_worker_environment(args.worker_run, args.provider_source)
+        except (OSError, ValueError, TypeError):
             parser.error("refusing non-owned worker environment")
-        # Environment was constructed by the coordinator, never ambient copy.
-        port = int(os.environ["ZVEC_GREP_SERVER_URL"].split(":")[2].split("/")[0])
-        return worker(run, args, environment(run, port))
-    RUNS.mkdir(parents=True, exist_ok=True)
-    run = Path(tempfile.mkdtemp(prefix="soak-", dir=RUNS)).resolve()
+        return worker(run, args, env)
+    run, attempt_id = new_workload_run(RUNS, "soak")
     run.chmod(0o700)
-    report = {"schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
+    report = {"attempt_id": attempt_id, "run":str(run), "schema_version": 1, "lane": "long_lived_soak", "transport": "native_server_only",
               "passed": False, "errors": [], "runtime": runtime_metadata}
     try:
-        write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 1})
         if not Path(runtime[0]).is_file() or not (HOST / "agent/memory_provider.py").is_file():
             raise FileNotFoundError("test engine or host checkout missing")
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise RuntimeError("Linux pidfd support required")
-        env = environment(run, free_port())
-        for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "ZVEC_GREP_HOME"):
+        port = free_port()
+        write_json(run / "OWNER.json", {"kind": "zvec-long-lived-soak", "version": 2,
+                                        "repo": str(ROOT), "port": port})
+        env = environment(run, port, args.provider_source)
+        for key in ("HOME", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR", "ZVEC_GREP_HOME"):
             Path(env[key]).mkdir(parents=True, exist_ok=True)
         with (run / "token").open("x") as token:
             token.write(secrets.token_hex(32) + "\n")
@@ -718,21 +849,29 @@ def main(argv=None):
         launcher = run / "zg-server-only"
         launcher.write_text(f"#!{sys.executable}\nimport runpy\nfrom pathlib import Path\nm = runpy.run_path({str(Path(__file__).resolve())!r})\nraise SystemExit(m['transport_main'](Path({str(run)!r})))\n")
         launcher.chmod(0o700)
-        command = [sys.executable, str(Path(__file__).resolve()), "--worker-run", str(run),
+        command = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker-run", str(run),
                    "--duration", str(args.duration), "--seed-facts", str(args.seed_facts),
                    "--sample-interval", str(args.sample_interval),
                    "--convergence-timeout", str(args.convergence_timeout)]
         if args.engine_restart_at is not None:
             command += ["--engine-restart-at", str(args.engine_restart_at)]
-        report = supervise(run, command, env, args.duration + 240, args.sample_interval)
+        # Resolve actual host/runtime provenance before admitting any workload.
+        provenance = {"host_provenance": host_provenance(HOST),
+                      "product_identity": product_identity(provider_source(ROOT, args.provider_source)),
+                      "harness_identity": harness_identity(ROOT),
+                      "zg_version": json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]}
+        if "git_sha" in provenance["host_provenance"]:
+            provenance["host_sha"] = provenance["host_provenance"]["git_sha"]
+        if "git_sha" in provenance["product_identity"]:
+            provenance["plugin_sha"] = provenance["product_identity"]["git_sha"]
+        report.update(provenance)
+        report = {**report, **supervise(run, command, env, args.duration + 240, args.sample_interval)}
         report["runtime"] = runtime_metadata
         # argparse Path values are not JSON; the receipt stays serializable.
         report["arguments"] = {k: (str(v) if isinstance(v, Path) else v)
                                for k, v in vars(args).items() if k != "worker_run"}
         report["python"] = sys.version.split()[0]
-        for name, path in (("plugin_sha", ROOT), ("host_sha", HOST)):
-            report[name] = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, timeout=5).strip()
-        report["zg_version"] = json.loads((Path(runtime[0]).parents[2] / "package.json").read_text())["version"]
+
     except BaseException as exc:
         report["passed"] = False
         report["errors"].append("preflight_exception:" + type(exc).__name__)

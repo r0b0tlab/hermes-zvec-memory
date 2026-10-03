@@ -89,7 +89,11 @@ def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc)
                     worker_done.set()
                 threading.Thread(target=worker).start()
         def handle_tool_call(self, name, args):
-            return json.dumps({"results": " ".join(f[1] for f in benchmark.FACTS)})
+            expected = dict(benchmark.NEAR_QUERIES + benchmark.PARAPHRASE_QUERIES)[args["query"]]
+            index, fact = next((i, row[1]) for i, row in enumerate(benchmark.FACTS)
+                               if expected.lower() in row[1].lower())
+            body = f"#1 facts/fact-{index:02d}.md:6\nsource:\n6\t{fact}\n"
+            return json.dumps({"results": body})
         def _run_zg(self, args, **kwargs):
             return native_rc, "", "native query failed" if native_rc else ""
         def _cached_prefetch(self, query):
@@ -105,7 +109,9 @@ def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc)
             events.append("shutdown")
             release.set()
 
+    original_run = benchmark.subprocess.run
     def native(argv, **kwargs):
+        if argv[0] not in {"node", "offline-zg"}: return original_run(argv, **kwargs)
         if "index" in argv:
             events.append("index")
             vault = Path(argv[-1])
@@ -121,7 +127,7 @@ def test_isolated_benchmark_lifecycle_and_json(tmp_path, monkeypatch, native_rc)
     assert record["gates"]["passed"] is (native_rc == 0)
     if native_rc:
         assert any(e.get("stderr") == "native query failed" for e in record["errors"])
-    assert record["provenance"]["plugin_sha"] == "test metadata"
+    assert record["provenance"]["plugin_sha"] == benchmark.product_identity(benchmark.provider_source(benchmark.REPO_ROOT))["git_sha"]
     assert record["prefetch"]["repeated_identical_query"]["cache_ready"] is True
     samples = record["prefetch"]["distinct_next_turn_queries"]["samples"]
     assert [s["query"] for s in samples] == [q for q, _ in benchmark.NEAR_QUERIES]
@@ -145,9 +151,11 @@ def test_repeated_prefetch_context_is_also_gated():
 
 
 def test_metric_summary_separates_retrieval_and_visibility():
-    full = SimpleNamespace(handle_tool_call=lambda *args: '{"results":"known fact"}')
+    fact = benchmark.FACTS[0][1]
+    body = f"#1 facts/fact-00.md:6\nsource:\n6\t{fact}\n"
+    full = SimpleNamespace(handle_tool_call=lambda *args: json.dumps({"results": body}))
     capped = SimpleNamespace(handle_tool_call=lambda *args: '{"results":"known"}')
-    result = benchmark.run_set(capped, full, [("query", "fact")])
+    result = benchmark.run_set(capped, full, [("query", "canary gate")])
     assert result.get("retrieved_hit_at_5") == {"hybrid": 1.0, "fts": 1.0}
     assert result["visible_hit_at_5"] == 0.0
     assert result["context_chars"] == {"mean": 5.0, "max": 5}
@@ -164,3 +172,85 @@ def test_timeout_preserves_raw_command_evidence(tmp_path, monkeypatch):
     assert record["errors"][0].get("stdout") == "partial output"
     assert record["errors"][0]["stderr"] == "actual error"
     assert not record["gates"]["passed"]
+
+
+def test_installed_snapshot_provenance_precedes_provider(tmp_path, monkeypatch):
+    from test_harness_support import fixture_host
+    root = fixture_host(tmp_path / "selected-host")
+    monkeypatch.setattr(benchmark, "HERMES_AGENT_DIR", root)
+    original_run = benchmark.subprocess.run
+    def native(command, **kwargs):
+        if command[0] in {"node", "zg"}: return SimpleNamespace(returncode=0, stdout="fixture", stderr="")
+        return original_run(command, **kwargs)
+    monkeypatch.setattr(benchmark.subprocess, "run", native)
+    def stop():
+        raise RuntimeError("stop at provider boundary")
+    monkeypatch.setattr(benchmark, "load_provider", stop)
+    output = tmp_path / "receipt.json"
+    assert benchmark.main(["--output", str(output)]) == 1
+    provenance = json.loads(output.read_text())["provenance"]
+    assert provenance["host_provenance"]["kind"] == "installed_snapshot"
+    assert "hermes_sha" not in provenance
+    assert benchmark.HERMES_AGENT_DIR == root
+
+
+@pytest.mark.parametrize("body", [
+    "Query echo only: canary gate",
+    "known fact: canary gate",
+    "query groups (1):\nQ1: canary gate\nhits: 0\n",
+    "alternate input heading: canary gate\nhits: 0\n",
+    "#1 facts/fact-00.md:6\nheading: canary gate\n",
+    "#1 facts/fact-99.md:6\nsource:\n6\tcanary gate\n",
+    "#1 facts/fact-00.md:6\nsource:\n6\tfabricated canary gate\n",
+])
+def test_uncited_echo_never_scores(body):
+    assert "canary gate" not in benchmark.result_evidence(body)
+
+
+@pytest.mark.parametrize("metadata", ["", "matchedBy=fts ", "matchedBy=fts+vector "])
+def test_supported_cited_bodies_score(metadata):
+    fact = benchmark.FACTS[0][1]
+    body = (
+        "Q1: answer-bearing query must not score\nhits: 1\n\n"
+        f"#1 {metadata}facts/fact-00.md:6-7\n"
+        "heading: irrelevant\nsource:\n"
+        f"6\t{fact}\n7\t\n"
+    )
+    assert benchmark.result_evidence(body) == fact + "\n"
+
+
+def test_visibility_does_not_borrow_uncapped_evidence():
+    fact = benchmark.FACTS[0][1]
+    body = f"#1 facts/fact-00.md:6\nsource:\n6\t{fact}\n"
+    full = SimpleNamespace(
+        handle_tool_call=lambda *args: json.dumps({"results": body})
+    )
+    capped = SimpleNamespace(
+        handle_tool_call=lambda *args: json.dumps({"results": body[:20]})
+    )
+    result = benchmark.run_set(capped, full, [("deployment policy", "canary gate")])
+    assert result["retrieved_hit_at_5"] == {"hybrid": 1.0, "fts": 1.0}
+    assert result["visible_hit_at_5"] == 0.0
+
+
+def test_benchmark_isolated_environment_scrubs_ambient_extras(tmp_path, monkeypatch):
+    import os
+    poison = ("OPENAI_API_KEY", "HTTP_PROXY", "HTTPS_PROXY", "PYTHONPATH", "NODE_OPTIONS", "ZVEC_GREP_SERVER_URL", "ZVEC_GREP_SERVER_TOKEN_FILE")
+    for name in poison: monkeypatch.setenv(name, "poison")
+    before = dict(os.environ)
+    observed = []
+    def provider():
+        observed.append(dict(os.environ))
+        raise RuntimeError("stop before native provider")
+    monkeypatch.setattr(benchmark, "load_provider", provider)
+    original_run = benchmark.subprocess.run
+    def native(command, **kwargs):
+        if command[0] in {"node", "zg"}: return SimpleNamespace(returncode=0, stdout="fixture", stderr="")
+        return original_run(command, **kwargs)
+    monkeypatch.setattr(benchmark.subprocess, "run", native)
+    assert benchmark.main(["--output", str(tmp_path / "receipt.json")]) == 1
+    assert len(observed) == 1
+    assert not set(poison) & observed[0].keys()
+    assert observed[0]["HF_HUB_OFFLINE"] == observed[0]["TRANSFORMERS_OFFLINE"] == "1"
+    assert Path(observed[0]["TMPDIR"]).is_relative_to(Path(observed[0]["HOME"]))
+    assert os.environ == before

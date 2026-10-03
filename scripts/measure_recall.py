@@ -23,6 +23,7 @@ stdout prints the same record followed by PASS/FAIL. Exit status is 0/1.
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -30,10 +31,12 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_support import provider_source, product_identity, harness_identity, source_import_name, host_provenance
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_AGENT_DIR = Path(os.environ.get(
     "HERMES_AGENT_DIR", str(Path.home() / ".hermes" / "hermes-agent")))
-sys.path.insert(0, str(HERMES_AGENT_DIR))
 
 FACTS = [
     ("project", "Production deploys require the canary gate to pass before any rollout proceeds", "deploy"),
@@ -107,10 +110,48 @@ def pct(xs, q):
 
 
 def result_evidence(body):
-    """Exclude zg's echoed input from recall-quality evidence."""
-    if "query groups (" in body:
-        return body.partition("\n#1 ")[2]
-    return body
+    """Only exact numbered lines from this benchmark's cited fixture files."""
+    if not isinstance(body, str):
+        return ""
+
+    sources = {
+        f"facts/fact-{i:02d}.md": (
+            f"---\ncategory: {category}\ntags: {tags}\n---\n\n{text}\n"
+        ).split("\n")
+        for i, (category, text, tags) in enumerate(FACTS)
+    }
+
+    # Split on every ranked section, including malformed ones, so a malformed
+    # next hit cannot become prose belonging to the preceding valid hit.
+    chunks = []
+    for section in re.split(r"(?m)(?=^#\d+ )", body):
+        header = re.match(
+            r"^#([1-5]) (?:matchedBy=\S+ )?"
+            r"(facts/fact-\d{2}\.md):([1-9]\d*)"
+            r"(?:-([1-9]\d*))?[^\n]*\n",
+            section,
+        )
+        if not header:
+            continue
+        filename = header.group(2)
+        lines = sources.get(filename)
+        start = int(header.group(3))
+        end = int(header.group(4) or header.group(3))
+        if lines is None or not 1 <= start <= end <= len(lines):
+            continue
+
+        content = "\n" + section[header.end():]
+        _, marker, source = content.partition("\nsource:\n")
+        if not marker:
+            continue
+        for line in source.splitlines():
+            match = re.fullmatch(r"([1-9]\d*)\t(.*)", line)
+            if not match:
+                continue
+            number, text = int(match.group(1)), match.group(2)
+            if start <= number <= end and text == lines[number - 1]:
+                chunks.append(text)
+    return "\n".join(chunks)
 
 
 def run_set(p, p_full, queries):
@@ -159,8 +200,10 @@ def run_set(p, p_full, queries):
 def load_provider():
     """Import only after HOME/HERMES_HOME have been isolated."""
     import importlib.util
+    sys.path.insert(0, str(HERMES_AGENT_DIR))
+    source = provider_source(REPO_ROOT)
     spec = importlib.util.spec_from_file_location(
-        "zvec_benchmark_provider", REPO_ROOT / "zvec-memory" / "__init__.py")
+        source_import_name("zvec_benchmark_provider", source), source / "zvec-memory" / "__init__.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -222,6 +265,7 @@ def main(argv=None):
     ap.add_argument("--output", type=Path, help="write full JSON evidence, including failures")
     ap.add_argument("--model-cache", type=Path,
                     help="explicit reusable zg model cache (default: isolated temporary cache)")
+    ap.add_argument("--provider-source", default=os.environ.get("ZVEC_TEST_PROVIDER_ROOT", str(REPO_ROOT)))
     args = ap.parse_args(argv)
     # Resolve supplied paths BEFORE replacing HOME.
     args.zg_bin = str(Path(args.zg_bin).expanduser().resolve()) if "/" in args.zg_bin else args.zg_bin
@@ -258,7 +302,13 @@ def main(argv=None):
 
     @contextmanager
     def environment(home):
-        values = {"HOME": str(home), "HERMES_HOME": str(home / "hermes"),
+        values = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC",
+                  "HOME": str(home), "HERMES_HOME": str(home / "hermes"),
+                  "HERMES_AGENT_DIR": str(HERMES_AGENT_DIR),
+                  "ZVEC_TEST_PROVIDER_ROOT": str(provider_source(REPO_ROOT, args.provider_source)),
+                  "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                  "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                  "TMPDIR": str(home / "tmp"), "XDG_STATE_HOME": str(home / "state"),
                   "XDG_CONFIG_HOME": str(home / "config"),
                   "XDG_DATA_HOME": str(home / "data"),
                   "ZVEC_GREP_HOME": str(home / "zvec-state"),
@@ -268,28 +318,32 @@ def main(argv=None):
                   "HF_HOME": str((cache or home / "cache") / "huggingface"),
                   "HUGGINGFACE_HUB_CACHE": str((cache or home / "cache") / "huggingface" / "hub"),
                   "TRANSFORMERS_CACHE": str((cache or home / "cache") / "transformers")}
-        previous = {key: os.environ.get(key) for key in values}
+        for key in ("TMPDIR", "XDG_STATE_HOME"):
+            Path(values[key]).mkdir(parents=True, exist_ok=True)
+        previous = dict(os.environ)
+        os.environ.clear()
         os.environ.update(values)
         try:
             yield
         finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            os.environ.clear()
+            os.environ.update(previous)
 
     try:
         with tempfile.TemporaryDirectory(prefix="zvec-measure-") as directory:
             with environment(Path(directory)):
                 for key, argv in (
-                    ("plugin_sha", ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]),
-                    ("plugin_status", ["git", "-C", str(REPO_ROOT), "status", "--porcelain"]),
-                    ("hermes_sha", ["git", "-C", str(HERMES_AGENT_DIR), "rev-parse", "HEAD"]),
                     ("node_version", ["node", "--version"]),
                     ("zg_version", [args.zg_bin, "--version"]),
                 ):
                     record["provenance"][key] = command(argv).stdout.strip()
+                record["provenance"]["host_provenance"] = host_provenance(HERMES_AGENT_DIR)
+                if "git_sha" in record["provenance"]["host_provenance"]:
+                    record["provenance"]["hermes_sha"] = record["provenance"]["host_provenance"]["git_sha"]
+                record["provenance"]["product_identity"] = product_identity(provider_source(REPO_ROOT, args.provider_source))
+                record["provenance"]["harness_identity"] = harness_identity(REPO_ROOT)
+                if "git_sha" in record["provenance"]["product_identity"]:
+                    record["provenance"]["plugin_sha"] = record["provenance"]["product_identity"]["git_sha"]
                 provider_class = load_provider()
                 vault = Path(directory) / "vault"
                 facts = vault / "facts"

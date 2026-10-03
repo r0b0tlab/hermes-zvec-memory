@@ -1,7 +1,41 @@
 # Changelog
 
-All notable changes to this plugin. Versions match `zvec-memory/plugin.yaml`;
-the release tags point at the commits the plugin-catalog entry pins.
+All notable changes to this plugin. Manifest versions identify source revisions;
+only remotely verified published tags identify releases. Unreleased sections
+below are not publication or deployment claims. Catalog pins retain the exact
+historical revision they describe until separately approved updates.
+
+## 0.3.0 — reduced core
+
+Native engine remains `@zvec/zvec-grep@0.2.2`. Release identity is the remotely
+verified annotated `v0.3.0` tag, not a candidate or harness SHA. Publication and
+production deployment are separate; this work does not deploy the plugin.
+
+- Retains local memory_search/memory_store, committed Markdown durability,
+  authoritative mirror identity, durable notifications, generation-fenced
+  indexing, pending-intent recovery and ordinary restart/worker cleanup.
+- Retains actual default-profile CLI setup, private JSON and activation
+  readback, complete status/doctor diagnostics and durable reindex admission.
+  Actual setup -> generated launcher -> store/search -> restart -> recall was
+  exercised on the pinned source host, without changing its real user service.
+- Refuses alternate/null/remote embedding selections and engine version changes
+  before side effects. Only the pinned local model is qualified.
+- Disables desktop/F9 and generic configuration writing; migration, legacy
+  adoption and provider backup/restore explicitly refuse. These are scope
+  restrictions, not claims that old broader-feature failures were fixed.
+- Adds 13 supported-model safety/recovery successor modules and an explicit,
+  source-bound 179-case scope manifest. Original tests and whole-suite failure
+  receipts remain preserved; no mixed safety file is blanket-excluded.
+- Verification includes 2022 integrated core offline passes, 26 native functional
+  passes, actual CLI dispatch/native composition, and a scoped 120-second soak.
+  No large-burst capacity, statistical speedup or long-term leak claim is made.
+- Requires the vault and all ancestors remain stationary while active; strict
+  protection against external concurrent directory renames is not promised.
+
+See [release notes](docs/release-0.3.0-notes.md),
+[validation](docs/release-0.3.0-validation.md), and
+[upgrade restrictions](docs/migration-0.3.0.md). Prior unreleased/full-scope notes
+are preserved under `docs/history/` and are not current operator instructions.
 
 ## 0.2.1 — 2026-09-26
 

@@ -1,5 +1,15 @@
 # hermes-zvec-memory
 
+> **0.3.0 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
+> tuple in [validation](docs/release-0.3.0-validation.md), with a mandatory
+> stationary-vault restriction. This is not the historical full-feature release.
+> Publication is a separate remote-readback gate; resolve the published tag
+> before installation. Production deployment and service changes were not made.
+> [Contract](docs/reduced-core-contract.md), [release notes](docs/release-0.3.0-notes.md)
+> and [upgrade restrictions](docs/migration-0.3.0.md) define the active scope.
+> Earlier candidate documents are preserved under `docs/history/`, not active
+> installation or recovery instructions.
+
 A local-first [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 memory provider backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep).
 Markdown facts and session notes are the source of truth; `zg` supplies hybrid
@@ -8,58 +18,59 @@ remain separate and available.
 
 ## Requirements
 
-- Hermes with the memory-provider plugin interface.
-- Node.js >=22 and `@zvec/zvec-grep@0.2.2` (the native engine version tested here).
-- A local embedding model, default `local/potion-retrieval-32m`.
-- POSIX filesystem locking (Linux tested; macOS not yet exercised). Windows is
-  explicitly unsupported by the process-safe transaction layer.
+- The one pinned Linux/Hermes source tuple bound by final release validation.
+- Node.js 26.8.1 and `@zvec/zvec-grep@0.2.2`.
+- Only `local/potion-retrieval-32m`; model switching is refused.
+- POSIX filesystem locking. Other platforms and broader Node versions are not
+  qualified by this reduced release.
+- The vault and all ancestor directories must remain stationary while active.
 
 Installing a plugin is not activating it. Only one external provider can be
 active per Hermes profile. Do not modify Hermes core to install this provider.
 
-## Installation
+## Installation and setup boundary
+
+Publication is not production deployment. Use an approved maintenance window;
+never replace plugin code while any process owns the vault. Managed setup is
+supported only for the default `~/.hermes` profile.
+
+From a Git checkout with the verified `v0.3.0` tag, resolve its exact commit and
+install through the host manager (not a live directory copy):
 
 ```sh
-hermes plugins install https://github.com/<your-account>/hermes-zvec-memory#zvec-memory
-hermes memory setup zvec-memory      # installs the engine runtime and activates it
-hermes zvec-memory engine install    # the one explicit step that fetches the pinned engine
-hermes zvec-memory doctor
-```
-
-`hermes memory setup` lays out the engine launcher and the systemd unit, writes
-the provider's `config.json` and activates the provider. Start a fresh session
-afterwards: the current conversation does not hot-swap its provider or tool
-schemas. Only one external provider can be active per Hermes profile, and
-installing a plugin is not activating it.
-
-From a checkout, the same three commands work after copying `zvec-memory/` into
-`$HERMES_HOME/plugins/`:
-
-```sh
-HERMES_TARGET="${HERMES_HOME:-$HOME/.hermes}"
-test ! -e "$HERMES_TARGET/plugins/zvec-memory" &&
-  cp -R zvec-memory "$HERMES_TARGET/plugins/zvec-memory"
+RELEASE_SHA="$(git rev-list -n1 v0.3.0)"
+hermes plugins install 'https://github.com/r0b0tlab/hermes-zvec-memory#zvec-memory' --ref "$RELEASE_SHA"
 hermes memory setup zvec-memory
+hermes zvec-memory status --json
+hermes zvec-memory doctor --json
 ```
 
-Upgrading is one gated command — see `docs/maintenance.md`:
+The qualified setup prerequisite is an already provisioned, exact
+`@zvec/zvec-grep@0.2.2` runtime in a stable user-owned prefix and the cached
+`local/potion-retrieval-32m` model. Setup verifies the real package/executable,
+creates and reads back its launcher/unit/manifest, writes private canonical
+JSON and publishes `memory.provider`. It does not fetch dependencies or start,
+reload or restart a service. A fresh network/bootstrap install is not covered
+by the isolated qualification. Never use a test checkout as a production SDK.
 
-```sh
-cd ~/hermes-zvec-memory && python scripts/upgrade.py --dry-run && python scripts/upgrade.py
-```
+The explicit fetching command is `hermes zvec-memory engine install`; custom
+provider CLI discovery requires the provider already be selected. Do not assume
+this command is exposed before initial selection/setup. Existing-SDK engine
+verification was exercised; a fresh npm download was not.
 
-Engine requirements for a manual install: Node.js >=22 and
-`@zvec/zvec-grep@0.2.2`, a local embedding model (default
-`local/potion-retrieval-32m`), and POSIX filesystem locking (Linux tested; macOS
-not yet exercised; Windows unsupported by the process-safe transaction layer).
-On systems where sharp attempts an unwanted build against global libvips, use
-`SHARP_IGNORE_GLOBAL_LIBVIPS=1` for the npm install. Never install Python
-dependencies into the operating system's Python.
+Start a fresh Hermes session after setup. The generated launcher can run the
+local engine directly when no daemon is present. If a managed daemon is wanted,
+loading/starting its unit is a separately authorized operator service action,
+not something performed by this release. An unloaded service legitimately makes
+`doctor` unhealthy; `status` is informational and returns 0. Neither result
+certifies production service health. Reindex returns durable **requested, not
+completed** intent; verify a later session consumes it and cites real sources.
 
-Configure a stable absolute `zg_bin` path if zg is not on the Hermes process's
-PATH. A test checkout is not a suitable permanent production dependency path.
-Then use `hermes memory setup`, choose zvec-memory, and start a fresh session.
-The current conversation does not hot-swap its provider or tool schemas.
+The standalone `scripts/upgrade.py` is retired: all invocation forms return 2
+without running subprocesses or changing files. Use the host plugin manager at
+an exact approved revision. Automatic migration, provider backup/restore and
+historical standalone rollback recipes are unsupported; see
+[upgrade restrictions](docs/migration-0.3.0.md).
 
 ## Configuration
 
@@ -81,26 +92,22 @@ Canonical file: `$HERMES_HOME/zvec-memory/config.json`.
 
 Omit `vault` for the profile-local default. Relative vault paths are resolved
 against the active Hermes home; both `$HERMES_HOME` and `${HERMES_HOME}` expand.
-The declared desktop panel and provider setup use the same JSON store.
+Only CLI setup is supported. Desktop/F9 configuration is not declared, and the
+legacy generic configuration writer explicitly refuses before publication.
 
 If JSON is absent, legacy `plugins.zvec-memory` in config.yaml is read without
-modifying it. The first provider `save_config` preserves legacy values while
-writing JSON. Once JSON exists it is authoritative, even when empty: removed
-JSON keys do not reappear from legacy YAML. Malformed configuration raises
-instead of silently resetting user choices. Partial saves preserve other keys.
+modifying it. CLI setup preserves supported settings while writing JSON; there
+is no automatic migration during provider startup. Once JSON exists it is
+authoritative, even when empty. Malformed or unsupported selections refuse
+instead of silently resetting user choices. `migrate-config` refuses with exit 2.
 Use Hermes's config CLI for host settings such as `memory.provider`; never
 hand-edit the host YAML as part of plugin installation.
 
 `recall_limit` is bounded to 1–50. `context_chars` caps recall text including its
 heading/truncation marker. `preview` is `none`, `short`, or `full`.
-Changing embedding requires an explicit rebuild with the selected local model:
-
-```sh
-zg index --rebuild --embedding local/potion-retrieval-32m /absolute/vault
-```
-
-Do not use a remote model, credential, endpoint, or remote authorization grant
-unless the user explicitly agrees to send vault/query text off-machine.
+Changing embedding is unsupported in this release, including another local
+model. Explicit null, empty, false, or remote selections also refuse. Omitting
+the setting selects `local/potion-retrieval-32m`.
 Model downloads require network; local retrieval itself needs no cloud account.
 
 ## Persistence and privacy
@@ -131,9 +138,8 @@ shutdown rather than claiming it was flushed.
 Built-in add/replace/remove notifications affect only mapped mirror-owned facts.
 A recovery journal protects interrupted mirror publication/deletion; recall is
 withheld while required native index cleanup remains incomplete. Ambiguous
-legacy ownership is not guessed. Existing add-only legacy mirror files require
-an explicit operator-approved adoption through `migrate_legacy_mirrors(entries)`
-with exact path, target, and original content, followed by validation.
+legacy ownership is not guessed. Legacy mirror adoption is deferred;
+`migrate_legacy_mirrors(entries)` explicitly refuses before vault access.
 
 Removing a mirrored fact is NOT full erasure. Old text may remain in session
 history, backups, or snapshots. Do not promise a privacy deletion across those
@@ -185,9 +191,11 @@ Everyday maintenance (install, upgrade, rollback, versioned formats, recorded
 limits and troubleshooting) is documented in [`docs/maintenance.md`](docs/maintenance.md).
 
 In a fresh Hermes session, store a harmless fact and retrieve it by paraphrase,
-checking the cited file content. `backup_paths()` resolves custom vaults without
-initialization; Hermes itself decides which external locations are eligible for
-backup. A backup is not proven until its contents are inspected.
+checking the cited file content. Provider backup/restore is unsupported;
+`backup_paths()` explicitly refuses without resolving or initializing a vault.
+The host collector tolerates that refusal. This does not prevent the host's
+generic profile archive from including profile-local files; such an archive is
+not a qualified provider snapshot or restoration procedure.
 
 Offline tests require a Hermes checkout on `HERMES_AGENT_DIR` and a separate
 Python environment with the pinned test dependencies:
@@ -208,9 +216,11 @@ ZVEC_TEST_MODEL_CACHE=/absolute/test-model-cache \
 .venv/bin/python -m pytest tests/test_zg_native.py tests/test_provider_native.py -q
 ```
 
-These use synthetic data and temporary homes. Host-contract tests exercise the
-real loader, manager, declared config writer, and cold backup discovery without
-mocking the provider interface.
+These use synthetic data and temporary homes. Historical full-scope tests are
+preserved, including desktop/config, migration, backup, and model-switching
+oracles. They are not all applicable to this core. Final validation must list
+their explicit dispositions and execute the applicable core plus successor
+CLI/setup/refusal coverage; an excluded or unexecuted case is not PASS.
 
 ## Measurement, not speed claims
 

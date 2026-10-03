@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+from source_support import PROVIDER_ROOT
 import shutil
 import socket
 import subprocess
@@ -57,7 +58,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     destination = home / "plugins" / "zvec-memory"
-    shutil.copytree(REPO_ROOT / "zvec-memory", destination,
+    shutil.copytree(PROVIDER_ROOT / "zvec-memory", destination,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     discovery = importlib.import_module("plugins.memory")
     base = importlib.import_module("agent.memory_provider")
@@ -97,6 +98,8 @@ def managed(host, monkeypatch):
     def native(args, timeout):
         calls.append((list(args), timeout))
         assert provider._vault.resolve() == vault.resolve()
+        if args == ["--version"]:
+            return 0, "0.0.0-contract-fixture", ""
         if args[0] == "query":
             return 0, "facts/offline.md:1: Contract-only recall fixture", ""
         assert args[0] == "index", args
@@ -107,6 +110,7 @@ def managed(host, monkeypatch):
     manager.add_provider(provider)
     try:
         manager.initialize_all("initial-session", agent_context="primary")
+        assert provider._engine_state()["zg_version"] == "0.0.0-contract-fixture"
         assert provider._vault.resolve() == vault.resolve()
         assert (vault / "facts").is_dir()
         yield SimpleNamespace(manager=manager, provider=provider, vault=vault, calls=calls)
@@ -183,7 +187,11 @@ def test_manager_routes_json_tools_and_keeps_prompt_static(managed):
     path = Path(stored["path"])
     assert path.resolve().is_relative_to(managed.vault / "facts")
     assert "Contract fact stored through real manager" in path.read_text()
+    # Store acknowledges durable source/admission, not completed indexing.
+    assert managed.provider._index_worker.drain(5)
+    assert managed.provider._recall_token() is not None
     recalled = json.loads(manager.handle_tool_call("memory_search", {"query": "contract fact"}))
+    assert "results" in recalled, recalled
     assert "Contract-only recall fixture" in recalled["results"]
     assert any(args[0] == "query" for args, _ in managed.calls)
     assert manager.build_system_prompt() == before

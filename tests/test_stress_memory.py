@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from test_report_stress import ranked_hit_body
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/stress_memory.py"
@@ -114,7 +115,7 @@ def test_regression_error_retains_private_traceback(tmp_path, monkeypatch, missi
     receipt = json.loads((tmp_path / "iteration-0/receipt.json").read_text())
     assert report["completed_iterations"] == 0
     assert len(report["iterations"]) == 1
-    assert receipt["errors"]
+    assert receipt["diagnostic_errors"]
     assert "Traceback (most recent call last)" in receipt["traceback"]
     assert "FileNotFoundError" in receipt["traceback"]
     assert ("junit.xml" if missing_junit else "/proc/private-sentinel/task") in receipt["traceback"]
@@ -146,13 +147,22 @@ def test_native_regression_selects_real_tests(tmp_path, monkeypatch, capsys):
     assert "NODE_OPTIONS" in calls[0][1]
 
 
-@pytest.mark.parametrize("citation", ["facts/a.md:7", "matchedBy=fts facts/a.md:1-8"])
-def test_native_queries_accept_real_citation_formats(citation):
+@pytest.mark.parametrize("citation", ["facts/a.md:7", "facts/a.md:1-8"])
+def test_native_queries_accept_real_citation_formats(tmp_path, citation):
     s = module()
     wanted = s.expected("run", 1, 2)
+    (tmp_path / "facts").mkdir()
+    source = "\n" * 6 + wanted[0] + "\n"
+    (tmp_path / "facts/a.md").write_text(source)
+    # Both pinned range forms carry an envelope and the whole cited range;
+    # the old 1-8 fixture showing only line 7 was incomplete evidence.
+    preview = ("7\t" + wanted[0] if citation.endswith(":7") else
+               "\n".join(f"{n}\t{line}" for n, line in enumerate(source.split("\n"), 1)))
     class Reader:
+        _vault = tmp_path
         def handle_tool_call(self, name, args):
-            return json.dumps({"results": "query\n#1 " + citation + "\n" + wanted[0]})
+            return json.dumps({"results": (f"query groups (1):\nQ1 [supplemental]: {args['query']}\n"
+                f"hits: 1\n\n#1 matchedBy=fts {citation}\nsource:\n{preview}").strip()})
     result = {"errors": [], "queries": []}
     s.native_queries(Reader(), wanted, result)
     assert result["errors"] == []
@@ -496,9 +506,12 @@ def test_internal_worker_scrubs_even_direct_invocation(tmp_path, monkeypatch):
 def test_native_negative_hits_fail(tmp_path):
     s = module()
     content = s.fact("run", 0, 0, True)
+    (tmp_path / "facts").mkdir()
+    (tmp_path / "facts/a.md").write_text(content)
     class Reader:
+        _vault = tmp_path
         def handle_tool_call(self, *a):
-            return json.dumps({"results": "query\n#1 facts/a.md:1\n" + content})
+            return json.dumps({"results": ranked_hit_body("SYNTHETIC", content)})
     result = {"errors": [], "queries": []}
     s.native_queries(Reader(), [], result, forbidden=[content])
     assert result["errors"]
@@ -846,3 +859,391 @@ def test_exact_oracle():
     assert s.validate_state(good | {"refresh_required": True}, wanted[:1])
     assert s.hit_body("query groups (1):\nQ1: answer\nhits: 0\n") == ""
     assert s.hit_body("query\n#1 facts/a.md:7\nanswer") == "facts/a.md:7\nanswer"
+
+
+def test_native_query_receipts_bind_each_oracle(tmp_path):
+    import hashlib
+    s = module()
+    wanted = s.expected("fixture", 1, 2)
+    forbidden = [s.fact("fixture", 0, 0, revised) for revised in (False, True)]
+    (tmp_path / "facts").mkdir()
+    (tmp_path / "facts/a.md").write_text(wanted[0])
+    class Reader:
+        _vault = tmp_path
+        def handle_tool_call(self, name, args):
+            return json.dumps({"results": ranked_hit_body(args["query"], wanted[0])})
+    result = {"errors": [], "queries": []}
+    s.native_queries(Reader(), wanted, result, forbidden)
+    assert result["queries"][0]["expected_sha256"] == hashlib.sha256(wanted[0].encode()).hexdigest()
+    assert [q["forbidden_sha256"] for q in result["negative_queries"]] == [
+        hashlib.sha256(text.encode()).hexdigest() for text in forbidden]
+    assert all(q["chars"] == len(q["response"]["results"]) for q in result["negative_queries"])
+
+
+@pytest.mark.parametrize("damage", ["missing", "wrong_text", "wrong_line", "escape", "symlink", "shape", "overflow"])
+def test_native_queries_resolve_cited_numbered_source(tmp_path, damage):
+    s = module()
+    content = s.fact("fixture", 0, 1, True)
+    (tmp_path / "facts").mkdir()
+    path = tmp_path / "facts/a.md"
+    path.write_text(content)
+    citation = "facts/a.md:1"
+    if damage == "missing": path.unlink()
+    elif damage == "wrong_text": path.write_text("not the answer")
+    elif damage == "wrong_line": citation = "facts/a.md:2"
+    elif damage == "escape": citation = "facts/../../outside.md:1"
+    elif damage == "symlink":
+        path.unlink()
+        (tmp_path / "outside.md").write_text(content)
+        path.symlink_to(tmp_path / "outside.md")
+    class Reader:
+        _vault = tmp_path
+        def handle_tool_call(self, *a):
+            text = ranked_hit_body("SYNTHETIC", content, citation)
+            if damage == "shape": text = [text]
+            elif damage == "overflow": text += "x" * 2000
+            return json.dumps({"results": text})
+    result = {"errors": [], "queries": []}
+    s.native_queries(Reader(), [content], result)
+    assert result["errors"], "a claimed citation must resolve to exact source lines"
+
+
+def test_malformed_native_attempt_exports_without_invented_char_metric(tmp_path):
+    from test_report_stress import tool, report
+    s = module()
+    class Reader:
+        _vault = tmp_path
+        def handle_tool_call(self, *a): return json.dumps({"results": []})
+    observed = {"errors": [], "queries": []}
+    s.native_queries(Reader(), [s.fact("fixture", 0, 1, True)], observed)
+    raw = report([.1], passed=False)
+    raw.update(mode="native", recovery=observed)
+    result = tool().aggregate([raw])
+    assert result["failed_attempts"] == 1
+    assert result["runs"][0]["query_chars"]["count"] == 0
+    assert result["runs"][0]["query_seconds"]["count"] == 1
+
+
+def test_regression_receipts_separate_junit_and_diagnostics(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    def command(cmd, *args):
+        Path(cmd[cmd.index("--junitxml")+1]).write_text(
+            '<testsuite tests="1" skipped="0" failures="0" errors="0"/>')
+        return 0
+    monkeypatch.setattr(s, "run_command", command)
+    result = {"errors": []}
+    s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=1, timeout=1), result)
+    row = result["iterations"][0]
+    assert row["errors"] == 0
+    assert row["diagnostic_errors"] == []
+
+
+def test_post_spawn_tracking_failure_is_owned(tmp_path, monkeypatch):
+    s = module()
+    created = []
+    real_popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        created.append(child)
+        return child
+
+    def fail_tracking(child):
+        raise RuntimeError("injected identity acquisition failure")
+
+    monkeypatch.setattr(s.subprocess, "Popen", spawn)
+    monkeypatch.setattr(s, "track_child", fail_tracking)
+    stranger = real_popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="identity acquisition"):
+            s.run_command(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                s.environment(tmp_path, ROOT), tmp_path / "child.log", 1,
+            )
+        assert len(created) == 1
+        assert created[0].returncode is not None
+        assert not Path(f"/proc/{created[0].pid}").exists()
+        assert stranger.poll() is None
+    finally:
+        for child in [*created, stranger]:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=2)
+
+
+@pytest.mark.parametrize("fault", ["later_tracking", "first_cleanup"])
+def test_peer_failure_cleans_every_spawned_child(tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
+    s = module()
+    created = []
+    real_popen, real_track, real_cleanup = subprocess.Popen, s.track_child, s.cleanup_owned
+    def spawn(*args, **kwargs):
+        child = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+        created.append(child)
+        return child
+    def track(child):
+        if fault == "later_tracking" and len(created) == 2:
+            raise RuntimeError("later peer tracking failed")
+        return real_track(child)
+    def cleanup(child, *args):
+        if fault == "first_cleanup" and child is created[0]:
+            raise RuntimeError("first peer cleanup failed")
+        return real_cleanup(child, *args)
+    monkeypatch.setattr(s.subprocess, "Popen", spawn)
+    monkeypatch.setattr(s, "track_child", track)
+    monkeypatch.setattr(s, "cleanup_owned", cleanup)
+    monkeypatch.setattr(s, "poll_owned", lambda child: 9)
+    args = SimpleNamespace(seed_facts=0, mode="offline", workers=2, records=1,
+                           timeout=1, recovery_timeout=1, shutdown_policy="immediate")
+    result = {"errors": [], "workers": []}
+    try:
+        s.load_campaign(tmp_path, args, result)
+        assert result["errors"]
+        assert len(created) == 2
+        assert all(child.returncode is not None for child in created)
+        assert all(not Path(f"/proc/{child.pid}").exists() for child in created)
+    finally:
+        for child in created:
+            if child.poll() is None: child.kill()
+            child.wait(timeout=2)
+            for fd in getattr(child, "_stress_handles", {}).values():
+                try: s.os.close(fd)
+                except OSError: pass
+
+
+@pytest.mark.parametrize("fault", ["register", "signal", "close", "wait"])
+def test_cleanup_attempts_every_pinned_identity_after_fault(monkeypatch, fault):
+    import select
+    from types import SimpleNamespace
+    s = module()
+    calls = {"signal": [], "close": [], "wait": []}
+    class Poller:
+        def register(self, fd, flags):
+            if fault == "register": raise RuntimeError("registration fault")
+        def poll(self, timeout): return []
+        def unregister(self, fd): pass
+    monkeypatch.setattr(select, "poll", Poller)
+    def send(fd, sig):
+        calls["signal"].append(fd)
+        if fault == "signal" and fd == 11: raise PermissionError("signal fault")
+    def close(fd):
+        calls["close"].append(fd)
+        if fault == "close" and fd == 11: raise OSError("close fault")
+    def waitid(kind, fd, flags):
+        calls["wait"].append(fd)
+        if fault == "wait" and fd == 12: raise OSError("wait fault")
+        return SimpleNamespace(si_pid=fd)
+    monkeypatch.setattr(s.signal, "pidfd_send_signal", send)
+    monkeypatch.setattr(s.os, "close", close)
+    monkeypatch.setattr(s.os, "waitid", waitid)
+    monkeypatch.setattr(select, "select", lambda *a: ([], [], []))
+    ticks = iter(range(100))
+    monkeypatch.setattr(s.time, "monotonic", lambda: next(ticks))
+    child = SimpleNamespace(pid=101, returncode=0, _stress_handles={101:11, 102:12, 103:13},
+                            poll=lambda: 0, wait=lambda **k: 0)
+    with pytest.raises(RuntimeError): s.cleanup_owned(child)
+    assert calls["signal"] == [11, 12, 13]
+    assert 13 in calls["wait"], "a failed wait must not skip later identities"
+    assert 13 in calls["close"], "a failed close must not skip later descriptors"
+
+
+def test_cleanup_deadline_retains_unresolved_identity(tmp_path, monkeypatch):
+    import time
+    s = module()
+    child = s.track_child(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                           start_new_session=True))
+    descriptors = dict(child._stress_handles)
+    monkeypatch.setattr(s.signal, "pidfd_send_signal", lambda *args: None)
+    began = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="unresolved=1"):
+            s.cleanup_owned(child)
+        assert 1.5 <= time.monotonic() - began < 3
+        assert child._stress_handles == descriptors
+        assert child._stress_unresolved == [child.pid]
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait(timeout=2)
+        for fd in descriptors.values(): s.os.close(fd)
+
+
+@pytest.mark.parametrize("adoption", ["delayed", "unresolved", "parent_reaped"])
+def test_cleanup_retains_readable_zombie_until_reaped(monkeypatch, adoption):
+    import select
+    from types import SimpleNamespace
+    s = module()
+    closed, reaped, rounds = [], [], [0]
+    clock = [0.0]
+    class Poller:
+        def register(self, *a): pass
+        def unregister(self, *a): pass
+        def poll(self, timeout):
+            flags = select.POLLIN | (select.POLLHUP if adoption == "parent_reaped" else 0)
+            return [(13, flags)]
+    monkeypatch.setattr(select, "poll", Poller)
+    def select_ready(readers, writers, exceptional, timeout):
+        if not readers: clock[0] += timeout
+        return ([13] if readers else [], [], [])
+    monkeypatch.setattr(select, "select", select_ready)
+    monkeypatch.setattr(s.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(s.time, "sleep", lambda dt: clock.__setitem__(0, clock[0] + dt))
+    monkeypatch.setattr(s.signal, "pidfd_send_signal", lambda *a: None)
+    monkeypatch.setattr(s.os, "close", closed.append)
+    def waitid(kind, fd, flags):
+        if fd == 12:
+            rounds[0] += 1
+            if rounds[0] < 3: return None
+        elif fd == 13 and (rounds[0] < 3 or adoption != "delayed"):
+            raise ChildProcessError("dead but still belongs to intermediate parent")
+        reaped.append(fd)
+        return SimpleNamespace(si_pid=fd)
+    monkeypatch.setattr(s.os, "waitid", waitid)
+    child = SimpleNamespace(pid=101, returncode=0, _stress_handles={101: 11, 102: 12, 103: 13})
+    if adoption == "unresolved":
+        with pytest.raises(RuntimeError, match="unresolved=1"): s.cleanup_owned(child)
+        assert child._stress_handles == {103: 13}
+        assert 13 not in closed
+        assert 2 <= clock[0] < 2.1
+    else:
+        s.cleanup_owned(child)
+        assert child._stress_handles == {}
+        assert 13 in closed
+        if adoption == "delayed": assert 13 in reaped, "death is not adoption/reaping"
+
+
+def test_cleanup_real_zombie_adopted_after_echild(tmp_path, monkeypatch):
+    """Real Linux pidfds/waits; delay only the owned intermediate's KILL."""
+    import os
+    import time
+    s = module()
+    s.enable_subreaper()
+    ready = tmp_path / "nested.json"
+    code = f'''
+import os, time, pathlib, json
+middle = os.fork()
+if middle == 0:
+    zombie = os.fork()
+    if zombie == 0: os._exit(0)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if pathlib.Path(f"/proc/{{zombie}}/stat").read_text().rsplit(") ", 1)[1].startswith("Z "): break
+        time.sleep(.005)
+    pathlib.Path({str(ready)!r}).write_text(json.dumps([os.getpid(), zombie]))
+time.sleep(20)
+'''
+    child = s.track_child(subprocess.Popen([sys.executable, "-I", "-c", code], start_new_session=True))
+    stranger = subprocess.Popen([sys.executable, "-I", "-c", "import time;time.sleep(20)"], start_new_session=True)
+    original_wait, original_send = os.waitid, s.signal.pidfd_send_signal
+    descendants, delayed, echild = [], [], []
+    try:
+        deadline = time.monotonic() + 3
+        while not ready.exists() and time.monotonic() < deadline: time.sleep(.005)
+        assert ready.exists()
+        descendants = json.loads(ready.read_text())
+        middle, zombie = descendants
+        s.observe_descendants(child)
+        assert set(descendants) <= child._stress_handles.keys()
+        middle_fd, zombie_fd = (child._stress_handles[p] for p in descendants)
+        def send(fd, sig):
+            if fd == middle_fd: delayed.append((fd, sig))
+            else: original_send(fd, sig)
+        def wait(kind, fd, flags):
+            try: return original_wait(kind, fd, flags)
+            except ChildProcessError:
+                if fd == zombie_fd:
+                    echild.append(fd)
+                    for args in delayed: original_send(*args)
+                    delayed.clear()
+                raise
+        monkeypatch.setattr(s.signal, "pidfd_send_signal", send)
+        monkeypatch.setattr(s.os, "waitid", wait)
+        began = time.monotonic()
+        s.cleanup_owned(child)
+        assert time.monotonic() - began < 3
+        assert echild, "test must exercise not-yet-adopted zombie"
+        assert not any(Path(f"/proc/{pid}").exists() for pid in [child.pid, *descendants])
+        assert child._stress_handles == {}
+        assert stranger.poll() is None
+    finally:
+        for fd, sig in delayed:
+            try: original_send(fd, sig)
+            except ProcessLookupError: pass
+        for p in (child, stranger):
+            if p.poll() is None: p.kill()
+            p.wait(timeout=2)
+        for pid in descendants:
+            try: os.waitpid(pid, 0)
+            except ChildProcessError: pass
+        for fd in child._stress_handles.values():
+            try: os.close(fd)
+            except OSError: pass
+
+
+def test_shutdown_duration_survives_failure(monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    ticks = iter([10.0, 12.5])
+    monkeypatch.setattr(s.time, "monotonic", lambda: next(ticks))
+
+    def fail():
+        raise RuntimeError("shutdown fault")
+
+    obj = SimpleNamespace(
+        shutdown=fail, _disk_worker=None, _index_worker=None
+    )
+    receipt = {"errors": [], "admission_seconds": 1.0, "drain_seconds": 3.0}
+    s.close_provider(obj, receipt)
+    assert receipt["shutdown_seconds"] == 2.5
+    assert receipt["shutdown_failed"] is True
+    assert receipt["admission_seconds"] == 1.0
+    assert receipt["drain_seconds"] == 3.0
+    assert receipt["errors"]
+
+
+def test_worker_environment_contains_precollection_roots(tmp_path):
+    s = module()
+    s.prepare_home(tmp_path)
+    env = s.environment(tmp_path, ROOT)
+    for name in ("TMPDIR", "XDG_STATE_HOME", "HERMES_ZVEC_RUNTIME_DIR", "HERMES_ZVEC_MODEL_CACHE"):
+        assert Path(env[name]).is_relative_to(tmp_path)
+        assert Path(env[name]).is_dir()
+    assert env["ZVEC_TEST_ROOT"] == str(tmp_path)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+
+
+def test_regression_original_spawn_disables_ambient_python(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    observed = []
+    def command(cmd, env, *args):
+        observed.append(cmd)
+        Path(cmd[cmd.index("--junitxml")+1]).write_text('<testsuite tests="1" skipped="0" failures="0" errors="0"/>')
+        return 0
+    monkeypatch.setattr(s, "run_command", command)
+    s.regression_campaign(tmp_path, SimpleNamespace(lane="regression", iterations=1, timeout=1), {"errors": []})
+    assert observed[0][1:3] == ["-I", "-B"]
+
+
+def test_paired_workers_use_identical_corpus_despite_private_run_names(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    s = module()
+    observed = []
+    def provider(run, *args):
+        batch=[]; observed.append(batch)
+        def notify(*args): batch.append(args)
+        def store(name, arguments):
+            batch.append((name,arguments["content"]))
+            return json.dumps({"status":"stored","path":str(run/"fixture-control.md")})
+        return SimpleNamespace(on_memory_write=notify,handle_tool_call=store)
+    monkeypatch.setattr(s,"provider",provider)
+    monkeypatch.setattr(s,"pipeline_pending",lambda obj: {})
+    monkeypatch.setattr(s,"close_provider",lambda *a: None)
+    for name in ("stress-baseline-random","stress-fixed-random"):
+        run=tmp_path/name;run.mkdir()
+        assert s.worker(run,0,2,"offline") == 0
+    assert observed[0] == observed[1], "random temporary directory names must not change paired corpus bytes"

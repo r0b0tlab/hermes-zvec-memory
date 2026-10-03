@@ -1,0 +1,467 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "label": "native-repeat-2",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "native-regression",
+        "--iterations",
+        "2",
+        "--timeout",
+        "180",
+        "--campaign-timeout",
+        "600"
+      ],
+      "timeout_s": 645,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-repeat-10",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "native-regression",
+        "--iterations",
+        "10",
+        "--timeout",
+        "180",
+        "--campaign-timeout",
+        "1800"
+      ],
+      "timeout_s": 1845,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "fault-repeat-10",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "regression",
+        "--iterations",
+        "10",
+        "--timeout",
+        "120",
+        "--campaign-timeout",
+        "1500"
+      ],
+      "timeout_s": 1545,
+      "prerequisites": [
+        "python",
+        "host"
+      ],
+      "evidence": "fake-native-not-native-evidence"
+    },
+    {
+      "label": "native-1x20-immediate",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "1",
+        "--records",
+        "20",
+        "--shutdown-policy",
+        "immediate",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-1x20-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "1",
+        "--records",
+        "20",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-2x20-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "2",
+        "--records",
+        "20",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-4x20-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "4",
+        "--records",
+        "20",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-8x20-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "8",
+        "--records",
+        "20",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "native-8x200-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "8",
+        "--records",
+        "200",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "corpus-100",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "1",
+        "--records",
+        "5",
+        "--seed-facts",
+        "100",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "corpus-1000",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "1",
+        "--records",
+        "5",
+        "--seed-facts",
+        "1000",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "corpus-10000",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "native",
+        "--workers",
+        "1",
+        "--records",
+        "5",
+        "--seed-facts",
+        "10000",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--recovery-timeout",
+        "120",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "daemon-smoke",
+      "script": "soak_memory.py",
+      "args": [
+        "--duration",
+        "60",
+        "--seed-facts",
+        "200",
+        "--sample-interval",
+        "5",
+        "--convergence-timeout",
+        "120",
+        "--engine-restart-at",
+        "30"
+      ],
+      "timeout_s": 345,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "daemon-proof-5m",
+      "script": "soak_memory.py",
+      "args": [
+        "--duration",
+        "300",
+        "--seed-facts",
+        "200",
+        "--sample-interval",
+        "5",
+        "--convergence-timeout",
+        "120",
+        "--engine-restart-at",
+        "150"
+      ],
+      "timeout_s": 585,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "daemon-soak-30m-restart",
+      "script": "soak_memory.py",
+      "args": [
+        "--duration",
+        "1800",
+        "--seed-facts",
+        "200",
+        "--sample-interval",
+        "5",
+        "--convergence-timeout",
+        "120",
+        "--engine-restart-at",
+        "900"
+      ],
+      "timeout_s": 2085,
+      "prerequisites": [
+        "python",
+        "host",
+        "engine",
+        "models"
+      ],
+      "evidence": "native"
+    },
+    {
+      "label": "offline-1x20",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "offline",
+        "--workers",
+        "1",
+        "--records",
+        "20",
+        "--timeout",
+        "180",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host"
+      ],
+      "evidence": "fake-native-not-native-evidence"
+    },
+    {
+      "label": "offline-8x200-drain",
+      "script": "stress_memory.py",
+      "args": [
+        "--lane",
+        "load",
+        "--mode",
+        "offline",
+        "--workers",
+        "8",
+        "--records",
+        "200",
+        "--shutdown-policy",
+        "drain",
+        "--timeout",
+        "180",
+        "--campaign-timeout",
+        "360"
+      ],
+      "timeout_s": 405,
+      "prerequisites": [
+        "python",
+        "host"
+      ],
+      "evidence": "fake-native-not-native-evidence"
+    }
+  ]
+}

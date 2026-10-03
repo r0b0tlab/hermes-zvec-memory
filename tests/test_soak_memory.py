@@ -7,6 +7,7 @@ import sys
 import subprocess
 import time
 import pytest
+from test_retrieval_evidence import RANKED_CONTROLS, RANKED_COUNT_DAMAGE, RANKED_PREVIEW_DAMAGE
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("soak_memory", ROOT / "scripts/soak_memory.py")
@@ -113,27 +114,127 @@ def test_readiness_rejects_wrong_pid_or_token(tmp_path):
     assert not soak.ready_identity(dict(record, ready=False), 100, "url")
 
 
+def synthetic_native_boundary(self, args, timeout):
+    from test_report_stress import zero_hit_body
+    if args[0] == "index":
+        (self._vault / ".zvec-grep").mkdir(exist_ok=True)
+        (self._vault / ".zvec-grep/manifest.json").write_text("{}")
+        return 0, "indexed", ""
+    query = next((a.split("=", 1)[1] for a in args if a.startswith(("--fts=", "--hybrid="))), "")
+    hits = [p for p in (self._vault / "facts").glob("*.md") if query in p.read_text()]
+    if not hits: return 0, zero_hit_body(query), ""
+    # Match the inspected pinned formatter, including its terminal empty entry.
+    body = "query groups (1):\nQ1 [supplemental]: " + query + "\nhits: " + str(len(hits))
+    for i, path in enumerate(hits, 1):
+        lines = path.read_text().split("\n")
+        body += f"\n\n#{i} matchedBy=fts facts/{path.name}:1-{len(lines)}\nsource:\n" + "\n".join(
+            f"{n}\t{line}" for n, line in enumerate(lines, 1)) + "\n"
+    return 0, body, ""
+
+
+@pytest.mark.parametrize("probe", ["control", "deleted"])
+@pytest.mark.parametrize("damage", ["blank", "whitespace", "unrecognized", "incomplete", "missing_source", "invalid_json"])
+def test_soak_retains_invalid_attempt_without_ledger_coverage(tmp_path, monkeypatch, probe, damage):
+    from types import SimpleNamespace
+    from test_provider import ZvecMemoryProvider
+    from test_retrieval_evidence import native_fixture
+    from test_report_stress import tool, soak_report
+    response = {"results": {"blank": "", "whitespace": " \n\t", "unrecognized": "SYNTHETIC unsupported",
+                           "incomplete": "query groups (1):\nQ1 [supplemental]: SYNTHETIC\nhits: 0"}.get(damage, "")}
+    if damage == "missing_source": response = native_fixture()["response"]
+    if damage == "invalid_json": response = "SYNTHETIC non-JSON response"
+    original = ZvecMemoryProvider.handle_tool_call
+    def respond(self, name, args):
+        target = (args.get("query") == "soakcontrolanchor" if probe == "control" else
+                  args.get("query", "").startswith("soakslot") and not self._mirror_state()["records"])
+        if name == "memory_search" and target:
+            return response if isinstance(response, str) else json.dumps(response)
+        return original(self, name, args)
+    monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", synthetic_native_boundary)
+    monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(ZvecMemoryProvider, "handle_tool_call", respond)
+    def factory(run, number):
+        p = ZvecMemoryProvider(config={"vault": str(run / "vault"), "zg_bin": "/no/native",
+            "context_chars": 2000, "reindex_min_seconds": 0})
+        p.initialize(f"soak-{number}", hermes_home=str(tmp_path / "home/hermes"))
+        return p
+    args = SimpleNamespace(duration=.01, seed_facts=0, engine_restart_at=None,
+                           convergence_timeout=3, sample_interval=.05)
+    report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
+    daemon = SimpleNamespace(generation=1, process=SimpleNamespace(poll=lambda: None))
+    with pytest.raises((ValueError, RuntimeError, OSError)):
+        soak.workload(tmp_path, args, report, daemon, factory)
+    assert report["queries"], "failed attempted query must not disappear"
+    row = report["queries"][-1]
+    assert row["valid"] is False and row["response"] == response
+    assert row["probe"] == probe
+    assert row["key"] == ("soakcontrolanchor" if probe == "control" else "soakslot00")
+    assert row["phase"] in {"cold_start", "warm", "corpus_removal"} and row["generation"] == 1
+    assert ["queries", len(report["queries"])-1] not in report["ledger"]
+    # Even if copied into an otherwise complete ledger, an invalid attempt
+    # cannot stand in for the successful probe; raw query text stays private.
+    raw = soak_report()
+    query = next(q for q in raw["worker"]["queries"] if q["probe"] == probe)
+    query.update(row)
+    with pytest.raises(ValueError): tool().aggregate([raw])
+    raw["passed"] = False
+    assert "SYNTHETIC" not in json.dumps(tool().aggregate([raw]))
+
+
+@pytest.mark.parametrize("case", RANKED_CONTROLS + RANKED_COUNT_DAMAGE + RANKED_PREVIEW_DAMAGE)
+def test_soak_ledger_requires_complete_ranked_negative(tmp_path, monkeypatch, case):
+    from types import SimpleNamespace
+    from test_provider import ZvecMemoryProvider
+    from test_retrieval_evidence import ranked_negative_fixture, put_sources
+    original = ZvecMemoryProvider.handle_tool_call
+    responses = []
+    def respond(self, name, args):
+        if (name == "memory_search" and args.get("query", "").startswith("soakslot")
+                and not self._mirror_state()["records"]):
+            response, sources = ranked_negative_fixture(case, args["query"])
+            put_sources(self._vault, sources)
+            responses.append(response)
+            return json.dumps(response)
+        return original(self, name, args)
+    monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", synthetic_native_boundary)
+    monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
+    monkeypatch.setattr(ZvecMemoryProvider, "handle_tool_call", respond)
+    def factory(run, number):
+        p = ZvecMemoryProvider(config={"vault": str(run / "vault"), "zg_bin": "/no/native",
+            "context_chars": 2000, "reindex_min_seconds": 0})
+        p.initialize(f"soak-{number}", hermes_home=str(tmp_path / "home/hermes"))
+        return p
+    args = SimpleNamespace(duration=.01, seed_facts=0, engine_restart_at=None,
+                           convergence_timeout=3, sample_interval=.05)
+    report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
+    daemon = SimpleNamespace(generation=1, process=SimpleNamespace(poll=lambda: None))
+    if case in RANKED_CONTROLS:
+        soak.workload(tmp_path, args, report, daemon, factory)
+    else:
+        with pytest.raises(ValueError):
+            soak.workload(tmp_path, args, report, daemon, factory)
+    assert responses, "must reach the negative probe, not an earlier failure"
+    rows = [(i, q) for i, q in enumerate(report["queries"]) if q["response"] in responses]
+    assert rows
+    for index, row in rows:
+        assert row["probe"] == "deleted" and row["absent"] is True
+        assert row["valid"] is (case in RANKED_CONTROLS)
+        assert (["queries", index] in report["ledger"]) is (case in RANKED_CONTROLS)
+
+
 @pytest.mark.parametrize("restart_at", [None, 0])
-def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restart_at):
+@pytest.mark.parametrize("duration,seed_facts", [(.01, 0), (.4, 2)])
+def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restart_at, duration, seed_facts):
     import json
     from types import SimpleNamespace
     from test_provider import ZvecMemoryProvider
     calls = []
     def native_boundary(self, args, timeout):
         calls.append(args[0])
-        if args[0] == "index":
-            (self._vault / ".zvec-grep").mkdir(exist_ok=True)
-            (self._vault / ".zvec-grep/manifest.json").write_text("{}")
-            return 0, "indexed", ""
-        query = next((a.split("=", 1)[1] for a in args if a.startswith(("--fts=", "--hybrid="))), "")
-        hits = [p for p in (self._vault / "facts").glob("*.md") if query in p.read_text()]
-        body = "query groups (1):\nQ1: " + query + "\nhits: " + str(len(hits))
-        for i, path in enumerate(hits, 1):
-            body += f"\n#{i} facts/{path.name}:1\n" + path.read_text()
-        return 0, body, ""
+        return synthetic_native_boundary(self, args, timeout)
     monkeypatch.setattr(ZvecMemoryProvider, "_run_zg", native_boundary)
     monkeypatch.setattr(ZvecMemoryProvider, "is_available", lambda self: True)
-    args = SimpleNamespace(duration=.4, seed_facts=2, engine_restart_at=restart_at,
+    args = SimpleNamespace(duration=duration, seed_facts=seed_facts, engine_restart_at=restart_at,
                            convergence_timeout=3, sample_interval=.05)
     report = {"errors": [], "queries": [], "callbacks": [], "convergence": [], "restarts": []}
     class FakeDaemon:
@@ -162,6 +263,14 @@ def test_same_host_handles_churn_and_remove_corpus(tmp_path, monkeypatch, restar
         assert all(q["chars"] <= 2000 for q in report["prefetch"])
         assert "index" in calls
         assert not list((tmp_path / "vault/facts").glob("background-*.md"))
+        from test_report_stress import tool, soak_report
+        receipt = soak_report()
+        receipt.update(worker={**report, "passed": True}, arguments=vars(args))
+        assert report["ledger"], "ledger must be recorded by the actual workload"
+        if any(row["stage"] == "cleanup" for row in report["callbacks"]):
+            assert any(q["probe"] == "cleanup" and q["absent"] for q in report["queries"])
+        assert tool().aggregate([receipt])["passed"] is True
+        assert len([o for o in report["operations"] if o["action"] == "cycle_complete"]) == report["cycles"]
     finally:
         for p in handles:
             p.shutdown()
@@ -331,9 +440,9 @@ def test_soak_receipt_records_the_selected_runtime(tmp_path, monkeypatch):
     engine.write_text("#!/usr/bin/env node\n")
     engine.chmod(0o755)
     (tmp_path / "engine/package.json").write_text(json.dumps({"version": "0.2.2"}))
-    host = tmp_path / "repo/agent"
-    host.mkdir(parents=True)
-    (host / "memory_provider.py").write_text("")
+    from test_harness_support import fixture_host, fixture_product
+    fixture_product(tmp_path / "repo")
+    fixture_host(tmp_path / "repo")
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
@@ -365,8 +474,9 @@ def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch)
         "entrypoint": str(engine),
         "requested_native_threads": {"queryThreads": 1, "optimizeThreads": 1},
         "observed_total_threads": 61, "source_sha256": "pin", "patched_sha256": "patched"}))
-    (repo / "agent").mkdir(parents=True)
-    (repo / "agent/memory_provider.py").write_text("")
+    from test_harness_support import fixture_host, fixture_product
+    fixture_product(tmp_path / "repo")
+    fixture_host(repo)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
                     "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
@@ -385,3 +495,154 @@ def test_soak_receipt_records_a_manifest_selected_runtime(tmp_path, monkeypatch)
     assert report["runtime"]["observed_total_threads"] == 61
     assert report["arguments"]["runtime_manifest"] == str(manifest)
     assert json.loads((run / "zg-runtime.json").read_text())["entrypoint"] == str(engine)
+
+
+@pytest.mark.parametrize("valid_package", [False, True])
+def test_installed_snapshot_provenance_precedes_soak_work(tmp_path, monkeypatch, capsys, valid_package):
+    from test_harness_support import fixture_host
+    root = fixture_host(tmp_path / "selected-host")
+    package = tmp_path / "engine"
+    entry = package / "dist/cli/index.js"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("// native boundary is never executed here\n")
+    (package / "package.json").write_text(json.dumps(
+        {"version": "0.2.2"} if valid_package else {}))
+    monkeypatch.setattr(soak, "HOST", root)
+    monkeypatch.setattr(soak, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(soak, "runtime_command", lambda *a: ([str(entry)], {"kind": "fixture"}))
+    calls = []
+    original_identity = soak.product_identity
+    def identity(source):
+        calls.append("plugin-provenance")
+        return original_identity(source)
+    monkeypatch.setattr(soak, "product_identity", identity)
+    def work(*args):
+        assert args[1][1:3] == ["-I", "-B"]
+        calls.append("worker")
+        assert calls[:-1] == ["plugin-provenance"], "provenance must precede executed work"
+        return {"passed": True, "errors": [], "worker": {"coverage": "retained"}}
+    monkeypatch.setattr(soak, "supervise", work)
+    code = soak.main(["--duration", "1"])
+    result = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    if valid_package:
+        assert code == 0, result
+        assert result["host_provenance"]["kind"] == "installed_snapshot"
+        assert "host_sha" not in result
+        assert result["worker"]["coverage"] == "retained"
+        assert calls == ["plugin-provenance", "worker"]
+    else:
+        assert code == 1 and "worker" not in calls
+    assert soak.HOST == root
+
+
+@pytest.mark.parametrize("boundary", ["supervisor", "daemon"])
+def test_tree_creation_failure_retains_child_ownership(tmp_path, monkeypatch, boundary):
+    created = []
+    popen = subprocess.Popen
+    def spawn(*args, **kwargs):
+        child = popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                      start_new_session=True)
+        created.append(child)
+        return child
+    def fail(*args): raise RuntimeError("injected tree acquisition failure")
+    monkeypatch.setattr(soak.subprocess, "Popen", spawn)
+    monkeypatch.setattr(soak, "ProcessTree", fail)
+    stranger = popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        env = soak.environment(tmp_path, 23456)
+        if boundary == "supervisor":
+            result = soak.supervise(tmp_path, ["unused"], env, budget=.1, interval=.05)
+            assert result["passed"] is False
+        else:
+            daemon = soak.Daemon(tmp_path, env)
+            with pytest.raises(RuntimeError, match="tree acquisition"):
+                daemon.start(time.monotonic() + 1)
+            assert daemon.log.closed
+        assert len(created) == 1 and created[0].returncode is not None
+        assert not Path(f"/proc/{created[0].pid}").exists()
+        assert stranger.poll() is None
+    finally:
+        for child in [*created, stranger]:
+            if child.poll() is None: child.kill()
+            child.wait(timeout=2)
+
+
+def test_tree_cleanup_signal_error_does_not_skip_other_identities(monkeypatch):
+    rows = {pid: {"pid": pid, "start_ticks": pid, "ppid": 1 if pid == 101 else 101,
+                  "pgrp": 101, "state": "S"} for pid in (101, 102, 103)}
+    monkeypatch.setattr(soak, "proc_rows", lambda: dict(rows))
+    tree = soak.ProcessTree(101)
+    tree.identities()
+    attempts, closed = [], []
+    monkeypatch.setattr(soak.os, "pidfd_open", lambda pid: pid)
+    monkeypatch.setattr(soak.os, "close", closed.append)
+    def send(fd, sig):
+        attempts.append(fd)
+        if len(attempts) == 1: raise PermissionError("injected signal refusal")
+        rows.pop(fd, None)
+    monkeypatch.setattr(soak.signal, "pidfd_send_signal", send)
+    with pytest.raises(RuntimeError): tree.stop(grace=0)
+    assert {101, 102, 103} <= set(attempts)
+    assert {101, 102, 103} <= set(closed)
+
+
+def owned_run(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    run = runs / "soak-owned"
+    run.mkdir(parents=True, mode=0o700)
+    marker = {"kind": "zvec-long-lived-soak", "version": 2, "repo": str(soak.ROOT), "port": 23456}
+    (run / "OWNER.json").write_text(json.dumps(marker))
+    (run / "token").write_text("fixture-token")
+    monkeypatch.setattr(soak, "RUNS", runs)
+    monkeypatch.setenv("HOME", str(run / "home"))
+    monkeypatch.setenv("HERMES_HOME", str(run / "home/hermes"))
+    monkeypatch.setenv("ZVEC_GREP_SERVER_URL", "http://127.0.0.1:29999/mcp")
+    return run, marker
+
+
+def test_direct_worker_environment_is_reconstructed_before_worker(tmp_path, monkeypatch):
+    run, _ = owned_run(tmp_path, monkeypatch)
+    poison = ("OPENAI_API_KEY", "HTTP_PROXY", "HTTPS_PROXY", "PYTHONPATH", "NODE_OPTIONS")
+    for name in poison: monkeypatch.setenv(name, "poison")
+    previous = dict(os.environ)
+    def work(selected, args, env):
+        assert selected == run and dict(os.environ) == env
+        assert not set(poison) & env.keys()
+        assert env["ZVEC_GREP_SERVER_URL"] == "http://127.0.0.1:23456/mcp"
+        for key in ("TMPDIR", "XDG_STATE_HOME"):
+            assert Path(env[key]).is_relative_to(run)
+        assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+        assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        return 0
+    monkeypatch.setattr(soak, "worker", work)
+    try:
+        assert soak.main(["--worker-run", str(run), "--duration", "1"]) == 0
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+
+
+@pytest.mark.parametrize("damage", ["wrong_kind", "wrong_repo", "boolean_port", "production_port", "missing", "malformed", "symlink_run", "symlink_marker", "symlink_token"])
+def test_direct_worker_refuses_invalid_owner_before_import(tmp_path, monkeypatch, damage):
+    run, marker = owned_run(tmp_path, monkeypatch)
+    candidate = run
+    if damage == "wrong_kind": marker["kind"] = "other"
+    elif damage == "wrong_repo": marker["repo"] = "/other"
+    elif damage == "boolean_port": marker["port"] = True
+    elif damage == "production_port": marker["port"] = 17999
+    (run / "OWNER.json").write_text(json.dumps(marker))
+    if damage == "missing": (run / "OWNER.json").unlink()
+    elif damage == "malformed": (run / "OWNER.json").write_text("broken")
+    elif damage == "symlink_run":
+        candidate = run.parent / "alias"
+        candidate.symlink_to(run, target_is_directory=True)
+    elif damage in {"symlink_marker", "symlink_token"}:
+        name = "OWNER.json" if damage == "symlink_marker" else "token"
+        source = run / name
+        target = tmp_path / "outside"
+        source.rename(target)
+        source.symlink_to(target)
+    monkeypatch.setattr(soak, "worker", lambda *a: pytest.fail("worker import reached"))
+    with pytest.raises(SystemExit) as exc:
+        soak.main(["--worker-run", str(candidate), "--duration", "1"])
+    assert exc.value.code == 2
