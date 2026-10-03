@@ -1,10 +1,9 @@
-# Reduced v0.3.0 core contract
+# Reduced v0.3.0 core contract (candidate, not qualification)
 
-This user-approved reduced contract supersedes older full-release requirements.
-Actual pinned-source core/CLI/native execution and scoped independent review
-are recorded in [validation](release-0.3.0-validation.md). Publication requires
-final integration acceptance and exact remote readback; production deployment is
-excluded. Historical failed or unexecuted obligations are not relabeled PASS.
+This user-approved reduced contract supersedes older full-release requirements
+in the retained candidate notes. Publication still requires actual final-source
+core acceptance and post-execution review. Nothing here marks an old failed or
+unexecuted obligation PASS.
 
 ## Supported target and retained behavior
 

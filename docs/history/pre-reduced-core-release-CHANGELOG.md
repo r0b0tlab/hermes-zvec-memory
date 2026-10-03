@@ -5,37 +5,27 @@ only remotely verified published tags identify releases. Unreleased sections
 below are not publication or deployment claims. Catalog pins retain the exact
 historical revision they describe until separately approved updates.
 
-## 0.3.0 — reduced core
+## 0.3.0 — UNRELEASED / SOURCE-ONLY / NOT_READY
 
-Native engine remains `@zvec/zvec-grep@0.2.2`. Release identity is the remotely
-verified annotated `v0.3.0` tag, not a candidate or harness SHA. Publication and
-production deployment are separate; this work does not deploy the plugin.
+Packaging successor of accepted local composition `343392d`; not committed,
+tagged, published, installed or activated by this work. Native engine remains
+`@zvec/zvec-grep@0.2.2`; this is the plugin candidate version only.
 
-- Retains local memory_search/memory_store, committed Markdown durability,
-  authoritative mirror identity, durable notifications, generation-fenced
-  indexing, pending-intent recovery and ordinary restart/worker cleanup.
-- Retains actual default-profile CLI setup, private JSON and activation
-  readback, complete status/doctor diagnostics and durable reindex admission.
-  Actual setup -> generated launcher -> store/search -> restart -> recall was
-  exercised on the pinned source host, without changing its real user service.
-- Refuses alternate/null/remote embedding selections and engine version changes
-  before side effects. Only the pinned local model is qualified.
-- Disables desktop/F9 and generic configuration writing; migration, legacy
-  adoption and provider backup/restore explicitly refuse. These are scope
-  restrictions, not claims that old broader-feature failures were fixed.
-- Adds 13 supported-model safety/recovery successor modules and an explicit,
-  source-bound 179-case scope manifest. Original tests and whole-suite failure
-  receipts remain preserved; no mixed safety file is blanket-excluded.
-- Verification includes 2022 integrated core offline passes, 26 native functional
-  passes, actual CLI dispatch/native composition, and a scoped 120-second soak.
-  No large-burst capacity, statistical speedup or long-term leak claim is made.
-- Requires the vault and all ancestors remain stationary while active; strict
-  protection against external concurrent directory renames is not promised.
+- Accepted source includes authoritative mirror identity, generation-safe
+  rebuild/refresh intent, cold authoritative settings, runtime/worker recovery,
+  complete CLI health/selection diagnostics, conflict-safe default-only managed
+  setup and private quiescent restore boundaries.
+- Tracked measurement/attempt/retrieval/export controls and installed MIT notice
+  are included. The standalone updater/rollback remains retired.
+- Retained 2036-pass offline results per host are scoped base history, not fresh
+  candidate certification. Full supported-host compatibility, real ownership,
+  native/model/resource, remaining measurements and the reduced same-handle
+  soak pair remain HOLD. No speedup, long-term stability or narrower release is
+  claimed. SERV-01 production repair remains excluded/not certified.
 
-See [release notes](docs/release-0.3.0-notes.md),
-[validation](docs/release-0.3.0-validation.md), and
-[upgrade restrictions](docs/migration-0.3.0.md). Prior unreleased/full-scope notes
-are preserved under `docs/history/` and are not current operator instructions.
+See [candidate notes](docs/release-0.3.0-notes.md),
+[gate reconciliation](docs/release-0.3.0-validation.md) and
+[migration/rollback boundaries](docs/migration-0.3.0.md).
 
 ## 0.2.1 — 2026-09-26
 

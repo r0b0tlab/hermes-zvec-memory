@@ -1,0 +1,2239 @@
+{
+  "schema_version": 1,
+  "scope": "reduced-core-v0.3.0",
+  "original_candidate_snapshot": "2294f1afc559537e07be8e368b257549bf9e5ebb",
+  "pinned_host_sha": "7239625ae1b786827c952a8ace41fa6fd7f2eec5",
+  "pins": {
+    "node": "26.8.1",
+    "engine": "0.2.2",
+    "embedding": "local/potion-retrieval-32m"
+  },
+  "stable_vault_required": true,
+  "original_full_offline_outcome": {
+    "passed": 1891,
+    "failed": 133,
+    "errors": 46,
+    "native_marker_deselected": 29,
+    "status": "FAIL_NOT_RELABELED"
+  },
+  "expected_disposition_counts": {
+    "successor-required": 120,
+    "deferred": 57,
+    "asset-replay": 2
+  },
+  "cases": [
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[077-fresh-committed-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[077-fresh-interrupted-replace-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[022-fresh-committed-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[022-fresh-interrupted-replace-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[077-existing-broad-committed-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_quiescent_host_archive_restore_cold_recovery_once[077-existing-broad-interrupted-replace-external-under-home]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_quiescent_host_archive_restore_cold_recovery_once",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_backup_restore.py::test_actual_host_archive_excludes_outside_user_home",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_backup_restore.py",
+        "function": "test_actual_host_archive_excludes_outside_user_home",
+        "sha256": "eb8174693d9739dd12df6d8bff8bb768f7d06393bc7aa8b4366398b595166b67"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_finish.py::test_migrate_config_dispatcher_uses_shared_settings_without_health[None]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_finish.py",
+        "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
+        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_finish.py::test_migrate_config_dispatcher_uses_shared_settings_without_health[{}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_finish.py",
+        "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
+        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_finish.py::test_migrate_config_dispatcher_uses_shared_settings_without_health[{\"context_chars\":0}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_finish.py",
+        "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
+        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_finish.py::test_migrate_config_dispatcher_uses_shared_settings_without_health[opaque-secret]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_finish.py",
+        "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
+        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_finish.py::test_migrate_config_dispatcher_uses_shared_settings_without_health[[]]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_finish.py",
+        "function": "test_migrate_config_dispatcher_uses_shared_settings_without_health",
+        "sha256": "91444f59dbda361bf57e2acc0f9b8bb5bce3461993a9522dd437de5cf41d6e1f"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_real_malformed_legacy_yaml_migration_is_private_json_without_publication[parser]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_real_malformed_legacy_yaml_migration_is_private_json_without_publication",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_real_malformed_legacy_yaml_migration_is_private_json_without_publication[scanner]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_real_malformed_legacy_yaml_migration_is_private_json_without_publication",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_handles_real_yaml_domain_family_without_source_leak[plugins: {zvec-memory: [private-source\\n-ParserError]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_handles_real_yaml_domain_family_without_source_leak[plugins:\\n  zvec-memory: @private-source\\n-ScannerError]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_handles_real_yaml_domain_family_without_source_leak[plugins: *private-source\\n-ComposerError]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_handles_real_yaml_domain_family_without_source_leak[plugins: private-source\\x00\\n-ReaderError]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_handles_real_yaml_domain_family_without_source_leak",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins: [private-source\\n-{}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins: [private-source\\n-{\"auto_extract\":false,\"context_chars\":0,\"unknown\":[1,\"keep\"]}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins: [private-source\\n-[]]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins: [private-source\\n-null]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins: [private-source\\n-not-json]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins:\\n\\tprivate-source\\n-{}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins:\\n\\tprivate-source\\n-{\"auto_extract\":false,\"context_chars\":0,\"unknown\":[1,\"keep\"]}]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins:\\n\\tprivate-source\\n-[]]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins:\\n\\tprivate-source\\n-null]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_migration_present_native_authority_never_parses_bad_legacy[plugins:\\n\\tprivate-source\\n-not-json]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_migration_present_native_authority_never_parses_bad_legacy",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_valid_legacy_yaml_migrates_losslessly_without_provider_or_health",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_valid_legacy_yaml_migrates_losslessly_without_provider_or_health",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_new_yaml_boundary_does_not_swallow_logic_assertions[settings]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_new_yaml_boundary_does_not_swallow_logic_assertions",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_health_io_finish.py::test_new_yaml_boundary_does_not_swallow_logic_assertions[yaml-parser]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_health_io_finish.py",
+        "function": "test_new_yaml_boundary_does_not_swallow_logic_assertions",
+        "sha256": "72d6eb4c4616e32f95deeabcc0ea7dffc570ee0d32431c5651b3f844a569137c"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-null]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-null]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-false]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-false]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-zero]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[native-zero]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-null]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-null]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-false]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-false]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-zero]",
+      "disposition": "successor-required",
+      "reason": "Falsey vault defaults, canonical cold target, native/legacy read privacy and no worker/path mutation remain required. Only incidental backup callback assertion becomes explicit NotImplementedError refusal.",
+      "successor_mapping": [
+        "tests/test_core_successor_cli_target_identity_finish.py::test_cold_provider_canonical_home_and_backup_share_falsey_default[legacy-zero]"
+      ],
+      "source_binding": {
+        "file": "tests/test_cli_target_identity_finish.py",
+        "function": "test_cold_provider_canonical_home_and_backup_share_falsey_default",
+        "sha256": "409a902ec769d80b7836c53c80f68d6d4df0e5404b9bd5894681095dbf4a9842"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_canonical_home_helper_fault_is_single_class_only_json[OSError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_canonical_home_helper_fault_is_single_class_only_json",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_canonical_home_helper_fault_is_single_class_only_json[ValueError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_canonical_home_helper_fault_is_single_class_only_json",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_canonical_home_helper_fault_is_single_class_only_json[TypeError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_canonical_home_helper_fault_is_single_class_only_json",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_canonical_home_helper_fault_is_single_class_only_json[RuntimeError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_canonical_home_helper_fault_is_single_class_only_json",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_migration_refuses_unknown_resolved_home[OSError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_migration_refuses_unknown_resolved_home",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_migration_refuses_unknown_resolved_home[ValueError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_migration_refuses_unknown_resolved_home",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_migration_refuses_unknown_resolved_home[TypeError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_migration_refuses_unknown_resolved_home",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_migration_refuses_unknown_resolved_home[RuntimeError-migrate-config]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_migration_refuses_unknown_resolved_home",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_cli_vault_finish.py::test_selection_assertion_errors_are_real_logic_errors_not_public_failures[migrate-config-home]",
+      "disposition": "deferred",
+      "reason": "This exact parameter calls the removed migrate-config/YAML migration dispatcher or a migration-only parser seam. Core CLI status/reindex path/privacy and shared-settings controls remain required in neighboring passing cases; migrate-config now refuses pre-I/O.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_cli_vault_finish.py",
+        "function": "test_selection_assertion_errors_are_real_logic_errors_not_public_failures",
+        "sha256": "9c6301f43a5850bbf42738f07834af76a1816ace18b0f5529bd0dcaeab4707ed"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine.py::test_post_setup_preserves_user_settings_and_records_the_launcher",
+      "disposition": "successor-required",
+      "reason": "Supported CLI setup must preserve user settings, vault token, launcher and idempotent mtime; only local/custom fixture identity is normalized to pinned model.",
+      "successor_mapping": [
+        "tests/test_core_successor_engine.py::test_post_setup_preserves_user_settings_and_records_the_launcher"
+      ],
+      "source_binding": {
+        "file": "tests/test_engine.py",
+        "function": "test_post_setup_preserves_user_settings_and_records_the_launcher",
+        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine.py::test_node_path_selected_for_install_readiness_and_launcher[path-0.2.3]",
+      "disposition": "deferred",
+      "reason": "Exact parameter requests engine 0.2.3; release admits only 0.2.2. Unchanged 0.2.2 path/explicit launcher controls remain required; fixed-version refusal already covered by core contract.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_engine.py",
+        "function": "test_node_path_selected_for_install_readiness_and_launcher",
+        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine.py::test_node_path_selected_for_install_readiness_and_launcher[explicit-0.2.3]",
+      "disposition": "deferred",
+      "reason": "Exact parameter requests engine 0.2.3; release admits only 0.2.2. Unchanged 0.2.2 path/explicit launcher controls remain required; fixed-version refusal already covered by core contract.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_engine.py",
+        "function": "test_node_path_selected_for_install_readiness_and_launcher",
+        "sha256": "d86e6847af1d7e71328a28b14196377145d3520cc2390161840fb2d76e1ab6b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine_metadata.py::test_fresh_explicit_install_honours_requested_version",
+      "disposition": "deferred",
+      "reason": "Exact parameter requests engine 0.2.3; release admits only 0.2.2. Unchanged 0.2.2 path/explicit launcher controls remain required; fixed-version refusal already covered by core contract.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_engine_metadata.py",
+        "function": "test_fresh_explicit_install_honours_requested_version",
+        "sha256": "6e3e188560acc91504b363cc67a751f1226be3622174279f0ce5256367a7c9b5"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[None]",
+      "disposition": "successor-required",
+      "reason": "Native authority/presence and supplied host plugin-block fallback must remain lossless on CLI post_setup. Normalize only embedding fixtures; retain falsey/unknown settings and native parameter workload.",
+      "successor_mapping": [
+        "tests/test_core_successor_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[None]"
+      ],
+      "source_binding": {
+        "file": "tests/test_engine_setup_finish.py",
+        "function": "test_shared_settings_presence_and_lossless_legacy_setup",
+        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[native1]",
+      "disposition": "successor-required",
+      "reason": "Native authority/presence and supplied host plugin-block fallback must remain lossless on CLI post_setup. Normalize only embedding fixtures; retain falsey/unknown settings and native parameter workload.",
+      "successor_mapping": [
+        "tests/test_core_successor_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[native1]"
+      ],
+      "source_binding": {
+        "file": "tests/test_engine_setup_finish.py",
+        "function": "test_shared_settings_presence_and_lossless_legacy_setup",
+        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[native2]",
+      "disposition": "successor-required",
+      "reason": "Native authority/presence and supplied host plugin-block fallback must remain lossless on CLI post_setup. Normalize only embedding fixtures; retain falsey/unknown settings and native parameter workload.",
+      "successor_mapping": [
+        "tests/test_core_successor_engine_setup_finish.py::test_shared_settings_presence_and_lossless_legacy_setup[native2]"
+      ],
+      "source_binding": {
+        "file": "tests/test_engine_setup_finish.py",
+        "function": "test_shared_settings_presence_and_lossless_legacy_setup",
+        "sha256": "98d1ae978f1614afae34e1b0ffe03b56bdf1a879d8da51e9f7d1b15a58fe80b9"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_host_contract.py::test_discovery_and_schema_are_cold_and_load_real_abc",
+      "disposition": "successor-required",
+      "reason": "Cold discovery, actual pinned host ABC, no state/import/thread creation remain required. Only intentionally absent desktop schema oracle is adapted to None.",
+      "successor_mapping": [
+        "tests/test_core_successor_host_contract.py::test_discovery_and_schema_are_cold_and_load_real_abc"
+      ],
+      "source_binding": {
+        "file": "tests/test_host_contract.py",
+        "function": "test_discovery_and_schema_are_cold_and_load_real_abc",
+        "sha256": "6f559c1c796aaec9353ab7aff6900ee0bf7fa4568333bd284c7de232b5923af3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_host_contract.py::test_declared_json_writer_routes_to_fresh_runtime",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_cli_setup_settings_roundtrip_preserves_native_authority"
+      ],
+      "source_binding": {
+        "file": "tests/test_host_contract.py",
+        "function": "test_declared_json_writer_routes_to_fresh_runtime",
+        "sha256": "6f559c1c796aaec9353ab7aff6900ee0bf7fa4568333bd284c7de232b5923af3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_host_contract.py::test_native_setup_save_merges_declared_json",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_cli_setup_settings_roundtrip_preserves_native_authority"
+      ],
+      "source_binding": {
+        "file": "tests/test_host_contract.py",
+        "function": "test_native_setup_save_merges_declared_json",
+        "sha256": "6f559c1c796aaec9353ab7aff6900ee0bf7fa4568333bd284c7de232b5923af3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_host_contract.py::test_host_cold_backup_includes_external_vault_without_initialize",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_host_contract.py",
+        "function": "test_host_cold_backup_includes_external_vault_without_initialize",
+        "sha256": "6f559c1c796aaec9353ab7aff6900ee0bf7fa4568333bd284c7de232b5923af3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_native_config_roundtrip",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_cli_setup_settings_roundtrip_preserves_native_authority"
+      ],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_native_config_roundtrip",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_explicit_empty_config_ignores_ambient",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_explicit_empty_config_ignores_cli_written_ambient"
+      ],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_explicit_empty_config_ignores_ambient",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_cold_backup_resolves_profile_paths[external]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_cold_backup_resolves_profile_paths",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_cold_backup_resolves_profile_paths[$HERMES_HOME/external]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_cold_backup_resolves_profile_paths",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_cold_backup_resolves_profile_paths[${HERMES_HOME}/external]",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_cold_backup_resolves_profile_paths",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_legacy_config_migrates_only_on_save",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_legacy_config_read_remains_cold_while_save_refuses"
+      ],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_legacy_config_migrates_only_on_save",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_corrupt_native_config_is_not_silently_replaced",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_cli_setup_corrupt_native_authority_not_silently_replaced"
+      ],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_corrupt_native_config_is_not_silently_replaced",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_legacy_mirror_ownership_requires_explicit_migration",
+      "disposition": "successor-required",
+      "reason": "Mixed original uses a deliberately unsupported generic save/desktop schema/migration write, but cold reads, explicit config isolation, settings preservation or unowned source integrity remain core. Successor uses actual supported CLI post_setup callback or explicit pre-I/O refusal, retaining core oracles.",
+      "successor_mapping": [
+        "tests/test_core_successor_settings_callbacks.py::test_legacy_unowned_fact_survives_migration_refusal"
+      ],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_legacy_mirror_ownership_requires_explicit_migration",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_provider.py::test_backup_paths",
+      "disposition": "deferred",
+      "reason": "Approved scope defers backup/restore and external archive enrollment; this exact assertion requires the intentionally refused backup callback. Ordinary source durability/recovery is not deferred.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_provider.py",
+        "function": "test_backup_paths",
+        "sha256": "9090a78532c57105007b1b1af8bc6e21bef4f70934420459cb6b1e592bf551b6"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_run_campaign.py::test_namespace_shell_does_not_expand_python_environment",
+      "disposition": "asset-replay",
+      "reason": "Original failure reaches harness execution/asset prerequisites (.venv/bin/python absent or native regression SDK source selection). Parent must stage owned SDK/interpreter assets and replay this exact ORIGINAL selector under original guard; no stamp or result may be invented.",
+      "successor_mapping": [
+        "tests/test_run_campaign.py::test_namespace_shell_does_not_expand_python_environment"
+      ],
+      "source_binding": {
+        "file": "tests/test_run_campaign.py",
+        "function": "test_namespace_shell_does_not_expand_python_environment",
+        "sha256": "6abfb13d01acc2bc452fb36e44e7ec1778613495d4502761d5fe6f3a4e62b476"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_startup_observation_must_not_replace_newer_live_intent[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_startup_observation_must_not_replace_newer_live_intent[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_startup_observation_must_not_replace_newer_live_intent",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_startup_observation_must_not_replace_newer_live_intent[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_startup_observation_must_not_replace_newer_live_intent[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_startup_observation_must_not_replace_newer_live_intent",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[waiting-exit]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[waiting-exit]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_independent_producer_refresh_survives_exit",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[rejected-exit]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[rejected-exit]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_independent_producer_refresh_survives_exit",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[drained-control]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_independent_producer_refresh_survives_exit[drained-control]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_independent_producer_refresh_survives_exit",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-store]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-store]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-session]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-session]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-extraction]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[debounced-extraction]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-store]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-store]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-session]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-session]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-extraction]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_source_producers_admit_before_local_scheduling[rejected-extraction]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_source_producers_admit_before_local_scheduling",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_adoption_failure_joins_the_captured_request[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_adoption_failure_joins_the_captured_request[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_adoption_failure_joins_the_captured_request",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_adoption_failure_joins_the_captured_request[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_adoption_failure_joins_the_captured_request[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_adoption_failure_joins_the_captured_request",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_failed_request_observation_is_not_permission_to_replace",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_failed_request_observation_is_not_permission_to_replace"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_failed_request_observation_is_not_permission_to_replace",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_idle_validation_does_not_advance_peer_mutation",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_idle_validation_does_not_advance_peer_mutation"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_idle_validation_does_not_advance_peer_mutation",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_probe_failure_cannot_supersede_observed_explicit_intent",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_probe_failure_cannot_supersede_observed_explicit_intent"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_probe_failure_cannot_supersede_observed_explicit_intent",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_admission_finish.py::test_later_source_survives_older_publication_and_rejected_followup",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_admission_finish.py::test_later_source_survives_older_publication_and_rejected_followup"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_admission_finish.py",
+        "function": "test_later_source_survives_older_publication_and_rejected_followup",
+        "sha256": "8d7beb97bc108238645ae67b4a8f911d77b9d95c9c864b0eb55e3fb3604e2fdf"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_contracts.py::test_identity_mismatch_dispatches_rebuild_and_model",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_contracts.py",
+        "function": "test_identity_mismatch_dispatches_rebuild_and_model",
+        "sha256": "8833c54c33dc4a2acc7e9f898464d3a1e723256590c45f2cbaa97247e0125b9b"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_contracts.py::test_older_completion_cannot_record_newer_model_identity",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_contracts.py",
+        "function": "test_older_completion_cannot_record_newer_model_identity",
+        "sha256": "8833c54c33dc4a2acc7e9f898464d3a1e723256590c45f2cbaa97247e0125b9b"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_exited_request_owner_cannot_be_acknowledged_by_stale_peer",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_exited_request_owner_cannot_be_acknowledged_by_stale_peer",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_new_intent_wins_after_snapshot_before_vault_lock",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_new_intent_wins_after_snapshot_before_vault_lock",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[None]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[None]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_marker_never_selects_executable_or_malformed_identity",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[identity1]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[identity1]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_marker_never_selects_executable_or_malformed_identity",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[identity2]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_marker_never_selects_executable_or_malformed_identity[identity2]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_marker_never_selects_executable_or_malformed_identity",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l2_recovery_dispatch_checks_model_before_relabeling",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l2_recovery_dispatch_checks_model_before_relabeling",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l2_stale_peer_incremental_refresh_preserves_shared_identity",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l2_stale_peer_incremental_refresh_preserves_shared_identity",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l2_delayed_snapshot_cannot_revert_completed_peer_identity",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l2_delayed_snapshot_cannot_revert_completed_peer_identity",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_completed_rebuild_invalidates_peer_cached_prefetch",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_completed_rebuild_invalidates_peer_cached_prefetch"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_completed_rebuild_invalidates_peer_cached_prefetch",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_completed_rebuild_fences_inflight_result",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_completed_rebuild_fences_inflight_result",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_completed_rebuild_fences_inflight_result[queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_completed_rebuild_fences_inflight_result",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_generation_publication_failure_cannot_acknowledge[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_generation_publication_failure_cannot_acknowledge[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_generation_publication_failure_cannot_acknowledge",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_generation_publication_failure_cannot_acknowledge[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_generation_publication_failure_cannot_acknowledge[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_generation_publication_failure_cannot_acknowledge",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l4_live_handles_reject_impossible_history_without_vault_wait[0]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l4_live_handles_reject_impossible_history_without_vault_wait[0]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l4_live_handles_reject_impossible_history_without_vault_wait",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l4_live_handles_reject_impossible_history_without_vault_wait[1]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l4_live_handles_reject_impossible_history_without_vault_wait[1]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l4_live_handles_reject_impossible_history_without_vault_wait",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l4_valid_allocated_history_remains_ready",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l4_valid_allocated_history_remains_ready"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l4_valid_allocated_history_remains_ready",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_rebuild_between_cache_lookup_and_return_is_fenced",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_rebuild_between_cache_lookup_and_return_is_fenced"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_rebuild_between_cache_lookup_and_return_is_fenced",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l12_stale_engine_version_never_discharges_or_relabels[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l12_stale_engine_version_never_discharges_or_relabels[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l12_stale_engine_version_never_discharges_or_relabels",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l12_stale_engine_version_never_discharges_or_relabels[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l12_stale_engine_version_never_discharges_or_relabels[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l12_stale_engine_version_never_discharges_or_relabels",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_worker_identity_admission_cannot_replace_newer_request",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_worker_identity_admission_cannot_replace_newer_request"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_worker_identity_admission_cannot_replace_newer_request",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l3_unmarked_rebuild_keeps_peer_gate_on_publication_failure",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l3_unmarked_rebuild_keeps_peer_gate_on_publication_failure"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l3_unmarked_rebuild_keeps_peer_gate_on_publication_failure",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l2_joining_pending_request_does_not_republish_stale_configuration",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l2_joining_pending_request_does_not_republish_stale_configuration",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[{\"identity\":]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[{\"identity\":]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_malformed_structured_request_is_not_legacy_intent",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[{\"request_id\":]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[{\"request_id\":]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_malformed_structured_request_is_not_legacy_intent",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[[]]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[[]]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_malformed_structured_request_is_not_legacy_intent",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[null]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review.py::test_l1_malformed_structured_request_is_not_legacy_intent[null]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review.py",
+        "function": "test_l1_malformed_structured_request_is_not_legacy_intent",
+        "sha256": "7b70e59958c13be1b5ac50e6d06b7cf58e6a4f5d27f34784247cec0125e8cb47"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_adoption.py::test_legacy_adoption_cannot_overwrite_completed_peer_identity",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_adoption.py::test_legacy_adoption_cannot_overwrite_completed_peer_identity"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_adoption.py",
+        "function": "test_legacy_adoption_cannot_overwrite_completed_peer_identity",
+        "sha256": "d4a6567cf0e46be07d4401580e54434a5a4dc7c414c43e33c7e4478e897d491e"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_adoption.py::test_busy_legacy_adoption_defers_without_inline_version_or_write",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_adoption.py::test_busy_legacy_adoption_defers_without_inline_version_or_write"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_adoption.py",
+        "function": "test_busy_legacy_adoption_defers_without_inline_version_or_write",
+        "sha256": "d4a6567cf0e46be07d4401580e54434a5a4dc7c414c43e33c7e4478e897d491e"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_gate_publication_fault_never_dispatches_native[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_gate_publication_fault_never_dispatches_native[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_gate_publication_fault_never_dispatches_native",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_gate_publication_fault_never_dispatches_native[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_gate_publication_fault_never_dispatches_native[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_gate_publication_fault_never_dispatches_native",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-journal]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-journal]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-request_ack]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-request_ack]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-refresh_ack]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[False-refresh_ack]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-journal]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-journal]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-request_ack]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-request_ack]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-refresh_ack]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_post_generation_fault_retains_gate_or_proves_new_generation[True-refresh_ack]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_post_generation_fault_retains_gate_or_proves_new_generation",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_continuation_arriving_at_refresh_unlink_survives",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_continuation_arriving_at_refresh_unlink_survives"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_continuation_arriving_at_refresh_unlink_survives",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_malformed_refresh_obligation_is_retained",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[[]]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[[]]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_malformed_refresh_obligation_is_retained",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{}]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{}]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_malformed_refresh_obligation_is_retained",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{\"request_id\":\"r\",\"identity\":null}]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{\"request_id\":\"r\",\"identity\":null}]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_malformed_refresh_obligation_is_retained",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{\"request_id\":\"r\",\"operation\":\"first\"}]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_malformed_refresh_obligation_is_retained[{\"request_id\":\"r\",\"operation\":\"first\"}]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_malformed_refresh_obligation_is_retained",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_faults.py::test_refresh_alias_refusal_keeps_unrelated_bytes",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_faults.py::test_refresh_alias_refusal_keeps_unrelated_bytes"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_faults.py",
+        "function": "test_refresh_alias_refusal_keeps_unrelated_bytes",
+        "sha256": "b996617cc4a23e1e03a63fa1fbf5eae076cae62d7094ba812ac7774bd2f4bdbc"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[before-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[after-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[native-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-before-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-after-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-first]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-first]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-plain]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-plain]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-rebuild]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_uncertain_publication_survives_owner_exit_and_recovers[exit-native-rebuild]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_uncertain_publication_survives_owner_exit_and_recovers",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[False-queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_publication_fault_fences_inflight_peer[True-queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_publication_fault_fences_inflight_peer",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_publication.py::test_plain_continuation_rejection_retains_shared_work_after_shutdown",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_publication.py::test_plain_continuation_rejection_retains_shared_work_after_shutdown"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_publication.py",
+        "function": "test_plain_continuation_rejection_retains_shared_work_after_shutdown",
+        "sha256": "a2d25f05b127535707eb486308e3800886c2c431676917f701a6365cc09181d3"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_query_policy.py",
+        "function": "test_query_does_not_schedule_untracked_server_refresh",
+        "sha256": "50e082b48547960841ea1054ccde18b13f0f6578053aed48f4ad43adb35e4cea"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_query_policy.py",
+        "function": "test_query_does_not_schedule_untracked_server_refresh",
+        "sha256": "50e082b48547960841ea1054ccde18b13f0f6578053aed48f4ad43adb35e4cea"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_query_policy.py::test_query_does_not_schedule_untracked_server_refresh[queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_query_policy.py",
+        "function": "test_query_does_not_schedule_untracked_server_refresh",
+        "sha256": "50e082b48547960841ea1054ccde18b13f0f6578053aed48f4ad43adb35e4cea"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[version-queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[binary-queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_idle_peer_refuses_known_incompatible_identity[schema-queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_idle_peer_refuses_known_incompatible_identity",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_queued_query_rechecks_compatibility_before_native_dispatch",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_queued_query_rechecks_compatibility_before_native_dispatch"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_queued_query_rechecks_compatibility_before_native_dispatch",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_unprobed_version_validation_is_deferred_and_coalesced",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_unprobed_version_validation_is_deferred_and_coalesced"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_unprobed_version_validation_is_deferred_and_coalesced",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_unknown_identity_is_not_known_incompatibility[version]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_unknown_identity_is_not_known_incompatibility[version]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_unknown_identity_is_not_known_incompatibility",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_unknown_identity_is_not_known_incompatibility[legacy]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review2_recall.py::test_unknown_identity_is_not_known_incompatibility[legacy]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_unknown_identity_is_not_known_incompatibility",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review2_recall.py::test_same_engine_stale_embedding_can_query_peer_model",
+      "disposition": "deferred",
+      "reason": "Source oracle depends on genuinely DIFFERENT configured embeddings or a live model-selection transition; equal-model normalization would invalidate that oracle. Defer this exact case only, not runtime file, durable requests, publication or recovery.",
+      "successor_mapping": [],
+      "source_binding": {
+        "file": "tests/test_runtime_review2_recall.py",
+        "function": "test_same_engine_stale_embedding_can_query_peer_model",
+        "sha256": "4193d2302edb87cfac94793bb7b9483e0c0928ea2e44c7bbe03ae539e3495357"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[prefetch]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[prefetch]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_idle_old_engine_cannot_query_peer_rebuilt_index",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[search]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[search]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_idle_old_engine_cannot_query_peer_rebuilt_index",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[queued]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_idle_old_engine_cannot_query_peer_rebuilt_index[queued]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_idle_old_engine_cannot_query_peer_rebuilt_index",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_plain_refresh_publication_failure_closes_idle_peer[False]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_plain_refresh_publication_failure_closes_idle_peer[False]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_plain_refresh_publication_failure_closes_idle_peer",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_plain_refresh_publication_failure_closes_idle_peer[True]",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_plain_refresh_publication_failure_closes_idle_peer[True]"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_plain_refresh_publication_failure_closes_idle_peer",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_runtime_review_round2.py::test_legacy_adoption_cannot_overwrite_completed_peer_identity",
+      "disposition": "successor-required",
+      "reason": "Ordinary core safety/durability/recovery case blocked by old full-scope fixture identity or now-refused incidental callback. Preserve all parameter loops, faults, child exit/event/lock scheduling, pending-intent, generation/cache/read refusal and recovery oracles with supported model fixtures.",
+      "successor_mapping": [
+        "tests/test_core_successor_runtime_review_round2.py::test_legacy_adoption_cannot_overwrite_completed_peer_identity"
+      ],
+      "source_binding": {
+        "file": "tests/test_runtime_review_round2.py",
+        "function": "test_legacy_adoption_cannot_overwrite_completed_peer_identity",
+        "sha256": "4006d1c65a267e9e327d86ad65e78fc1b1a96e7b33341e5355a660e6ceaa5f26"
+      }
+    },
+    {
+      "original_nodeid": "tests/test_stress_memory.py::test_native_regression_selects_real_tests",
+      "disposition": "asset-replay",
+      "reason": "Original failure reaches harness execution/asset prerequisites (.venv/bin/python absent or native regression SDK source selection). Parent must stage owned SDK/interpreter assets and replay this exact ORIGINAL selector under original guard; no stamp or result may be invented.",
+      "successor_mapping": [
+        "tests/test_stress_memory.py::test_native_regression_selects_real_tests"
+      ],
+      "source_binding": {
+        "file": "tests/test_stress_memory.py",
+        "function": "test_native_regression_selects_real_tests",
+        "sha256": "8f528d9040e28d52535b54998b4d0a060962e58075fd05aa9f4b8565dd5cad4b"
+      }
+    }
+  ]
+}

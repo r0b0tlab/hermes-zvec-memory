@@ -1,14 +1,15 @@
 # hermes-zvec-memory
 
-> **0.3.0 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
-> tuple in [validation](docs/release-0.3.0-validation.md), with a mandatory
-> stationary-vault restriction. This is not the historical full-feature release.
-> Publication is a separate remote-readback gate; resolve the published tag
-> before installation. Production deployment and service changes were not made.
-> [Contract](docs/reduced-core-contract.md), [release notes](docs/release-0.3.0-notes.md)
-> and [upgrade restrictions](docs/migration-0.3.0.md) define the active scope.
-> Earlier candidate documents are preserved under `docs/history/`, not active
-> installation or recovery instructions.
+> **0.3.0 candidate: UNRELEASED / SOURCE-ONLY / NOT_READY.** This isolated
+> reduced-core successor is not approved for installation or activation yet.
+> The reduced CLI/core scope and stationary-vault restriction are authorized;
+> final changed-source execution and release qualification are still required.
+> [Reduced-core contract](docs/reduced-core-contract.md) supersedes the older
+> full-release scope statements; it does not relabel historical failures. See
+> [candidate notes](docs/release-0.3.0-notes.md),
+> [validation](docs/release-0.3.0-validation.md) and
+> [migration](docs/migration-0.3.0.md). Installation examples below are a future
+> operator workflow only, not permission to modify production.
 
 A local-first [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 memory provider backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep).
@@ -28,49 +29,48 @@ remain separate and available.
 Installing a plugin is not activating it. Only one external provider can be
 active per Hermes profile. Do not modify Hermes core to install this provider.
 
-## Installation and setup boundary
-
-Publication is not production deployment. Use an approved maintenance window;
-never replace plugin code while any process owns the vault. Managed setup is
-supported only for the default `~/.hermes` profile.
-
-From a Git checkout with the verified `v0.3.0` tag, resolve its exact commit and
-install through the host manager (not a live directory copy):
+## Installation
 
 ```sh
-RELEASE_SHA="$(git rev-list -n1 v0.3.0)"
-hermes plugins install 'https://github.com/r0b0tlab/hermes-zvec-memory#zvec-memory' --ref "$RELEASE_SHA"
-hermes memory setup zvec-memory
-hermes zvec-memory status --json
-hermes zvec-memory doctor --json
+hermes plugins install https://github.com/<your-account>/hermes-zvec-memory#zvec-memory
+hermes zvec-memory engine install    # the one explicit step that fetches the pinned engine
+hermes memory setup zvec-memory      # verifies an already installed engine; never fetches
+hermes zvec-memory doctor
 ```
 
-The qualified setup prerequisite is an already provisioned, exact
-`@zvec/zvec-grep@0.2.2` runtime in a stable user-owned prefix and the cached
-`local/potion-retrieval-32m` model. Setup verifies the real package/executable,
-creates and reads back its launcher/unit/manifest, writes private canonical
-JSON and publishes `memory.provider`. It does not fetch dependencies or start,
-reload or restart a service. A fresh network/bootstrap install is not covered
-by the isolated qualification. Never use a test checkout as a production SDK.
+`hermes memory setup` lays out the engine launcher and the systemd unit, writes
+the provider's `config.json` and activates the provider. Start a fresh session
+afterwards: the current conversation does not hot-swap its provider or tool
+schemas. Only one external provider can be active per Hermes profile, and
+installing a plugin is not activating it.
 
-The explicit fetching command is `hermes zvec-memory engine install`; custom
-provider CLI discovery requires the provider already be selected. Do not assume
-this command is exposed before initial selection/setup. Existing-SDK engine
-verification was exercised; a fresh npm download was not.
+From a checkout, the same three commands work after copying `zvec-memory/` into
+`$HERMES_HOME/plugins/`:
 
-Start a fresh Hermes session after setup. The generated launcher can run the
-local engine directly when no daemon is present. If a managed daemon is wanted,
-loading/starting its unit is a separately authorized operator service action,
-not something performed by this release. An unloaded service legitimately makes
-`doctor` unhealthy; `status` is informational and returns 0. Neither result
-certifies production service health. Reindex returns durable **requested, not
-completed** intent; verify a later session consumes it and cites real sources.
+```sh
+HERMES_TARGET="${HERMES_HOME:-$HOME/.hermes}"
+test ! -e "$HERMES_TARGET/plugins/zvec-memory" &&
+  cp -R zvec-memory "$HERMES_TARGET/plugins/zvec-memory"
+hermes memory setup zvec-memory
+```
 
-The standalone `scripts/upgrade.py` is retired: all invocation forms return 2
-without running subprocesses or changing files. Use the host plugin manager at
-an exact approved revision. Automatic migration, provider backup/restore and
-historical standalone rollback recipes are unsupported; see
-[upgrade restrictions](docs/migration-0.3.0.md).
+The standalone `scripts/upgrade.py` is retired. All invocation forms return 2
+without running subprocesses or changing files. Plugin installation and updates
+belong to the Hermes plugin manager; see `docs/maintenance.md` for the separate
+validation, maintenance-approval, coherent recovery, and fresh-session gates.
+Do not use historical standalone rollback commands.
+
+Engine requirements for this core: Node.js 26.8.1,
+`@zvec/zvec-grep@0.2.2`, `local/potion-retrieval-32m`, and Linux POSIX locking.
+The older Node >=22 admission check does not qualify that broader range.
+On systems where sharp attempts an unwanted build against global libvips, use
+`SHARP_IGNORE_GLOBAL_LIBVIPS=1` for the npm install. Never install Python
+dependencies into the operating system's Python.
+
+Configure a stable absolute `zg_bin` path if zg is not on the Hermes process's
+PATH. A test checkout is not a suitable permanent production dependency path.
+Then use `hermes memory setup`, choose zvec-memory, and start a fresh session.
+The current conversation does not hot-swap its provider or tool schemas.
 
 ## Configuration
 

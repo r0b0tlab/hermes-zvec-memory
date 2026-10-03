@@ -1,10 +1,9 @@
 # zvec-memory provider
 
-**0.3.0 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
-configuration documented by the repository's `docs/release-0.3.0-validation.md`.
-A published, remotely verified tag identifies the release; publication does not
-install or activate this code in production. Historical broader-feature notes
-are superseded by `docs/reduced-core-contract.md`.
+**0.3.0 candidate — UNRELEASED / NOT_READY / HOLD. Do not install or activate.**
+This reduced-core candidate requires changed-source execution and post-execution
+review; no installed or deployed revision is certified here. The repository's
+docs/reduced-core-contract.md supersedes older full-release scope statements.
 
 Local-first Hermes memory over a Markdown vault indexed by zg. This standalone
 provider does not modify Hermes core. Built-in MEMORY.md and USER.md continue to
@@ -38,22 +37,19 @@ Install/setup details, test commands, benchmark methodology, and recovery caveat
 are in the repository README:
 https://github.com/r0b0tlab/hermes-zvec-memory
 
-Desktop/F9 setup, automatic migration, provider backup/restore, model switching
-and multiwriter capacity are unsupported. Declared/legacy desktop configuration
-is disabled; the generic writer, backup declaration and legacy adoption API
-explicitly refuse. Only the actual CLI post_setup hook writes supported setup
-configuration. The vault and its ancestors must remain stationary while active.
+**Activation remains HOLD for this UNRELEASED / NOT_READY candidate.** CLI/core
+scope is authorized, but final changed-source acceptance is not yet established.
+Desktop/F9 setup, migration, backup/restore, model switching and multiwriter
+capacity are unsupported. Declared/legacy desktop configuration is disabled;
+the generic writer, backup declaration and legacy adoption API explicitly
+refuse. Only the CLI post_setup hook writes supported setup configuration. Use
+host-managed selection of an exact reviewed revision only after release and
+separate maintenance/deployment authority; never replace live code under writers.
+The repository's `docs/maintenance.md`, `docs/migration-0.3.0.md` and
+`docs/release-0.3.0-validation.md` define the gated boundary, not a do-it-now recipe.
 
-Install through the host plugin manager at the exact verified release commit,
-under separately approved maintenance authority. Do not replace live code under
-writers. CLI setup requires the already provisioned pinned engine/model, verifies
-real artifacts, writes private JSON and persists host activation; it does not
-fetch or start/reload a service. Fresh network bootstrap is not qualified.
-
-After setup, use a fresh session and check actual store/search citations. The
-generated launcher can run directly without a daemon. An unloaded managed
-service yields genuine unhealthy doctor diagnostics; a requested reindex is not
-complete until the native consumer acknowledges it. Actual isolated CLI setup,
-configured-launcher store/search, request consumption and fresh-session recall
-were exercised. This is not a claim that a real production service was loaded,
-healthy, changed or deployed.
+After those gates, activation uses `hermes memory setup` and takes effect in a
+fresh session. Check
+`hermes memory status`, then the configured engine's `zg status <vault>
+--check-ready`. Native readiness alone does not prove a particular fact was
+retrieved; check the cited source content.

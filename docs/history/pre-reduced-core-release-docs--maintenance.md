@@ -1,11 +1,3 @@
-<!-- Reduced-core scope supersedes the historical recipes below. -->
-> For v0.3.0, [migration/upgrade restrictions](migration-0.3.0.md) and the
-> [reduced-core contract](reduced-core-contract.md) are authoritative. Provider
-> backup/restore, automatic migration and deployment are not qualified. The
-> retained historical archive/restore recipes below are NOT current v0.3.0
-> operator instructions or evidence that those features passed. Production
-> service adoption/reload/restart always requires separate maintenance authority.
-
 # Maintaining and upgrading the provider
 
 > **0.3.0 candidate: UNRELEASED / SOURCE-ONLY / NOT_READY.** Full compatibility
