@@ -66,6 +66,15 @@ def test_launcher_script_matches_the_current_generator_contract(tmp_path):
         'export ZVEC_GREP_SERVER_URL=http://127.0.0.1:17999/mcp\n'
         'export ZVEC_GREP_SERVER_TOKEN_FILE="$ZVEC_GREP_HOME/server.token"\n'
         "unset ZVEC_GREP_SERVER_TOKEN ZVEC_GREP_API_KEY ZVEC_GREP_ENDPOINT DASHSCOPE_API_KEY QWEN_API_KEY\n"
+        'if [[ "${1:-}" == "server" ]]; then\n'
+        '  case "${2:-}" in\n'
+        '    run) '
+        f'exec /usr/bin/node {tmp_path / "runtime_root/managed-server.mjs"} '
+        f'{tmp_path / "runtime_root/runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js"} "$@" ;;\n'
+        '    status|off) ;;\n'
+        '    *) printf "%s\\n" "Managed daemon requires foreground server run via its service" >&2; exit 2 ;;\n'
+        '  esac\n'
+        'fi\n'
         f'exec /usr/bin/node {tmp_path / "runtime_root/runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js"} "$@"\n')
     assert script.endswith('"$@"\n'), "the launcher must forward its arguments"
 
@@ -97,15 +106,18 @@ def test_ensure_engine_lays_out_and_is_idempotent(tmp_path, unit_dir, default_no
 
     first = engine.ensure_engine(home, config)
     assert first["status"] == "updated" and first["version"] == "0.2.2"
-    assert set(first["writes"]) == {"launcher", "unit", "manifest"}
+    assert set(first["writes"]) == {"launcher", "unit", "manifest", "managed-server.mjs", "managed-policy.mjs", "managed-server-LICENSE.txt"}
     launcher = Path(first["zg_bin"])
     assert launcher.read_text() == engine.launcher_script(home, config, node=default_node)
     assert oct(launcher.stat().st_mode & 0o777) == "0o700"
     manifest = json.loads((Path(first["runtime_root"]) / "manifest.json").read_text())
     assert manifest["tasks_max"] == engine.TASKS_MAX and manifest["version"] == "0.2.2"
 
-    stamps = {path: path.stat().st_mtime_ns for path in
-              (launcher, Path(first["unit"]), Path(first["runtime_root"]) / "manifest.json")}
+    artifacts = engine._artifact_set(home, config, node=default_node, version="0.2.2")
+    for _, path, text, mode in artifacts:
+        assert path.read_bytes() == text.encode("utf-8")
+        assert path.stat().st_mode & 0o7777 == mode
+    stamps = {path: path.stat().st_mtime_ns for _, path, _, _ in artifacts}
     second = engine.ensure_engine(home, config)
     assert second["status"] == "present" and second["writes"] == []
     assert {path: path.stat().st_mtime_ns for path in stamps} == stamps

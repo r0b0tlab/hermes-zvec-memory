@@ -470,11 +470,13 @@ def test_missing_artifact_set_creation_is_byte_mode_mtime_idempotent(
     fake_runtime(tmp_path)
     config = config_for(tmp_path)
     first = engine.ensure_engine(isolated_home, config)
-    assert set(first["writes"]) == {"launcher", "unit", "manifest"}
-    paths = [engine.launcher_path(isolated_home, config), engine.unit_path(),
-             engine.runtime_root(isolated_home, config) / "manifest.json"]
+    assert set(first["writes"]) == {"launcher", "unit", "manifest", "managed-server.mjs", "managed-policy.mjs", "managed-server-LICENSE.txt"}
+    assets = engine._artifact_set(isolated_home, config, node=default_node, version="0.2.2")
+    paths = [path for _, path, _, _ in assets]
+    for _, path, text, mode in assets:
+        assert path.read_bytes() == text.encode("utf-8")
+        assert path.stat().st_mode & 0o7777 == mode
     before = {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in paths}
-    assert [p.stat().st_mode & 0o777 for p in paths] == [0o700, 0o600, 0o600]
     second = engine.ensure_engine(isolated_home, config)
     assert second["status"] == "present" and second["writes"] == []
     assert {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in paths} == before

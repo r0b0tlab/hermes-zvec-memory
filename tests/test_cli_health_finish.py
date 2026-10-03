@@ -93,6 +93,10 @@ def managed_fixture(cli, tmp_path, monkeypatch, tasks="1024", *, node_bin=None, 
         "tasks_max": engine.TASKS_MAX}
     (launcher.parent / engine.MANIFEST_NAME).write_text(json.dumps(manifest))
     (launcher.parent / engine.MANIFEST_NAME).chmod(0o600)
+    for _, path, text, mode in engine._artifact_set(home, config, node=selected_node, version=engine.PINNED_VERSION):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(mode)
     start = next(line.split("=", 1)[1] for line in unit.read_text().splitlines()
                  if line.startswith("ExecStart="))
     values = {"LoadState": "loaded", "TasksMax": tasks, "NeedDaemonReload": "no",

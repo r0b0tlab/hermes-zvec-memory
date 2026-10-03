@@ -83,7 +83,7 @@ def test_unknown_selection_does_not_claim_caller_task_target(
     calls = []
     def run(argv, timeout=15):
         calls.append(argv)
-        return 0, "fixture ready", ""
+        return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     caller_reads = []
     def caller():
         caller_reads.append(True)
@@ -127,7 +127,10 @@ def rendered_managed_artifacts(cli, tmp_path):
     unit.parent.mkdir(parents=True, exist_ok=True)
     launcher.write_text(engine.launcher_script(home, config, node=node))
     launcher.chmod(0o700)
-    unit.write_text(engine.unit_template(home, config))
+    for _, path, text, mode in engine._artifact_set(home, config, node=node, version=engine.PINNED_VERSION):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(mode)
     manifest_path = engine.runtime_root(home, config) / engine.MANIFEST_NAME
     manifest_path.write_text(json.dumps({
         "package": engine.ENGINE_PACKAGE, "version": engine.PINNED_VERSION,
@@ -174,7 +177,7 @@ def test_managed_artifact_runtime_error_is_class_only_json(
             assert argv[:3] == ["systemctl", "--user", "show"]
             assert "--property=TasksMax" in argv, "Artifact failure must not query loaded definition"
             return 0, "LoadState=loaded\nTasksMax=512\n", ""
-        return 0, "fixture ready", ""
+        return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
     monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Known managed target cannot use caller"))
     try:
@@ -234,7 +237,7 @@ def test_guarded_home_and_runtime_selection_boundaries(
     calls = []
     def run(argv, timeout=15):
         calls.append(argv)
-        return 0, "fixture ready", ""
+        return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
     monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Unknown target cannot inspect caller"))
     rc = dispatch(cli, [command, "--json"])
@@ -271,12 +274,16 @@ def test_valid_nonmanaged_selection_keeps_noninspection_and_task_floor(
     config = {"zg_bin": str(engine.launcher_path(home)) if scope in ("named", "custom-home") else "/custom/zg"}
     if scope == "unselected":
         config.pop("zg_bin")
+    sidecar = vault / ".zvec-grep/.zvec-memory-state.json"
+    identity = json.loads(sidecar.read_text())
+    identity["zg_bin"] = config.get("zg_bin", "/zg")
+    sidecar.write_text(json.dumps(identity))
     config_path = write_settings(home, vault, config)
     before = config_path.read_bytes()
     calls, caller_reads = [], []
     def run(argv, timeout=15):
         calls.append(argv)
-        return 0, "fixture ready", ""
+        return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     def caller():
         caller_reads.append(True)
         return ceiling
@@ -300,7 +307,7 @@ def test_valid_managed_selection_keeps_exact_target_and_task_floor(
         tmp_path, monkeypatch, capsys, ceiling, ok):
     cli = load_cli()
     home, config, node, launcher, unit, manifest_path = rendered_managed_artifacts(cli, tmp_path)
-    vault = healthy_vault(tmp_path)
+    vault = healthy_vault(tmp_path, binary=config["zg_bin"])
     config_path = write_settings(home, vault, config)
     paths = [config_path, launcher, unit, manifest_path]
     before = [p.read_bytes() for p in paths]
@@ -313,7 +320,7 @@ def test_valid_managed_selection_keeps_exact_target_and_task_floor(
             assert argv[:4] == ["systemctl", "--user", "show", cli.UNIT_NAME]
             return 0, ("LoadState=loaded\nNeedDaemonReload=no\nTasksMax=" + ceiling +
                        "\nExecStart={ path=" + str(launcher) + " ; argv[]=" + start + " ; ignore_errors=no ; }\n"), ""
-        return 0, "fixture ready", ""
+        return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
     monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Known managed target cannot inspect caller"))
     assert dispatch(cli, ["doctor", "--json"]) == (0 if ok else 1)

@@ -84,8 +84,7 @@ async function main() {
     const auth = await resolveServerToken({ tokenFile: options.serverTokenFile, home });
     if (!auth.token) throw new Error('Managed server requires a bearer token file');
     const instanceLock = await DaemonInstanceLock.acquire(home, displayAddress, mcpToolset);
-    const logger = createDaemonLogger(home);
-    let backend, httpServer;
+    let logger, backend, httpServer;
     let stopRequested = false;
     let notifyStop;
     const stopped = new Promise((done) => { notifyStop = done; });
@@ -94,6 +93,7 @@ async function main() {
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     try {
+        logger = createDaemonLogger(home);
         const requestStateKey = await loadOrCreateMcpRequestStateKey(home);
         backend = managedBackend(DaemonBackend, { version: '0.2.2',
             runtimeIdleTtlMs: configuredWatcherIdleTimeoutMs(), logger });
@@ -115,7 +115,7 @@ async function main() {
         // Each cleanup is attempted even if another fails; failure stays visible.
         const errors = [];
         for (const cleanup of [() => backend?.close(), () => httpServer?.close(),
-                               () => instanceLock.release(), () => logger.flush()]) {
+                               () => instanceLock.release(), () => logger?.flush()]) {
             try { await cleanup(); } catch (error) { errors.push(error); }
         }
         if (errors.length) throw new AggregateError(errors, 'Managed server cleanup failed');

@@ -208,6 +208,11 @@ def test_existing_durable_health_error_is_not_reported_as_absence(
         tmp_path, monkeypatch, capsys, leaf, check_name, condition):
     from test_cli import fake_runner
     cli, home, vault, native = selected_fixture(tmp_path, monkeypatch)
+    if check_name == "identity" and condition == "unreadable":
+        index = vault / ".zvec-grep"
+        index.mkdir(exist_ok=True)
+        (index / ".zvec-memory-state.json").write_text(json.dumps({
+            "plugin_schema": 1, "embedding": "local/potion-retrieval-32m", "zg_bin": "/fixture-engine"}))
     original = Path.stat if check_name != "identity" else Path.read_text
     operation = "stat" if check_name != "identity" else "read_text"
     reached = []

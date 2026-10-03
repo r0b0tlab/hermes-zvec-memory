@@ -1,14 +1,14 @@
 # hermes-zvec-memory
 
-> **0.3.0 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
-> tuple in [validation](docs/release-0.3.0-validation.md), with a mandatory
-> stationary-vault restriction. This is not the historical full-feature release.
-> Publication is a separate remote-readback gate; resolve the published tag
-> before installation. Production deployment and service changes were not made.
-> [Contract](docs/reduced-core-contract.md), [release notes](docs/release-0.3.0-notes.md)
-> and [upgrade restrictions](docs/migration-0.3.0.md) define the active scope.
-> Earlier candidate documents are preserved under `docs/history/`, not active
-> installation or recovery instructions.
+> **0.3.1-rc.1 local, unreleased production successor.** Changed bytes do not
+> identify published v0.3.0. [Successor policy and caveats](docs/production-successor-0.3.1-rc.1.md)
+> define the private pinned managed adapter, six-member generation and fail-closed
+> identity policy. Production deployment/current-host acceptance remain parent
+> gates; no production changes or remote release were made here.
+> The predecessor's [contract](docs/reduced-core-contract.md),
+> [validation](docs/release-0.3.0-validation.md) and [upgrade restrictions](docs/migration-0.3.0.md)
+> remain historical scope evidence, not validation of changed candidate bytes.
+> The stationary-vault restriction remains mandatory.
 
 A local-first [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 memory provider backed by [zvec-grep](https://github.com/zvec-ai/zvec-grep).
@@ -34,8 +34,10 @@ Publication is not production deployment. Use an approved maintenance window;
 never replace plugin code while any process owns the vault. Managed setup is
 supported only for the default `~/.hermes` profile.
 
-From a Git checkout with the verified `v0.3.0` tag, resolve its exact commit and
-install through the host manager (not a live directory copy):
+The following historical recipe installs the frozen **v0.3.0 predecessor**, not
+this unreleased candidate. Candidate installation requires the parent's approved
+exact-SHA local host-manager and closed-generation acceptance; do not deploy from
+this test worktree. For the predecessor only, resolve the verified tag:
 
 ```sh
 RELEASE_SHA="$(git rev-list -n1 v0.3.0)"
@@ -48,7 +50,7 @@ hermes zvec-memory doctor --json
 The qualified setup prerequisite is an already provisioned, exact
 `@zvec/zvec-grep@0.2.2` runtime in a stable user-owned prefix and the cached
 `local/potion-retrieval-32m` model. Setup verifies the real package/executable,
-creates and reads back its launcher/unit/manifest, writes private canonical
+creates and reads back its complete six-member artifact set, writes private canonical
 JSON and publishes `memory.provider`. It does not fetch dependencies or start,
 reload or restart a service. A fresh network/bootstrap install is not covered
 by the isolated qualification. Never use a test checkout as a production SDK.
@@ -164,20 +166,14 @@ search following a
 write may not see it yet: wait for a successful refresh before asserting that
 new/deleted data is visible/absent. Native lock/lease contention is not success.
 
-For lower warm-query latency, a local zg daemon keeps models loaded:
-
-```sh
-zg server on --listen 127.0.0.1:17999 --token-file /absolute/private/server.token
-zg server status --check-ready
-```
-
-Create a private random token first and configure clients with the matching
-`ZVEC_GREP_SERVER_TOKEN_FILE`. Use a dedicated `ZVEC_GREP_HOME` and loopback
-address for isolation. An unauthenticated daemon is not the recommended default.
-Supervise it with the OS user service manager for restart/login persistence.
+The successor's authenticated warm daemon must use the generated foreground
+service route, not upstream `zg server on`: that upstream bootstrap creates an
+autonomous watcher outside plugin generation accounting. Service installation/
+restart is a separate parent acceptance action, not performed here. See the
+[private 0.2.2 adapter policy](docs/production-successor-0.3.1-rc.1.md) for exact
+source pins, manual-index caveats, status semantics and inherited shutdown limits.
 Never start a second daemon on an occupied port or stop someone else's daemon.
-Without a daemon, `--refresh background` falls back to no refresh in direct zg;
-the provider's own index scheduling remains necessary.
+The provider's own durable index scheduling remains necessary.
 
 ## Validation
 

@@ -959,8 +959,11 @@ def test_engine_identity_change_requests_a_rebuild(tmp_path, monkeypatch):
         assert calls == [], "an unchanged identity must not rebuild"
 
         state_path.write_text(json.dumps({**recorded, "plugin_schema": 0}))
+        invalid = state_path.read_bytes()
         provider._ensure_engine_identity()
-        assert calls and calls[-1].get("force") is True
+        assert calls == [], "unsupported present identity must not be automatically repaired"
+        assert state_path.read_bytes() == invalid
+        assert provider._recall_token() is None, "unsupported identity must leave recall closed"
 
         calls.clear()
         monkeypatch.setattr(provider, "_zg_version", lambda: "0.2.3")

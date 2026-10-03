@@ -24,7 +24,7 @@ def load_cli():
     return module
 
 
-def healthy_vault(tmp_path: Path) -> Path:
+def healthy_vault(tmp_path: Path, *, embedding="local/potion-retrieval-32m", binary="/zg") -> Path:
     vault = tmp_path / "vault"
     (vault / "facts").mkdir(parents=True)
     (vault / "sessions").mkdir(parents=True)
@@ -32,7 +32,7 @@ def healthy_vault(tmp_path: Path) -> Path:
     (vault / ".zvec-grep").mkdir()
     (vault / ".zvec-grep" / "manifest.json").write_text("{}")
     (vault / ".zvec-grep" / ".zvec-memory-state.json").write_text(json.dumps(
-        {"plugin_schema": 1, "embedding": "local/x", "zg_bin": "/zg"}))
+        {"plugin_schema": 1, "embedding": embedding, "zg_bin": binary}))
     (vault / ".mirror-map.json").write_text(json.dumps(
         {"schema_version": 1, "records": {"a": {"path": "facts/one.md", "target": "memory", "content": "something worth recalling"}}, "pending_deletes": [],
          "pending_creates": [], "refresh_required": False}))
@@ -91,7 +91,7 @@ def test_healthy_vault_reports_every_check(tmp_path, monkeypatch):
     cli = load_cli()
     # The harmless direct-engine double models a target with adequate headroom.
     monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
-    checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg", "embedding": "local/x"},
+    checks = cli.collect_checks(healthy_vault(tmp_path, embedding="local/x"), {"zg_bin": "/zg", "embedding": "local/x"},
                                 runner=fake_runner())
     result = cli.report(checks)
     assert result["checked"] is True, [c["name"] for c in checks]
@@ -105,7 +105,7 @@ def test_healthy_vault_reports_every_check(tmp_path, monkeypatch):
 ])
 def test_doctor_fails_when_the_engine_or_index_is_broken(tmp_path, engine_ok, index_ok, failing):
     cli = load_cli()
-    checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg", "embedding": "local/x"},
+    checks = cli.collect_checks(healthy_vault(tmp_path, embedding="local/x"), {"zg_bin": "/zg", "embedding": "local/x"},
                                 runner=fake_runner(engine_ok, index_ok))
     result = cli.report(checks)
     assert result["ok"] is False

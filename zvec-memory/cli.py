@@ -241,23 +241,30 @@ def _service_diagnostics(config: Dict, run: Callable) -> tuple:
             if not configured.is_absolute() or configured.resolve() != node.resolve():
                 issues.append("configured Node drift")
         wanted = engine.unit_template(home, config)
-        for name, path, text in (("unit", unit, wanted),
-                                 ("launcher", launcher, engine.launcher_script(home, config, node=node))):
-            if path.read_text(encoding="utf-8") != text:
-                issues.append(name + " drift")
-            if path.with_name(path.name + ".new").exists():
+        artifacts = engine._artifact_set(home, config, node=node, version=engine.PINNED_VERSION)
+        for name, path, text, mode in artifacts:
+            conflict = path.with_name(path.name + ".new")
+            if conflict.exists() or conflict.is_symlink():
                 issues.append(name + " .new conflict")
+            if path.is_symlink() or not path.is_file():
+                issues.append(name + " missing/unsafe file kind")
+                continue
+            if path.stat().st_mode & 0o7777 != mode:
+                issues.append(name + " mode drift")
+            current = path.read_text(encoding="utf-8")
+            if name == "manifest":
+                data = json.loads(current)
+                # Same explicit legacy timestamp policy as artifact admission;
+                # doctor only observes it, never rewrites an old generation.
+                if isinstance(data, dict) and isinstance(data.get("updated"), str):
+                    data = {key: value for key, value in data.items() if key != "updated"}
+                matches = data == json.loads(text)
+            else:
+                matches = current == text
+            if not matches:
+                issues.append(name + " drift")
         if not os.access(launcher, os.X_OK):
             issues.append("launcher not executable")
-        expected = {"package": engine.ENGINE_PACKAGE, "version": engine.PINNED_VERSION,
-                    "node": raw_node, "entry": str(engine.entry_path(home, config)),
-                    "engine_home": str(engine.engine_home(home, config)),
-                    "server_url": engine.server_url(config), "launcher": str(launcher),
-                    "unit": str(unit), "unit_status": "generated", "tasks_max": engine.TASKS_MAX}
-        if not isinstance(manifest, dict) or any(manifest.get(k) != v for k, v in expected.items()):
-            issues.append("manifest drift")
-        if manifest_path.with_name(manifest_path.name + ".new").exists():
-            issues.append("manifest .new conflict")
         rc, out, _ = run(["systemctl", "--user", "show", UNIT_NAME,
                           "--property=LoadState", "--property=ExecStart",
                           "--property=NeedDaemonReload"])

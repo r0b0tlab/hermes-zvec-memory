@@ -5,6 +5,21 @@ only remotely verified published tags identify releases. Unreleased sections
 below are not publication or deployment claims. Catalog pins retain the exact
 historical revision they describe until separately approved updates.
 
+## 0.3.1-rc.1 — local unreleased production successor
+
+- Combines cold invalid-identity retention and read-only durable health checks
+  with the plugin-owned authenticated, publication-only managed 0.2.2 daemon.
+- Doctor observes all six generated assets, exact private modes and `.new`
+  conflicts; early logger failure releases acquired native instance ownership.
+- Resolves authorized stale identity/version doubles, schema0 unsafe-repair
+  expectation and obsolete three-member artifact assertions. Original sources
+  and raw failed receipts remain private evidence; scope vector is unchanged.
+- Documents private source-bound seam, cooperative manual-index boundary and
+  inherited backend-before-HTTP shutdown caveat. No deployment/release/speedup
+  claim; current-host/closed-production acceptance remains separate.
+
+See [successor policy](docs/production-successor-0.3.1-rc.1.md).
+
 ## 0.3.0 — reduced core
 
 Native engine remains `@zvec/zvec-grep@0.2.2`. Release identity is the remotely
