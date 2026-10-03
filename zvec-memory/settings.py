@@ -5,6 +5,21 @@ from pathlib import Path
 
 from .hostio import cfg_get, read_user_config_raw
 
+DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
+PINNED_ENGINE_VERSION = "0.2.2"
+
+
+def validate_core_config(config, *, engine_version=PINNED_ENGINE_VERSION):
+    """Reject unsupported supplied selections, without resolving paths or I/O.
+
+    Missing embedding uses the supported default; explicit null/empty/false is
+    not a request for the default. Do not include operator values in errors.
+    """
+    if "embedding" in config and config["embedding"] != DEFAULT_EMBEDDING:
+        raise ValueError("Reduced core supports only the pinned embedding model")
+    if engine_version != PINNED_ENGINE_VERSION:
+        raise ValueError("Reduced core engine requires the exact pinned version 0.2.2")
+
 
 def load_settings(home, *, legacy=None):
     """Read without mutation; only absent JSON permits the legacy fallback."""

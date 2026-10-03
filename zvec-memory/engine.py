@@ -21,9 +21,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .hostio import atomic_json_write
+from .settings import DEFAULT_EMBEDDING, PINNED_ENGINE_VERSION, validate_core_config
 
 ENGINE_PACKAGE = "@zvec/zvec-grep"
-PINNED_VERSION = "0.2.2"
+PINNED_VERSION = PINNED_ENGINE_VERSION
 NODE_BIN = "/usr/bin/node"
 NPM_BIN = "/usr/bin/npm"
 LAUNCHER_NAME = "zg-default"
@@ -39,7 +40,7 @@ RUNTIME_DIR = "~/.local/share/hermes-zvec-memory"
 ENGINE_HOME_NAME = "zvec-runtime"
 ENTRY_RELATIVE = Path("runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js")
 MANIFEST_NAME = "manifest.json"
-DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
+
 
 
 def _expand(raw, hermes_home: Path) -> Path:
@@ -244,9 +245,10 @@ def _preflight_artifacts(artifacts):
 
 def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VERSION) -> dict:
     """Idempotently lay out launcher + unit for the verified local runtime."""
+    config = plugin_block(config)
+    validate_core_config(config, engine_version=expected_version)
     _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
-    config = dict(config or {})
     _require_managed_executable(hermes_home, config)
     unit_template(hermes_home, config)
     root = runtime_root(hermes_home, config)
@@ -318,9 +320,10 @@ def verified_node(config) -> Path:
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                    npm: str | None = None) -> dict:
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
+    config = plugin_block(config)
+    validate_core_config(config, engine_version=version)
     _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
-    config = dict(config or {})
     _require_managed_executable(hermes_home, config)
     # Validate systemd-bound values before npm or any filesystem mutation.
     unit_template(hermes_home, config)
@@ -416,11 +419,13 @@ def post_setup(hermes_home, config=None) -> dict:
     """
     from .settings import load_settings
 
+    validate_core_config(plugin_block(config))
     _require_managed_scope(hermes_home)
     hermes_home = Path(hermes_home)
     config = config if isinstance(config, dict) else {}
     owns_config = is_host_config(config)
     block = load_settings(hermes_home, legacy=plugin_block(config)) if owns_config else dict(config)
+    validate_core_config(block)
     if owns_config:
         _host_config_destination(hermes_home)
     result = ensure_engine(hermes_home, block)

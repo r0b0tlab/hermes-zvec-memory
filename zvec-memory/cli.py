@@ -21,7 +21,7 @@ COMMANDS = (("doctor", "Check config, vault, engine, index, inbox and mirror sta
             ("status", "Show the same state without failing on warnings"),
             ("reindex", "Request a full index rebuild on the next provider session"),
             ("engine", "Install the pinned local engine runtime (the one network step)"),
-            ("migrate-config", "Preserve legacy settings in native JSON (quiescent maintenance)"))
+            ("migrate-config", "Unsupported in the reduced core release"))
 
 REQUIRED_CHECKS = ("config", "vault", "engine", "index", "inbox", "mirror", "identity", "service", "tasks")
 MIN_TASK_CEILING = 512
@@ -368,37 +368,15 @@ def _request_reindex(vault: Path) -> Path:
 
 
 def _migrate_config_command(args) -> int:
-    """Explicit, quiescent migration; use the runtime's authoritative settings reader."""
-    # Legacy parsing is an invocation-only dependency, never CLI registration.
-    # Marked YAML errors may contain source snippets; emit only their class.
-    from yaml import YAMLError
-
-    path: Path | None = None
-    result: Dict
-    try:
-        home = _hermes_home().resolve()
-        path = home / "zvec-memory" / "config.json"
-        if path.is_symlink():
-            raise ValueError("Refusing symlinked configuration")
-        values = _plugin_module("settings").load_settings(home)
-        status = "current" if path.exists() else "migrated"
-        if status == "migrated":
-            _plugin_module("hostio").atomic_json_write(path, values, mode=0o600)
-            if _plugin_module("settings").load_settings(home) != values:
-                raise ValueError("Configuration readback failed")
-        result = {"status": status, "config": str(path)}
-    except (OSError, ValueError, TypeError, RuntimeError, YAMLError) as exc:
-        result = {"status": "failed", "config": str(path) if path is not None else None,
-                  "error": type(exc).__name__}
-    result.update(action={"name": "migrate-config", "status": result["status"]},
-                  health={"status": "not_checked"})
+    """Retain the old command spelling solely as a pre-I/O refusal."""
+    result = {"status": "unsupported",
+              "action": {"name": "migrate-config", "status": "unsupported"},
+              "health": {"status": "not_checked"}}
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
     else:
-        print(f"  Configuration {result['status']}: {path}")
-        if "error" in result:
-            print(f"  {result['error']}")
-    return 1 if result["status"] == "failed" else 0
+        print("Reduced core does not support configuration migration; no files changed.")
+    return 2
 
 
 def zvec_memory_command(args) -> int:
@@ -413,6 +391,9 @@ def zvec_memory_command(args) -> int:
     try:
         override = getattr(args, "vault", None)
         vault, config = _configured(override) if override else _configured()
+        if not isinstance(config, _UnreadableSettings):
+            # Do not admit a rebuild for a selection the core provider refuses.
+            _plugin_module("settings").validate_core_config(config)
         if vault is None:
             if sub == "reindex":
                 raise ValueError("Unknown configured vault; rebuild refused")

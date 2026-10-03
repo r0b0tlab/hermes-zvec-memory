@@ -1,8 +1,9 @@
 # zvec-memory provider
 
 **0.3.0 candidate — UNRELEASED / NOT_READY / HOLD. Do not install or activate.**
-This source-only candidate requires fresh independent review and complete release
-gates; no installed or deployed revision is certified here.
+This reduced-core candidate requires changed-source execution and post-execution
+review; no installed or deployed revision is certified here. The repository's
+docs/reduced-core-contract.md supersedes older full-release scope statements.
 
 Local-first Hermes memory over a Markdown vault indexed by zg. This standalone
 provider does not modify Hermes core. Built-in MEMORY.md and USER.md continue to
@@ -11,15 +12,15 @@ work alongside it.
 Runtime configuration: `$HERMES_HOME/zvec-memory/config.json`. If absent, the
 legacy `plugins.zvec-memory` YAML block is read without modification. JSON is
 authoritative once present. `vault` defaults to `$HERMES_HOME/zvec-memory`;
-`zg_bin` can point to an absolute user-owned zg launcher. Default embedding:
-`local/potion-retrieval-32m`. Auto-extraction is disabled by default.
+`zg_bin` can point to an absolute user-owned zg launcher. The only supported
+embedding is `local/potion-retrieval-32m`; model switching refuses before setup
+or provider side effects. Auto-extraction is disabled by default.
 
-Node >=22 is the declared minimum/runtime admission requirement, not verified
-support across that range. The engine stays pinned to zg 0.2.2; the retained
-ownership pilot reviewed only the exact Linux Node 26.8.1 boundary. Generic
-Node>=22 and macOS qualification remain HOLD; Windows is unsupported. Hermes's
-memory-provider interface and POSIX flock are required. These boundaries do not
-narrow the full authorized release scope.
+The supported target is one pinned Linux/Hermes source tuple, Node 26.8.1,
+zg 0.2.2 and local/potion-retrieval-32m. Node >=22 remains an admission floor,
+not a broader support claim. Other platforms are deferred. The vault and all
+ancestors must remain stationary while active; ordinary path/symlink, privacy,
+integrity and child-cleanup requirements remain mandatory.
 
 The provider tools are `memory_search` and `memory_store`. Recall is bounded and
 best-effort; explicit store confirms the source file write, not immediate native
@@ -36,10 +37,12 @@ Install/setup details, test commands, benchmark methodology, and recovery caveat
 are in the repository README:
 https://github.com/r0b0tlab/hermes-zvec-memory
 
-**Activation remains HOLD for this UNRELEASED / NOT_READY candidate.** The
-compatible host's generic desktop configuration writer, cold-host/import closure
-and full supported-host gates must be qualified first; retained offline tests do
-not clear those requirements or authorize a CLI-only replacement release. Use
+**Activation remains HOLD for this UNRELEASED / NOT_READY candidate.** CLI/core
+scope is authorized, but final changed-source acceptance is not yet established.
+Desktop/F9 setup, migration, backup/restore, model switching and multiwriter
+capacity are unsupported. Declared/legacy desktop configuration is disabled;
+the generic writer, backup declaration and legacy adoption API explicitly
+refuse. Only the CLI post_setup hook writes supported setup configuration. Use
 host-managed selection of an exact reviewed revision only after release and
 separate maintenance/deployment authority; never replace live code under writers.
 The repository's `docs/maintenance.md`, `docs/migration-0.3.0.md` and

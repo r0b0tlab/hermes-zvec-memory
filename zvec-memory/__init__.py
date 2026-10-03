@@ -49,14 +49,13 @@ from .hostio import atomic_json_write, cfg_get, is_truthy_value, tool_error
 from .workers import Worker
 from .transactions import VaultLock
 from .inbox import MirrorInbox
-from .settings import finite_number
+from .settings import DEFAULT_EMBEDDING, finite_number, validate_core_config
 from .journal import validate_journal
 from .maintenance import (read_request, request_rebuild, request_identity, acknowledge_request,
                           REFRESH_FILE, read_refresh, request_refresh, begin_refresh, acknowledge_refresh)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
 QUERY_TIMEOUT_S = 60
 PREFETCH_TIMEOUT_S = 2
 INDEX_TIMEOUT_S = 900
@@ -152,6 +151,7 @@ class ZvecMemoryProvider(MemoryProvider):
 
     def __init__(self, config: dict | None = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
+        validate_core_config(self._config)
         self._vault: Path | None = None
         self._session_id = ""
         self._automatic_writes = False
@@ -803,29 +803,8 @@ class ZvecMemoryProvider(MemoryProvider):
         self._maybe_reindex(force=True)
 
     def migrate_legacy_mirrors(self, entries):
-        """Explicit maintenance API: adopt only operator-specified legacy files.
-
-        Entries supply exact path, target and original content. Never invoked
-        during startup, extraction, or normal memory notifications.
-        """
-        import hashlib
-        with self._vault_lock:
-            state = self._mirror_state()
-            for entry in entries:
-                path = self._mirror_file(entry["path"])
-                target, content = entry["target"], entry["content"]
-                text = path.read_text(encoding="utf-8")
-                if target not in {"user", "memory"} or not isinstance(content, str) or not content:
-                    raise ValueError("Invalid legacy mirror entry")
-                if "\ntags: mirror\n" not in text or not text.endswith("\n\n" + content + "\n"):
-                    raise ValueError("Legacy mirror content does not match the specified file")
-                key = hashlib.sha256((target + "\0" + content).encode()).hexdigest()
-                record = {"path": str(path.relative_to(self._vault)), "target": target, "content": content}
-                if key in state["records"] and state["records"][key] != record:
-                    raise ValueError("Legacy mirror conflicts with existing ownership")
-                state["records"][key] = record
-            self._save_mirror_state(state)
-        self._invalidate_prefetch()
+        """Legacy adoption is not an operational API in the reduced core."""
+        raise NotImplementedError("Reduced core does not support legacy mirror migration")
 
     def _finish_mirror_deletes(self, state):
         # Stage outside the indexed scope, commit the map, then publish.
@@ -874,28 +853,16 @@ class ZvecMemoryProvider(MemoryProvider):
         return ""
 
     def backup_paths(self) -> List[str]:
-        vault = self._vault if self._vault is not None else self._resolve_vault(None)
-        return [str(vault.resolve())]
+        """Do not advertise a coherent snapshot to the host backup collector."""
+        raise NotImplementedError("Reduced core does not support provider backup/restore")
 
     def get_config_schema(self):
-        from hermes_constants import display_hermes_home
-
-        _default_vault = f"{display_hermes_home()}/zvec-memory"
-        return [
-            {"key": "vault", "description": "Memory vault directory", "default": _default_vault},
-            {"key": "embedding", "description": "Embedding model for new indexes", "default": DEFAULT_EMBEDDING},
-            {"key": "recall_limit", "description": "Default recall result count", "default": "5"},
-            {"key": "context_chars", "description": "Max chars of injected recall", "default": "2000"},
-            {"key": "auto_extract", "description": "Extract facts at session end", "default": "false",
-             "choices": ["true", "false"]},
-        ]
+        # The pinned CLI calls post_setup before its generic schema writer.
+        # Empty here also prevents the legacy desktop config panel fallback.
+        return []
 
     def save_config(self, values, hermes_home):
-        path = Path(hermes_home) / "zvec-memory" / "config.json"
-        current = _load_plugin_config(hermes_home)
-        current.update(values)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, current, mode=0o600)
+        raise NotImplementedError("Reduced core configuration requires CLI setup")
 
     # -- config helpers -----------------------------------------------------
 
