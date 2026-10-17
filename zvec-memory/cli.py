@@ -35,12 +35,38 @@ UNIT_NAME = "hermes-zvec-memory.service"
 REINDEX_REQUEST = ".reindex-request.json"
 
 
-def unmirrored_builtin_count(entries, mirrored_contents):
-    return 0
+def unmirrored_builtin_count(entries, mirrored_contents) -> int:
+    mirrored = set(mirrored_contents)
+    return sum(1 for entry in entries if entry not in mirrored)
 
 
-def builtin_mirror_check(entries, mirrored_contents):
-    return {"name": "builtin_mirror", "ok": True, "detail": "unmirrored=0"}
+def builtin_mirror_check(entries, mirrored_contents) -> dict:
+    missing = unmirrored_builtin_count(entries, mirrored_contents)
+    return {"name": "builtin_mirror", "ok": missing == 0,
+            "detail": f"unmirrored={missing}"}
+
+
+def read_builtin_entries() -> list:
+    home = _hermes_home() / "memories"
+    entries = []
+    for name in ("MEMORY.md", "USER.md"):
+        path = home / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        parts = [part.strip() for part in path.read_text(encoding="utf-8").split("\n§\n") if part.strip()]
+        if parts and parts[0].startswith("#"):
+            parts = parts[1:]
+        entries.extend(parts)
+    return entries
+
+
+def read_mirrored_contents(vault: Path) -> set:
+    path = vault / ".mirror-map.json"
+    if not path.is_file():
+        return set()
+    value = json.loads(path.read_text(encoding="utf-8"))
+    records = value.get("records", {}) if isinstance(value, dict) else {}
+    return {record.get("content") for record in records.values() if isinstance(record, dict)}
 
 
 def _task_ceiling() -> int | str | None:
@@ -293,7 +319,9 @@ def _service_diagnostics(config: Dict, run: Callable) -> tuple:
     return not issues, "; ".join(issues) if issues else "managed artifacts and loaded ExecStart current", True
 
 
-def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) -> List[Dict]:
+def collect_checks(vault: Path, config: Dict, runner: Callable | None = None, *,
+                   builtin_entries: list | None = None,
+                   mirrored_contents: set | None = None) -> List[Dict]:
     raw_run = runner or _default_runner
 
     def run(argv):
@@ -334,6 +362,9 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) ->
     add("mirror", not state.get("mirror_error") and
         not state.get("mirror_refresh_required") and (pending in (0, None)),
         f"records={state['mirror_records']} pending={pending} error={state.get('mirror_error')}")
+    if builtin_entries is not None and mirrored_contents is not None:
+        gap = builtin_mirror_check(builtin_entries, mirrored_contents)
+        add(gap["name"], gap["ok"], gap["detail"])
     identity_issues = []
     if state["delivery_failed"]:
         identity_issues.append("delivery FAILED marker present")
@@ -369,7 +400,8 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None) ->
 
 
 def report(checks: List[Dict]) -> Dict:
-    checked = sorted(c["name"] for c in checks) == sorted(REQUIRED_CHECKS)
+    required = [c["name"] for c in checks if c["name"] in REQUIRED_CHECKS]
+    checked = sorted(required) == sorted(REQUIRED_CHECKS) and len(required) == len(REQUIRED_CHECKS)
     failures = [c for c in checks if c["ok"] is not True]
     return {"ok": checked and not failures, "checks": checks,
             "failures": [c["name"] for c in failures], "checked": checked}
@@ -516,7 +548,8 @@ def zvec_memory_command(args) -> int:
             print(f"  Could not select the vault: {action['error']}")
         return 1
     try:
-        checks = collect_checks(vault, config)
+        checks = collect_checks(vault, config, builtin_entries=read_builtin_entries(),
+                                mirrored_contents=read_mirrored_contents(vault))
     except OSError as exc:
         # Selection already succeeded. Incomplete health is neither absence nor
         # an unknown target: retain this vault for explicit durable admission.
