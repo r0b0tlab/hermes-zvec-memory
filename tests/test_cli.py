@@ -90,7 +90,6 @@ def test_cli_imports_neither_the_provider_nor_host_runtime_modules():
 def test_healthy_vault_reports_every_check(tmp_path, monkeypatch):
     cli = load_cli()
     # The harmless direct-engine double models a target with adequate headroom.
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     checks = cli.collect_checks(healthy_vault(tmp_path, embedding="local/x"), {"zg_bin": "/zg", "embedding": "local/x"},
                                 runner=fake_runner())
     result = cli.report(checks)
@@ -115,7 +114,6 @@ def test_doctor_fails_when_the_engine_or_index_is_broken(tmp_path, engine_ok, in
 def test_missing_inbox_is_not_a_failure_and_pending_work_is(tmp_path, monkeypatch):
     cli = load_cli()
     # The harmless direct-engine double models a target with adequate headroom.
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     (vault / ".mirror-inbox.sqlite3").unlink()
     assert cli.report(cli.collect_checks(vault, {"zg_bin": "/zg"}, runner=fake_runner()))["ok"] is True
@@ -134,7 +132,6 @@ def test_delivery_marker_and_pending_mirror_work_fail_the_check(tmp_path):
 
 def test_doctor_and_status_exit_codes_and_json(tmp_path, monkeypatch, capsys):
     cli = load_cli()
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     monkeypatch.setattr(cli, "_configured", lambda: (vault, {"zg_bin": "/zg"}))
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
@@ -148,7 +145,6 @@ def test_doctor_and_status_exit_codes_and_json(tmp_path, monkeypatch, capsys):
 
 def test_reindex_asks_for_a_rebuild_and_reports_state(tmp_path, monkeypatch, capsys):
     cli = load_cli()
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     vault = healthy_vault(tmp_path)
     monkeypatch.setattr(cli, "_configured", lambda: (vault, {"zg_bin": "/zg"}))
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
@@ -210,7 +206,6 @@ def test_tasks_check_fails_on_a_low_service_ceiling(tmp_path, monkeypatch):
 def test_tasks_check_does_not_substitute_caller_for_missing_managed_service(tmp_path, monkeypatch):
     from test_cli_health_finish import managed_fixture
     cli = load_cli()
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
     _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch, LoadState="not-found")
     tasks = next(c for c in cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
                  if c["name"] == "tasks")

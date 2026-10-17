@@ -69,17 +69,6 @@ def read_mirrored_contents(vault: Path) -> set:
     return {record.get("content") for record in records.values() if isinstance(record, dict)}
 
 
-def _task_ceiling() -> int | str | None:
-    """Direct target cgroup limit: explicit unlimited is distinct from unknown."""
-    try:
-        for line in Path("/proc/self/cgroup").read_text().splitlines():
-            relative = line.partition("::")[2].strip()
-            value = (Path("/sys/fs/cgroup") / relative.lstrip("/") / "pids.max").read_text().strip()
-            return "unlimited" if value == "max" else int(value)
-    except (OSError, ValueError):
-        return None
-
-
 def _unit_tasks_max(run: Callable, unit: str = UNIT_NAME) -> tuple:
     """Only a loaded managed target establishes its ceiling; never substitute caller.
 
@@ -390,7 +379,10 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None, *,
     if managed is None:
         add("tasks", False, "unknown task target (service selection unreadable)")
         return checks
-    ceiling, source = _unit_tasks_max(run) if managed else (_task_ceiling(), "caller cgroup")
+    if not managed:
+        add("tasks", True, "not_managed; caller cgroup not consulted")
+        return checks
+    ceiling, source = _unit_tasks_max(run)
     observed = "unknown" if ceiling is None else ceiling
     detail = (f"{source} TasksMax={observed}" if source != "caller cgroup"
               else f"caller cgroup pids.max={observed}")
