@@ -1,0 +1,16 @@
+name: zvec-memory
+repo: https://github.com/r0b0tlab/hermes-zvec-memory
+sha: 7e0bd1dc7b87ad15006fdaff3f9bd2da2bff305f
+subdir: zvec-memory
+version: "0.3.1"
+description: "Local-first memory over a zg-indexed Markdown vault: hybrid semantic and keyword recall, no cloud."
+maintainer: r0b0tlab
+tier: community
+category: memory
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []
