@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .hostio import atomic_json_write
-from .settings import DEFAULT_EMBEDDING, PINNED_ENGINE_VERSION, validate_core_config
+from .settings import DEFAULT_EMBEDDING, PINNED_ENGINE_INTEGRITY, PINNED_ENGINE_VERSION, validate_core_config
 
 ENGINE_PACKAGE = "@zvec/zvec-grep"
 PINNED_VERSION = PINNED_ENGINE_VERSION
@@ -333,6 +333,19 @@ def verified_node(config) -> Path:
     return node
 
 
+def registry_integrity(version: str) -> str:
+    """Official registry integrity for the exact package version. No install."""
+    proc = subprocess.run(
+        ["npm", "view", f"{ENGINE_PACKAGE}@{version}", "dist.integrity", "--json"],
+        capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise ValueError("registry integrity lookup failed")
+    value = json.loads(proc.stdout)
+    if not isinstance(value, str) or not value.startswith("sha512-"):
+        raise ValueError("registry integrity is not a sha512 pin")
+    return value
+
+
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                    npm: str | None = None) -> dict:
     """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
@@ -369,6 +382,12 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     if npm_bin is None:
         return {"status": "no-npm", "detail": "npm not found; install Node.js >= 22"}
     npm_bin = str(Path(npm_bin).resolve())
+    try:
+        published = registry_integrity(version)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"status": "integrity-mismatch", "detail": type(exc).__name__}
+    if published != PINNED_ENGINE_INTEGRITY:
+        return {"status": "integrity-mismatch", "expected": PINNED_ENGINE_INTEGRITY, "found": published}
     prefix.mkdir(parents=True, exist_ok=True)
     # Execute npm's CLI with the exact admitted interpreter; PATH also pins its
     # ordinary env-node children. No later resolver may switch this installation.

@@ -251,6 +251,7 @@ def test_install_engine_resolves_npm_from_path(tmp_path, monkeypatch, default_no
         return name if name == "/opt/node/bin/npm" else None
 
     monkeypatch.setattr(engine.shutil, "which", fake_which)
+    monkeypatch.setattr(engine, "registry_integrity", lambda version: engine.PINNED_ENGINE_INTEGRITY)
     seen = []
 
     def npm_failure(argv, **kwargs):
@@ -406,6 +407,8 @@ def test_node_path_selected_for_install_readiness_and_launcher(tmp_path, unit_di
 
     def fixture_install(argv, **kwargs):
         seen.append((argv, kwargs))
+        if argv[:2] == ["npm", "view"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(engine.PINNED_ENGINE_INTEGRITY), "")
         if "install" in argv:
             assert argv[:2] == [str(selected), str(npm)]
             assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(selected.parent)
@@ -525,3 +528,18 @@ def test_install_engine_without_npm_says_so(tmp_path, monkeypatch, default_node)
     monkeypatch.setattr(engine.shutil, "which", lambda name: None)
     result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(default_node)))
     assert result["status"] == "no-npm" and "Node.js" in result["detail"]
+
+
+def test_install_engine_refuses_integrity_mismatch_before_npm(tmp_path, monkeypatch, default_node):
+    engine = load_engine()
+    monkeypatch.setattr(engine, "registry_integrity", lambda version: "sha512-different")
+
+    def run(argv, **kwargs):
+        if argv == [str(default_node), "--version"]:
+            return engine.subprocess.CompletedProcess(argv, 0, "v26.8.1\n", "")
+        pytest.fail("npm install must not run")
+
+    monkeypatch.setattr(engine.subprocess, "run", run)
+    monkeypatch.setattr(engine.shutil, "which", lambda name: "/opt/node/bin/npm" if name == "npm" else str(default_node))
+    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(default_node)))
+    assert result["status"] == "integrity-mismatch"

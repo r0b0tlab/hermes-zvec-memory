@@ -7,6 +7,7 @@ from .hostio import cfg_get, read_user_config_raw
 
 DEFAULT_EMBEDDING = "local/potion-retrieval-32m"
 PINNED_ENGINE_VERSION = "0.2.2"
+PINNED_ENGINE_INTEGRITY = "sha512-6xsF21zgUh98W3BmH7+Nz/Esdx4Ps3ibs+DHluh/uo2O45xCMeM+pkmdRlcagkONHRO2pM2KiGgKHVmRGKxBtA=="
 
 
 def validate_core_config(config, *, engine_version=PINNED_ENGINE_VERSION):
