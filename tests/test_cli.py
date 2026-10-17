@@ -278,3 +278,12 @@ def test_engine_without_an_action_prints_usage():
     parser = argparse.ArgumentParser(prog="hermes zvec-memory")
     cli.register_cli(parser)
     assert cli.zvec_memory_command(parser.parse_args(["engine"])) == 2
+
+
+def test_builtin_mirror_gap_is_a_failed_check():
+    cli = load_cli()
+    assert cli.unmirrored_builtin_count(["alpha", "beta"], {"beta"}) == 1
+    check = cli.builtin_mirror_check(["alpha"], set())
+    assert check["name"] == "builtin_mirror"
+    assert check["ok"] is False
+    assert check["detail"] == "unmirrored=1"

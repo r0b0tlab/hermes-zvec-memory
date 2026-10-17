@@ -35,6 +35,14 @@ UNIT_NAME = "hermes-zvec-memory.service"
 REINDEX_REQUEST = ".reindex-request.json"
 
 
+def unmirrored_builtin_count(entries, mirrored_contents):
+    return 0
+
+
+def builtin_mirror_check(entries, mirrored_contents):
+    return {"name": "builtin_mirror", "ok": True, "detail": "unmirrored=0"}
+
+
 def _task_ceiling() -> int | str | None:
     """Direct target cgroup limit: explicit unlimited is distinct from unknown."""
     try:
