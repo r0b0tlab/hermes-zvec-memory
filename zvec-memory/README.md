@@ -1,10 +1,17 @@
 # zvec-memory provider
 
-**0.3.0 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
+**0.3.1 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
 configuration documented by the repository's `docs/release-0.3.0-validation.md`.
 A published, remotely verified tag identifies the release; publication does not
 install or activate this code in production. Historical broader-feature notes
 are superseded by `docs/reduced-core-contract.md`.
+
+Disclosure: this provider runs a local daemon on `127.0.0.1:17999`. Setup can
+run one explicit `npm install` of `@zvec/zvec-grep@0.2.2` from
+`registry.npmjs.org`, pinned by `PINNED_ENGINE_INTEGRITY`
+(`sha512-6xsF21zgUh98W3BmH7+Nz/Esdx4Ps3ibs+DHluh/uo2O45xCMeM+pkmdRlcagkONHRO2pM2KiGgKHVmRGKxBtA==`).
+There are no cloud embeddings and no self-updater. This is not derived from
+catalog entry `memory-zvec`.
 
 Local-first Hermes memory over a Markdown vault indexed by zg. This standalone
 provider does not modify Hermes core. Built-in MEMORY.md and USER.md continue to
