@@ -93,6 +93,7 @@ def test_unit_template_declares_the_task_ceiling_and_the_listen_address(tmp_path
     config = config_for(tmp_path, server_url="http://127.0.0.1:18099/mcp")
     unit = engine.unit_template(tmp_path / "hermes-home", config)
     assert f"TasksMax={engine.TASKS_MAX}\n" in unit
+    assert "MemoryMax=4294967296\n" in unit
     assert f'ExecStart="{tmp_path}/runtime_root/zg-default" server run --listen "127.0.0.1:18099"' in unit
     assert f'--token-file "{tmp_path}/engine-home/server.token"' in unit
     assert "WantedBy=default.target\n" in unit

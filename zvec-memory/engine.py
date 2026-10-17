@@ -177,6 +177,7 @@ def unit_template(hermes_home, config=None) -> str:
         "# peak is 138-150 tasks during warm churn, so declare a headroom floor instead of\n"
         "# inheriting the user manager's ambient DefaultTasksMax.\n"
         f"TasksMax={TASKS_MAX}\n"
+        "MemoryMax=4294967296\n"
         "UMask=0077\n"
         "NoNewPrivileges=true\n"
         "\n"
