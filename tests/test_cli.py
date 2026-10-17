@@ -218,6 +218,20 @@ def test_tasks_check_does_not_substitute_caller_for_missing_managed_service(tmp_
     assert "unknown" in tasks["detail"]
 
 
+def test_unmanaged_tasks_check_does_not_read_caller_cgroup(tmp_path, monkeypatch):
+    from test_cli_health_finish import managed_fixture
+    cli = load_cli()
+    def boom():
+        raise AssertionError("caller cgroup read")
+    monkeypatch.setattr(cli, "_task_ceiling", boom, raising=False)
+    _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch)
+    config["zg_bin"] = "/not/the/managed/launcher"
+    tasks = next(c for c in cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
+                 if c["name"] == "tasks")
+    assert tasks["ok"] is True
+    assert tasks["detail"] == "not_managed; caller cgroup not consulted"
+
+
 @pytest.mark.parametrize("raw", ["$HERMES_HOME/zvec-memory", "${HERMES_HOME}/vault", "~/vault", "/abs/vault", "relative/vault"])
 def test_vault_resolution_matches_the_provider(tmp_path, raw):
     cli = load_cli()
