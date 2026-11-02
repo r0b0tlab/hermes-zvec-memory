@@ -89,7 +89,7 @@ def read_user_config_raw(config_path: Union[str, Path]) -> Dict[str, Any]:
     Only legal for the legacy read-only fallback in ``_load_plugin_config``;
     behavioural reads belong to ``config.json`` under the Hermes home.
     """
-    import yaml  # supplied by the host process; never needed on the runtime path
+    import yaml  # declared in plugin.yaml; used only by the legacy fallback
 
     try:
         with open(config_path, encoding="utf-8") as handle:

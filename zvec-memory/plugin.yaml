@@ -1,6 +1,8 @@
 name: zvec-memory
 version: 0.3.1
 description: "Local-first memory over a zg-indexed Markdown vault: hybrid semantic + keyword recall, no cloud."
+python_dependencies:
+  - "PyYAML>=6,<7"
 hooks:
   - on_session_end
   - on_memory_write
