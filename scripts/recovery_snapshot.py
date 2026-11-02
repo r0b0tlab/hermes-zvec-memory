@@ -447,7 +447,17 @@ def sqlite_copy(raw, evidence_base, dest, scratch_parent, *, admitted=None):
             if '-wal' in lane_inputs or '-shm' in lane_inputs:
                 validate_wal(copied, Path(str(copied) + '-wal'), Path(str(copied) + '-shm'))
                 Path(str(copied) + '-shm').unlink()
-            uri = 'file:' + quote(str(copied.absolute()), safe='/') + '?mode=ro'
+            # Only a sidecar-free admitted image may be opened immutable. A
+            # normal read-only SQLite open of a closed WAL-mode database can
+            # create an empty WAL/SHM, which is not admitted evidence.
+            no_wal = '-wal' not in lane_inputs
+            uri = ('file:' + quote(str(copied.absolute()), safe='/') + '?mode=ro'
+                   + ('&immutable=1' if no_wal else ''))
+            def require_no_sidecars():
+                if no_wal and any(os.path.lexists(str(copied) + s)
+                                  for s in ('-wal', '-shm', '-journal')):
+                    raise Refusal('SQLite staged sidecar drift')
+            require_no_sidecars()
             with closing(sqlite_connect(uri, uri=True, timeout=0)) as src:
                 has_fts = admit_sqlite_schema(src)
                 if src.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
@@ -469,8 +479,10 @@ def sqlite_copy(raw, evidence_base, dest, scratch_parent, *, admitted=None):
                 # Closing the backup connection checkpoints any destination WAL;
                 # compare only the resulting stable, sidecar-free backup bytes.
                 dest_uri = 'file:' + quote(str(output.absolute()), safe='/') + '?mode=ro&immutable=1'
+                require_no_sidecars()
                 with closing(sqlite_connect(dest_uri, uri=True)) as dst:
                     compare_sqlite_pages(src, dst, copied, output, work)
+                require_no_sidecars()
                 # Rebind the exact pager inputs after SQLite has finished reading.
                 for suffix in ('', '-wal'):
                     if suffix in lane_inputs:
