@@ -35,11 +35,26 @@ best-effort; explicit store confirms the source file write, not immediate native
 index visibility. Session records capture their originating ID before enqueue.
 
 Mirror ownership uses `.mirror-map.json`, `.mirror-staging/`, and the process lock
-`.mirror.lock`; critical notifications use `.mirror-inbox.sqlite3`. Do not delete
+`.mirror.lock`; critical notifications use `.mirror-inbox.sqlite3`. Cooperating
+inbox writers also use the persistent `.mirror-inbox-admission.lock` turnstile.
+Do not remove or replace that lock file while any provider may be active: doing
+so splits admission across inodes. The turnstile reduces writer barging but is
+not a FIFO guarantee among multiple waiters, and older/noncooperating writers
+bypass it. Writer admission shares a 200 ms budget; scheduling, filesystem
+operations and durable SQLite commit cannot be bounded by that budget. Do not delete
 these independently to reset an error. Pending notifications/recovery gate
 recall. A `.mirror-delivery-failed.json` marker requires reconciliation with the
 canonical built-in memories after restoring storage health. Removing a mirrored
 fact does not erase historical session logs or backups.
+
+On Python-managed `os.fork`, the child closes its inherited turnstile descriptors
+without unlocking the parent's gate. Fork is synchronized with descriptor open
+and close, so a fork may wait for an in-progress filesystem operation. Do not
+fork from a signal handler or from inside an admission descriptor operation, and
+do not use inherited SQLite connections or continue an inherited transaction in
+the child; create a new inbox after fork instead. Native code that forks without
+running Python's at-fork hooks is outside this guarantee. The close-on-exec gate
+descriptor does not survive a successful exec.
 
 Install/setup details, test commands, benchmark methodology, and recovery caveats
 are in the repository README:

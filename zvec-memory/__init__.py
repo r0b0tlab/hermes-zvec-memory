@@ -112,7 +112,7 @@ MEMORY_STORE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "Fact content (required)."},
+            "content": {"type": "string", "description": "Fact content (required, at most 2000 characters; longer content is rejected, never truncated)."},
             "category": {
                 "type": "string",
                 "enum": ["user_pref", "project", "tool", "general"],
@@ -721,6 +721,15 @@ class ZvecMemoryProvider(MemoryProvider):
     def _save_mirror_state(self, state):
         state.setdefault("schema_version", MIRROR_MAP_SCHEMA)
         atomic_json_write(self._vault / ".mirror-map.json", state, mode=0o600)
+        self._sync_mirror_directory(self._vault)
+
+    @staticmethod
+    def _sync_mirror_directory(path):
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def _mirror_root(self, directory):
         # _vault is canonicalized at initialization: do not re-anchor trust
@@ -769,6 +778,22 @@ class ZvecMemoryProvider(MemoryProvider):
                 previous = metadata.get("previous_content") if authoritative else metadata.get("old_text")
                 if not isinstance(previous, str) or not previous:
                     raise ValueError("Exact previous memory content is required for destructive mirroring")
+                # A map-owned whole-file seed is not an entry identity.  Even
+                # if an exact entry record also exists, mutating it would leave
+                # the whole-file projection stale. Keep the notification in
+                # the durable inbox for explicit reconciliation instead.
+                for record in records.values():
+                    if record["target"] != target:
+                        continue
+                    # The host opens source memory in universal-newline mode.
+                    # Normalize only for detecting a conflicting whole-file
+                    # record; keep its owned bytes and identity unchanged.
+                    normalized = record["content"].removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+                    if "\n§\n" not in normalized:
+                        continue
+                    entries = [part.strip() for part in normalized.split("\n§\n") if part.strip()]
+                    if any(previous == part if authoritative else previous in part for part in entries):
+                        raise ValueError("Owned whole-file mirror requires reconciliation")
                 matches = [key for key, record in records.items()
                            if record["target"] == target and record["content"] == previous]
                 if len(matches) > 1:
@@ -832,14 +857,20 @@ class ZvecMemoryProvider(MemoryProvider):
                 except FileExistsError:
                     if not os.path.samefile(staged, path):
                         raise ValueError("Mirror destination already exists")
+                self._sync_mirror_directory(path.parent)
                 staged.unlink()
+                self._sync_mirror_directory(staged.parent)
             elif not path.is_file():
                 raise ValueError("Missing staged mirror; repair required")
+            else:
+                self._sync_mirror_directory(path.parent)
             state["pending_creates"].remove(item)
             state["refresh_required"] = True
             self._save_mirror_state(state)
         for relative in list(state["pending_deletes"]):
-            self._mirror_file(relative).unlink(missing_ok=True)
+            path = self._mirror_file(relative)
+            path.unlink(missing_ok=True)
+            self._sync_mirror_directory(path.parent)
             state["pending_deletes"].remove(relative)
             state["refresh_required"] = True
             self._save_mirror_state(state)
@@ -1221,9 +1252,14 @@ class ZvecMemoryProvider(MemoryProvider):
         try:
             if not isinstance(args, dict) or not isinstance(args.get("content"), str):
                 return tool_error("Required 'content' must be a string")
-            content = args["content"].strip()
-            if not content:
+            content = args["content"]
+            if not content.strip():
                 return tool_error("Missing required argument: 'content'")
+            if len(content) > MAX_STORED_CHARS:
+                return tool_error(
+                    f"'content' exceeds {MAX_STORED_CHARS} characters; "
+                    "no fact was stored. Split it into explicitly linked parts or use an archival store."
+                )
             category = str(args.get("category", "general"))
             if category not in ("user_pref", "project", "tool", "general"):
                 return tool_error(f"Unknown category: {category}")
@@ -1231,7 +1267,7 @@ class ZvecMemoryProvider(MemoryProvider):
             if not isinstance(tags, str):
                 return tool_error("'tags' must be a string")
             tags = tags.strip()
-            path = self._write_fact(content[:MAX_STORED_CHARS], category, tags)
+            path = self._write_fact(content, category, tags)
             try:
                 self._maybe_reindex()
             except Exception:

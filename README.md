@@ -134,6 +134,11 @@ Model downloads require network; local retrieval itself needs no cloud account.
 Facts use exclusive private file creation instead of content-derived colliding
 names. Symlinked writer directories are rejected. Explicit memory_store returns
 `stored` only after the file write succeeds; index visibility is asynchronous.
+It preserves the submitted text (including leading/trailing whitespace), and
+refuses content longer than 2,000 characters before creating a fact rather than
+silently truncating it. Keep longer material in the authoritative archive or
+store explicitly linked shorter facts; a successful store does not certify
+index visibility or replace an archive.
 Automatic persistence uses a bounded FIFO and logs rejected work or incomplete
 shutdown rather than claiming it was flushed.
 
@@ -191,7 +196,10 @@ checking the cited file content. Provider backup/restore is unsupported;
 `backup_paths()` explicitly refuses without resolving or initializing a vault.
 The host collector tolerates that refusal. This does not prevent the host's
 generic profile archive from including profile-local files; such an archive is
-not a qualified provider snapshot or restoration procedure.
+not a qualified provider snapshot or restoration procedure. An independent,
+explicitly scoped raw offline snapshot and isolated verification helper is
+available in [`docs/recovery-snapshot.md`](docs/recovery-snapshot.md); it requires
+writer quiescence and does not add provider backup/restore support.
 
 Offline tests require a Hermes checkout on `HERMES_AGENT_DIR` and a separate
 Python environment with the pinned test dependencies:
@@ -199,18 +207,40 @@ Python environment with the pinned test dependencies:
 ```sh
 uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -r requirements-test.txt
-HERMES_AGENT_DIR=/absolute/hermes-agent .venv/bin/python -m pytest tests/ -m 'not integration' -q
 ```
 
-Native tests require explicit opt-in and a reusable local model cache:
+The repository test guard requires a private test root and explicit paths for
+all HOME/XDG/runtime/cache variables. Never point tests at a real Hermes home or
+the production launcher: a launcher may override your isolated environment.
+For example, in a shell with `TMPDIR` set to a private scratch directory:
 
 ```sh
-HERMES_AGENT_DIR=/absolute/hermes-agent \
-ZVEC_RUN_NATIVE=1 \
-ZVEC_TEST_BIN=/absolute/zg \
-ZVEC_TEST_MODEL_CACHE=/absolute/test-model-cache \
-.venv/bin/python -m pytest tests/test_zg_native.py tests/test_provider_native.py -q
+T="$(mktemp -d "${TMPDIR:?}/zvec-test.XXXXXXXX")"
+mkdir -p "$T"/{home,hermes,config,cache,data,state,tmp,runtime,models}
+env HOME="$T/home" HERMES_HOME="$T/hermes" \
+  XDG_CONFIG_HOME="$T/config" XDG_CACHE_HOME="$T/cache" \
+  XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state" TMPDIR="$T/tmp" \
+  HERMES_ZVEC_RUNTIME_DIR="$T/runtime" HERMES_ZVEC_MODEL_CACHE="$T/models" \
+  ZVEC_TEST_ROOT="$T" HERMES_AGENT_DIR=/absolute/hermes-agent \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  .venv/bin/python -m pytest tests/ -m 'not integration' -q
 ```
+
+Native tests require explicit opt-in, an isolated engine launcher that respects
+its caller's environment, and a disposable copy of the local model cache. Use
+the same `env` invocation shown above, add `ZVEC_RUN_NATIVE=1`,
+`ZVEC_TEST_BIN=/absolute/isolated-launcher` and
+`ZVEC_TEST_MODEL_CACHE=/absolute/disposable-model-cache`, and replace its final
+pytest command with:
+
+```sh
+.venv/bin/python -m pytest tests/test_zg_native.py tests/test_current_host_native_memory.py -q
+```
+
+The older `test_provider_native.py` lifecycle uses the historical Hermes
+`replace` action, which current hosts may reject; retain its result and use the
+current-host test for patch semantics rather than treating a refusal as a pass.
+The native launcher and model inputs must not change the real vault or runtime.
 
 These use synthetic data and temporary homes. Historical full-scope tests are
 preserved, including desktop/config, migration, backup, and model-switching

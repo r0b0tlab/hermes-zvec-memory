@@ -1,10 +1,77 @@
 """Durable FIFO notifications, independent of the long mirror/index lock."""
+import fcntl
 import json
 import os
 import random
 import sqlite3
+import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+
+
+def _admission_busy():
+    error = sqlite3.OperationalError("database is locked (inbox admission)")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    error.sqlite_errorname = "SQLITE_BUSY"
+    return error
+
+
+# Share one registry across provider module aliases and reloads, not one callback
+# per writer. The mutex makes descriptor
+# open/registration and removal/close atomic with respect to fork, including
+# forks from a different thread while os.open/os.close have released the GIL.
+# Each mutable handle is invalidated in the child so a later context exit
+# cannot close an unrelated descriptor which reused the same number.
+if "_zvec_memory_inbox_turnstile_registry_v1" not in os.__dict__:
+    class _TurnstileRegistry:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.handles = []
+            os.register_at_fork(before=self.lock.acquire,
+                                after_in_parent=self.lock.release,
+                                after_in_child=self._after_fork_child)
+
+        def _after_fork_child(self):
+            try:
+                for handle in self.handles:
+                    fd, handle[0] = handle[0], None
+                    if fd is not None:
+                        os.close(fd)  # never LOCK_UN: that would unlock the parent
+                self.handles.clear()
+            finally:
+                self.lock.release()
+
+        def open(self, path, deadline):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.lock.acquire(timeout=remaining):
+                raise _admission_busy()
+            try:
+                if time.monotonic() >= deadline:
+                    raise _admission_busy()
+                fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                handle = [fd]
+                try:
+                    self.handles.append(handle)
+                except BaseException:
+                    os.close(fd)
+                    raise
+                return handle
+            finally:
+                self.lock.release()
+
+        def close(self, handle):
+            with self.lock:
+                fd, handle[0] = handle[0], None
+                if fd is not None:
+                    self.handles.remove(handle)
+                    os.close(fd)
+
+    # Distinct module aliases can race their first imports. Each candidate is
+    # fully registered before publication, so even a fork during bootstrap is
+    # safe; at most those concurrent bootstrap candidates add empty callbacks.
+    os.__dict__.setdefault("_zvec_memory_inbox_turnstile_registry_v1", _TurnstileRegistry())
+
+_turnstile_registry = os.__dict__["_zvec_memory_inbox_turnstile_registry_v1"]
 
 
 class MirrorInbox:
@@ -72,16 +139,59 @@ class MirrorInbox:
         self.close()
 
     @contextmanager
+    def _writer_turnstile(self, deadline):
+        # Persistent inode: never unlink this file while any inbox can be open.
+        # Separate from SQLite's fcntl locks and from the long mirror lock.
+        path = self.path.with_name(".mirror-inbox-admission.lock")
+        handle = _turnstile_registry.open(path, deadline)
+        try:
+            while True:
+                if handle[0] is None:
+                    raise RuntimeError("inbox admission cannot continue in a fork child")
+                if time.monotonic() >= deadline:
+                    raise _admission_busy()
+                try:
+                    fcntl.flock(handle[0], fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _admission_busy()
+                    time.sleep(min(remaining, random.uniform(0.001, 0.003)))
+            # A contender retains this gate while waiting for SQLite, so a
+            # previous winner cannot immediately barge back in front of it.
+            # flock polling itself is not FIFO among multiple gate waiters.
+            if handle[0] is None:
+                raise RuntimeError("inbox admission cannot continue in a fork child")
+            yield
+        finally:
+            _turnstile_registry.close(handle)
+
+    @contextmanager
     def connect(self, *, writer=False):
         deadline = time.monotonic() + 0.2
         db = sqlite3.connect(self.path, timeout=0 if writer else 0.2)
         try:
-            db.execute("PRAGMA synchronous=FULL")
-            with db:
+            # The same deadline covers turnstile, setup and SQLite reservation.
+            # Release the gate immediately after BEGIN, not after the commit:
+            # a waiting peer can then hold it while the current writer finishes.
+            with self._writer_turnstile(deadline) if writer else nullcontext():
+                while True:
+                    try:
+                        db.execute("PRAGMA synchronous=FULL")
+                        break
+                    except sqlite3.OperationalError as exc:
+                        if getattr(exc, "sqlite_errorcode", None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                            raise
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise
+                        time.sleep(min(remaining, random.uniform(0.001, 0.003)))
+                        if time.monotonic() >= deadline:
+                            raise
                 if writer:
-                    # SQLite's increasing busy sleeps can miss short vacancies
-                    # during append/ack churn. Retry only reservation, with short
-                    # desynchronized waits and one shared 200ms admission budget.
+                    if time.monotonic() >= deadline:
+                        raise _admission_busy()
                     while True:
                         try:
                             db.execute("BEGIN IMMEDIATE")
@@ -95,8 +205,14 @@ class MirrorInbox:
                             time.sleep(min(remaining, random.uniform(0.001, 0.003)))
                             if time.monotonic() >= deadline:
                                 raise
-                # Mutation and FULL commit are performed once. Never replay an
-                # I/O or ambiguous commit failure as though admission had failed.
+            # Even a successful BEGIN or gate close can finish after the
+            # admission deadline. Roll back before exposing any mutation.
+            if writer and time.monotonic() >= deadline:
+                db.rollback()
+                raise _admission_busy()
+            # Mutation and FULL commit are performed once. Never replay an
+            # I/O or ambiguous commit failure as though admission had failed.
+            with db:
                 yield db
         finally:
             db.close()

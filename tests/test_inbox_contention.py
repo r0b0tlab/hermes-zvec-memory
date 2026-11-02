@@ -1,4 +1,5 @@
 """Real process contention: readers must not consume admission's lock budget."""
+import json
 import multiprocessing
 import sqlite3
 import time
@@ -98,7 +99,7 @@ def _burst_writer(path, ready, start, results, identity):
     inbox = MirrorInbox(path)
     ready.put(identity)
     assert start.wait(10)
-    durations, errors = [], []
+    durations, ack_durations, errors = [], [], []
     for number in range(100):
         began = time.monotonic()
         try:
@@ -109,9 +110,11 @@ def _burst_writer(path, ready, start, results, identity):
         # Acknowledge churn competes for the same writer slot as callbacks.
         item = inbox.first()
         if item:
+            began = time.monotonic()
             inbox.acknowledge(item[0])
+            ack_durations.append(time.monotonic() - began)
     inbox.close()
-    results.put((identity, durations, errors))
+    results.put((identity, durations, ack_durations, errors))
 
 
 def test_two_process_burst_admission(tmp_path):
@@ -127,13 +130,16 @@ def test_two_process_burst_admission(tmp_path):
             ready.get(timeout=10)
         start.set()
         samples = [results.get(timeout=20) for _ in peers]
-        durations = sorted(t for _, times, _ in samples for t in times)
-        errors = [e for _, _, failures in samples for e in failures]
+        durations = sorted(t for _, times, _, _ in samples for t in times)
+        ack_durations = sorted(t for _, _, times, _ in samples for t in times)
+        errors = [e for _, _, _, failures in samples for e in failures]
         print(f"burst admitted={len(durations) - len(errors)}/200 "
               f"p50={durations[99]:.6f} p95={durations[189]:.6f} "
-              f"max={max(durations):.6f} errors={errors}")
+              f"max={max(durations):.6f} ack_count={len(ack_durations)} "
+              f"ack_max={max(ack_durations):.6f} errors={errors}")
         assert not errors
         assert max(durations) < 0.25
+        assert inbox.high_watermark() == 200
     finally:
         start.set()
         for peer in peers:
@@ -141,7 +147,195 @@ def test_two_process_burst_admission(tmp_path):
             if peer.is_alive():
                 peer.kill()
                 peer.join()
-            assert peer.exitcode == 0
+        inbox.close()
+        assert [peer.exitcode for peer in peers] == [0] * len(peers)
+
+
+def _paused_begin_writer(path, ready, start, busy, resume, results):
+    """Pause after a real failed reservation while another writer finishes."""
+    inbox = MirrorInbox(path)
+    original_connect = sqlite3.connect
+
+    class Paused(sqlite3.Connection):
+        def execute(self, sql, *args):
+            try:
+                return super().execute(sql, *args)
+            except sqlite3.OperationalError as exc:
+                if sql == "BEGIN IMMEDIATE" and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY:
+                    busy.set()
+                    if not resume.wait(5):
+                        raise RuntimeError("controller did not resume writer")
+                raise
+
+    sqlite3.connect = lambda *a, **kw: original_connect(*a, factory=Paused, **kw)
+    try:
+        ready.set()
+        assert start.wait(5)
+        inbox.append(["waiting"])
+        results.put("done")
+    finally:
+        sqlite3.connect = original_connect
+        inbox.close()
+
+
+def test_waiting_writer_not_overtaken_by_immediate_reentry(tmp_path):
+    import threading
+
+    inbox = MirrorInbox(tmp_path)
+    ctx = multiprocessing.get_context("spawn")
+    ready, start, busy, resume, results = ctx.Event(), ctx.Event(), ctx.Event(), ctx.Event(), ctx.Queue()
+    child = ctx.Process(target=_paused_begin_writer, args=(tmp_path, ready, start, busy, resume, results))
+    errors = []
+    def newcomer():
+        try:
+            inbox.append(["newcomer"])
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = None
+    try:
+        child.start()
+        assert ready.wait(5)
+        with inbox.connect(writer=True):
+            start.set()
+            # The child really reaches SQLITE_BUSY and pauses at the retry point.
+            assert busy.wait(5)
+        thread = threading.Thread(target=newcomer)
+        thread.start()
+        time.sleep(0.04)  # deterministic opportunity to barge, inside 200ms
+        resume.set()
+        assert results.get(timeout=5) == "done"
+        thread.join(5)
+        assert not thread.is_alive()
+        assert not errors
+        with sqlite3.connect(inbox.path) as db:
+            rows = [json.loads(row[0]) for row in
+                    db.execute("SELECT payload FROM notifications ORDER BY id")]
+        assert rows == [["waiting"], ["newcomer"]]
+    finally:
+        resume.set()
+        if thread is not None:
+            thread.join(5)
+        if child.pid is not None:
+            child.join(5)
+            if child.is_alive():
+                child.kill()
+                child.join()
+        inbox.close()
+    assert child.exitcode == 0
+
+
+def _hold_admission(path, entered):
+    import fcntl
+    import os
+
+    fd = os.open(path, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        entered.set()
+        while True:
+            time.sleep(1)  # no shared synchronization primitive held when killed
+    finally:
+        os.close(fd)
+
+
+def test_admission_gate_timeout_and_process_death_release(tmp_path):
+    inbox = MirrorInbox(tmp_path)
+    lock_path = tmp_path / ".mirror-inbox-admission.lock"
+    ctx = multiprocessing.get_context("spawn")
+    entered = ctx.Event()
+    peer = ctx.Process(target=_hold_admission, args=(lock_path, entered))
+    peer.start()
+    try:
+        assert entered.wait(5)
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked") as caught:
+            inbox.append(["rejected"])
+        assert caught.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        assert 0.15 <= time.monotonic() - started < 0.5
+        assert inbox.first() is None  # readers do not wait for the gate
+        peer.kill()
+        peer.join(5)
+        assert not peer.is_alive()
+        inbox.append(["after death"])
+        assert inbox.first()[1] == ["after death"]
+    finally:
+        if peer.is_alive():
+            peer.kill()
+        peer.join(5)
+        assert not peer.is_alive()
+        inbox.close()
+
+
+def test_admission_gate_refuses_symlink(tmp_path):
+    inbox = MirrorInbox(tmp_path)
+    gate = tmp_path / ".mirror-inbox-admission.lock"
+    target = tmp_path / "foreign"
+    target.write_text("unchanged")
+    gate.unlink()  # safe here: this test has no other inbox users
+    gate.symlink_to(target)
+    try:
+        with pytest.raises(OSError):
+            inbox.append(["rejected"])
+        assert target.read_text() == "unchanged"
+        assert inbox.first() is None
+    finally:
+        inbox.close()
+
+
+def test_gate_and_sqlite_contention_share_one_deadline(tmp_path):
+    import fcntl
+    import os
+    import threading
+
+    inbox = MirrorInbox(tmp_path)
+    fd = os.open(tmp_path / ".mirror-inbox-admission.lock", os.O_RDWR)
+    holder = sqlite3.connect(inbox.path)
+    holder.execute("BEGIN IMMEDIATE")  # a noncooperating SQLite writer
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    def release_gate():
+        time.sleep(0.1)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    thread = threading.Thread(target=release_gate)
+    thread.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            inbox.append(["rejected"])
+        elapsed = time.monotonic() - started
+        assert 0.15 <= elapsed < 0.27
+    finally:
+        thread.join()
+        os.close(fd)
+        holder.rollback()
+        holder.close()
+    try:
+        assert inbox.first() is None
+        inbox.append(["accepted"])
+        assert inbox.first()[1] == ["accepted"]
+    finally:
+        inbox.close()
+
+
+def test_setup_exhausting_admission_budget_does_not_begin(tmp_path, monkeypatch):
+    inbox = MirrorInbox(tmp_path)
+    original = sqlite3.connect
+    statements = []
+
+    class SlowSetup(sqlite3.Connection):
+        def execute(self, sql, *args):
+            statements.append(sql)
+            if sql == "PRAGMA synchronous=FULL":
+                time.sleep(0.21)
+            return super().execute(sql, *args)
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: original(*a, factory=SlowSetup, **kw))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            inbox.append(["rejected"])
+        assert "BEGIN IMMEDIATE" not in statements
+        assert not any(sql.startswith("INSERT") for sql in statements)
+    finally:
         inbox.close()
 
 
