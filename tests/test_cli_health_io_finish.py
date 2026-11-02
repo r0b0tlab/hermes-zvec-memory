@@ -1,15 +1,40 @@
 """Known-vault health I/O and real legacy-YAML dispatcher boundaries.
 
-Health errors are scoped synthetic PermissionErrors at actual pathlib seams,
+Health errors are scoped synthetic PermissionErrors at real filesystem seams,
 not claims of kernel EACCES under namespace root. YAML errors are real parsing.
 """
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from test_cli import load_cli
 from test_cli_health_finish import dispatch
+
+
+def inject_health_fault(monkeypatch, target, operation, make_error, reached):
+    """Instrument the OS stat boundary or actual directory enumeration.
+
+    Python versions implement lstat through different functions; instrument both
+    OS entry points so the target is observed without replacing path predicates.
+    """
+    def wrap(original):
+        def fault(path, *args, **kwargs):
+            if isinstance(path, (str, bytes, os.PathLike)) and Path(os.fsdecode(path)) == target:
+                reached.append(str(path))
+                raise make_error()
+            return original(path, *args, **kwargs)
+        return fault
+
+    if operation == "stat":
+        monkeypatch.setattr(os, "stat", wrap(os.stat))
+        monkeypatch.setattr(os, "lstat", wrap(os.lstat))
+    elif operation == "glob":
+        # Keep the historical IDs while instrumenting the actual replacement.
+        monkeypatch.setattr(os, "scandir", wrap(os.scandir))
+    else:
+        monkeypatch.setattr(Path, operation, wrap(getattr(Path, operation)))
 
 
 @pytest.mark.parametrize("command", ["doctor", "status", "reindex"])
@@ -29,21 +54,16 @@ def test_known_vault_health_io_error_is_redacted_and_does_not_cancel_real_admiss
     monkeypatch.setenv("HERMES_HOME", str(home))
     sentinel = "opaque-private-health-io-diagnostic"
     target = vault / leaf
-    original = getattr(Path, operation)
     observations = []
-    def fault(path, *args, **kwargs):
-        if path == target:
-            observations.append(str(path))
-            raise PermissionError(sentinel)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, operation, fault)
+    inject_health_fault(monkeypatch, target, operation,
+                        lambda: PermissionError(sentinel), observations)
     calls = []
     def run(argv, **kwargs):
         calls.append(argv)
         assert argv[0] != "systemctl", "Custom profile must not inspect the default unit"
         return 1, "", "fixture unavailable"
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged target must not query the managed unit"))
     actual_request = cli._request_reindex
     admitted = []
     def request(path):
@@ -76,41 +96,7 @@ def test_known_vault_health_io_error_is_redacted_and_does_not_cancel_real_admiss
     assert config.read_bytes() == before
 
 
-@pytest.mark.parametrize("malformed", ["parser", "scanner"])
-def test_real_malformed_legacy_yaml_migration_is_private_json_without_publication(
-        tmp_path, monkeypatch, capsys, malformed):
-    import yaml
-    cli = load_cli()
-    home = tmp_path / "selected-home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    sentinel = "opaque-private-legacy-parser-source"
-    text = ("plugins: [" + sentinel + "\n" if malformed == "parser" else
-            "plugins:\n\tzvec-memory: " + sentinel + "\n")
-    legacy = home / "config.yaml"
-    legacy.write_text(text)
-    before = legacy.read_bytes()
-    native = home / "zvec-memory/config.json"
-    assert not native.exists()
-    monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: pytest.fail("Migration must be cold"))
-    monkeypatch.setattr(cli, "_request_reindex", lambda *a, **k: pytest.fail("Migration is not admission"))
-    rc = None
-    try:
-        rc = dispatch(cli, ["migrate-config", "--json"])
-    except yaml.YAMLError as exc:
-        pytest.fail("Legacy YAML exception escaped migration: " + type(exc).__name__)
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert captured.err == "" and sentinel not in captured.out
-    assert rc == 1 and payload["status"] == "failed"
-    assert payload["action"]["status"] == "failed"
-    assert payload["health"]["status"] == "not_checked"
-    assert payload["error"] == ("ParserError" if malformed == "parser" else "ScannerError")
-    assert legacy.read_bytes() == before and not native.exists()
-    assert not list(home.rglob("*.new"))
-
-
-# Append-only controls: the independent parent's 20-case prefix above is frozen.
+# Additional controls for typed errors and target selection.
 def selected_fixture(tmp_path, monkeypatch):
     cli = load_cli()
     home, vault = tmp_path / "home", tmp_path / "vault"
@@ -140,14 +126,9 @@ def test_typed_health_error_preserves_selected_target_and_incomplete_observation
     if selection == "override":
         native.write_text(json.dumps({"vault": str(home / "configured-not-selected")}))
         before = native.read_bytes()
-    original = getattr(Path, operation)
     reached = []
-    def fault(path, *args, **kwargs):
-        if path == vault / leaf:
-            reached.append(True)
-            raise error_type("private-health-diagnostic")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, operation, fault)
+    inject_health_fault(monkeypatch, vault / leaf, operation,
+                        lambda: error_type("private-health-diagnostic"), reached)
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: pytest.fail("Incomplete health must not claim later probes"))
     argv = [command, "--json"] + (["--vault", str(vault)] if selection == "override" else [])
     try:
@@ -188,17 +169,39 @@ def test_new_health_boundary_does_not_swallow_logic_assertions(
     if seam == "collect_checks":
         monkeypatch.setattr(cli, seam, logic)
     else:
-        original = getattr(Path, seam)
-        def fault(path, *args, **kwargs):
-            if path == vault / "facts":
-                return logic()
-            return original(path, *args, **kwargs)
-        monkeypatch.setattr(Path, seam, fault)
+        inject_health_fault(monkeypatch, vault / "facts", seam,
+                            lambda: AssertionError("intentional logic control"), [])
     with pytest.raises(AssertionError, match="intentional logic control"):
         dispatch(cli, [command, "--json"])
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
     assert native.read_bytes() == before and not (vault / cli.REINDEX_REQUEST).exists()
+
+
+@pytest.mark.parametrize("command", ["doctor", "status", "reindex"])
+@pytest.mark.parametrize("raw", ["opaque-private-invalid-json", '{"records": []}'])
+def test_dispatcher_malformed_mirror_is_unhealthy_redacted_and_preserves_target(
+        tmp_path, monkeypatch, capsys, command, raw):
+    cli, home, vault, native = selected_fixture(tmp_path, monkeypatch)
+    mapping = vault / ".mirror-map.json"
+    mapping.write_text(raw)
+    before = mapping.read_bytes(), native.read_bytes()
+    monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "unavailable"))
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Unexpected managed-unit probe"))
+    rc = dispatch(cli, [command, "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert captured.err == "" and "opaque-private" not in captured.out
+    assert payload["checked"] is True and payload["ok"] is False
+    assert {"mirror", "builtin_mirror"} <= set(payload["failures"])
+    assert rc == (1 if command == "doctor" else 0)
+    marker = vault / cli.REINDEX_REQUEST
+    assert marker.exists() is (command == "reindex")
+    if command == "reindex":
+        assert payload["action"]["status"] == "requested"
+        assert payload["action"]["completed"] is False
+        assert marker.stat().st_mode & 0o777 == 0o600
+    assert (mapping.read_bytes(), native.read_bytes()) == before
 
 
 @pytest.mark.parametrize("leaf,check_name", [(".mirror-inbox.sqlite3", "inbox"),
@@ -213,17 +216,13 @@ def test_existing_durable_health_error_is_not_reported_as_absence(
         index.mkdir(exist_ok=True)
         (index / ".zvec-memory-state.json").write_text(json.dumps({
             "plugin_schema": 1, "embedding": "local/potion-retrieval-32m", "zg_bin": "/fixture-engine"}))
-    original = Path.stat if check_name != "identity" else Path.read_text
-    operation = "stat" if check_name != "identity" else "read_text"
     reached = []
-    def fault(path, *args, **kwargs):
-        if path == vault / leaf and condition == "unreadable":
-            reached.append(True)
-            raise PermissionError("private-durable-diagnostic")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, operation, fault)
+    if condition == "unreadable":
+        operation = "stat" if check_name != "identity" else "read_text"
+        inject_health_fault(monkeypatch, vault / leaf, operation,
+                            lambda: PermissionError("private-durable-diagnostic"), reached)
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 512)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged target must not query the managed unit"))
     assert dispatch(cli, ["status", "--json"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -233,115 +232,3 @@ def test_existing_durable_health_error_is_not_reported_as_absence(
     if condition == "unreadable":
         assert reached and "PermissionError" in check["detail"] and payload["ok"] is False
     assert captured.err == "" and "private-durable-diagnostic" not in captured.out
-
-
-@pytest.mark.parametrize("text,error_name", [
-    ("plugins: {zvec-memory: [private-source\n", "ParserError"),
-    ("plugins:\n  zvec-memory: @private-source\n", "ScannerError"),
-    ("plugins: *private-source\n", "ComposerError"),
-    ("plugins: private-source\x00\n", "ReaderError")])
-def test_migration_handles_real_yaml_domain_family_without_source_leak(
-        tmp_path, monkeypatch, capsys, text, error_name):
-    import yaml
-    cli = load_cli()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    legacy = home / "config.yaml"
-    legacy.write_text(text)
-    before = legacy.read_bytes()
-    real_module = cli._plugin_module
-    loaded = []
-    def cold_module(name):
-        assert name in ("settings", "hostio"), "Migration must not initialize provider/native/service helpers"
-        loaded.append(name)
-        return real_module(name)
-    monkeypatch.setattr(cli, "_plugin_module", cold_module)
-    monkeypatch.setattr(cli, "collect_checks", lambda *a: pytest.fail("Migration must not inspect health"))
-    try:
-        rc = dispatch(cli, ["migrate-config", "--json"])
-    except yaml.YAMLError as exc:
-        pytest.fail("Real YAML domain error escaped: " + type(exc).__name__)
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert captured.err == "" and "private-source" not in captured.out
-    assert rc == 1 and payload["error"] == error_name
-    assert payload["status"] == payload["action"]["status"] == "failed"
-    assert payload["health"] == {"status": "not_checked"}
-    assert loaded == ["settings"]
-    assert legacy.read_bytes() == before and not (home / "zvec-memory").exists()
-
-
-@pytest.mark.parametrize("native_text", ["{}", '{"auto_extract":false,"context_chars":0,"unknown":[1,"keep"]}',
-    "[]", "null", "not-json"])
-@pytest.mark.parametrize("malformed", ["plugins: [private-source\n", "plugins:\n\tprivate-source\n"])
-def test_migration_present_native_authority_never_parses_bad_legacy(
-        tmp_path, monkeypatch, capsys, native_text, malformed):
-    import yaml
-    cli, home, vault, native = selected_fixture(tmp_path, monkeypatch)
-    native.write_text(native_text)
-    legacy = home / "config.yaml"
-    legacy.write_text(malformed)
-    before_native, before_legacy = native.read_bytes(), legacy.read_bytes()
-    def no_legacy(*a, **k):
-        pytest.fail("Present native JSON must not parse legacy YAML")
-    monkeypatch.setattr(yaml, "safe_load", no_legacy)
-    valid = native_text.startswith("{")
-    assert dispatch(cli, ["migrate-config", "--json"]) == (0 if valid else 1)
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert captured.err == "" and "private-source" not in captured.out
-    assert payload["status"] == ("current" if valid else "failed")
-    assert payload["health"] == {"status": "not_checked"}
-    assert native.read_bytes() == before_native and legacy.read_bytes() == before_legacy
-    assert sorted(p.name for p in native.parent.iterdir()) == ["config.json"]
-
-
-def test_valid_legacy_yaml_migrates_losslessly_without_provider_or_health(
-        tmp_path, monkeypatch, capsys):
-    cli = load_cli()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    legacy = home / "config.yaml"
-    legacy.write_text("unrelated: keep\nplugins:\n  zvec-memory:\n    auto_extract: false\n"
-                      "    context_chars: 0\n    unknown: [1, keep]\n")
-    before = legacy.read_bytes()
-    real_module = cli._plugin_module
-    def cold_module(name):
-        assert name in ("settings", "hostio")
-        return real_module(name)
-    monkeypatch.setattr(cli, "_plugin_module", cold_module)
-    monkeypatch.setattr(cli, "collect_checks", lambda *a: pytest.fail("No health in migration"))
-    assert dispatch(cli, ["migrate-config", "--json"]) == 0
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    native = home / "zvec-memory/config.json"
-    assert payload["status"] == "migrated" and payload["health"] == {"status": "not_checked"}
-    assert json.loads(native.read_text()) == {"auto_extract": False, "context_chars": 0, "unknown": [1, "keep"]}
-    assert native.stat().st_mode & 0o777 == 0o600 and legacy.read_bytes() == before
-    assert captured.err == ""
-
-
-@pytest.mark.parametrize("seam", ["settings", "yaml-parser"])
-def test_new_yaml_boundary_does_not_swallow_logic_assertions(
-        tmp_path, monkeypatch, capsys, seam):
-    import yaml
-    cli = load_cli()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    legacy = home / "config.yaml"
-    legacy.write_text("plugins: {}\n")
-    before = legacy.read_bytes()
-    def logic(*args, **kwargs):
-        raise AssertionError("intentional migration logic control")
-    if seam == "settings":
-        monkeypatch.setattr(cli._plugin_module("settings"), "load_settings", logic)
-    else:
-        monkeypatch.setattr(yaml, "safe_load", logic)
-    with pytest.raises(AssertionError, match="intentional migration logic control"):
-        dispatch(cli, ["migrate-config", "--json"])
-    captured = capsys.readouterr()
-    assert captured.out == captured.err == ""
-    assert legacy.read_bytes() == before and not (home / "zvec-memory").exists()

@@ -31,7 +31,7 @@ def doctor_fixture(tmp_path, monkeypatch, version="0.2.2\n"):
     native = home / "zvec-memory/config.json"
     native.write_text(json.dumps({"vault": str(vault), "embedding": MODEL, "zg_bin": "/fixture-zg"}))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged target must not query the managed unit"))
     calls = []
 
     def engine(args, timeout=15):

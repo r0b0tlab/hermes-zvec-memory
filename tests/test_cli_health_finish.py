@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cli import load_cli, healthy_vault, fake_runner
+from test_cli import forbid_caller_cgroup, load_cli, healthy_vault, fake_runner
 
 
 def dispatch(cli, argv):
@@ -58,12 +58,12 @@ def test_inbox_invalid_present_fails_without_crash(tmp_path, kind):
 def test_mirror_unreadable_file_fails_without_exception_text(tmp_path, monkeypatch):
     cli = load_cli()
     vault = healthy_vault(tmp_path)
-    original = Path.read_text
+    original = os.open
     def read(path, *args, **kwargs):
-        if path.name == ".mirror-map.json":
+        if Path(path).name == ".mirror-map.json":
             raise PermissionError("opaque-secret")
         return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(cli.os, "open", read)
     result = check(cli, vault, "mirror")
     assert result["ok"] is False
     assert "opaque-secret" not in result["detail"]
@@ -162,7 +162,7 @@ def test_nonmanaged_scope_never_inspects_default_service(tmp_path, monkeypatch, 
 def test_managed_task_limit_requires_known_target(tmp_path, monkeypatch, raw, ok):
     cli = load_cli()
     _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch, tasks=raw)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
+    forbid_caller_cgroup(monkeypatch)
     result = check(cli, healthy_vault(tmp_path), "tasks", config, run)
     assert result["ok"] is ok
     assert "garbled-secret" not in result["detail"]
@@ -172,16 +172,17 @@ def test_managed_task_limit_requires_known_target(tmp_path, monkeypatch, raw, ok
                                         (None, None), ("broken-secret", None)])
 def test_direct_task_limit_distinguishes_unlimited_and_unknown(monkeypatch, raw, expected):
     cli = load_cli()
-    def read(path, *args, **kwargs):
-        if str(path) == "/proc/self/cgroup":
-            return "0::/example\n"
-        if path.name == "pids.max":
-            if raw is None:
-                raise PermissionError("secret")
-            return raw
-        raise AssertionError(str(path))
-    monkeypatch.setattr(Path, "read_text", read)
-    assert cli._task_ceiling() == expected
+    # The current seam observes only the loaded service unit, not our cgroup.
+    forbid_caller_cgroup(monkeypatch)
+    calls = []
+    def run(argv):
+        calls.append(argv)
+        if raw is None:
+            return 1, "", "unavailable"
+        return 0, f"LoadState=loaded\nTasksMax={raw}\n", ""
+    assert cli._unit_tasks_max(run) == (expected, cli.UNIT_NAME)
+    assert calls == [["systemctl", "--user", "show", cli.UNIT_NAME,
+                      "--property=LoadState", "--property=TasksMax"]]
 
 
 @pytest.mark.parametrize("index_ok", [True, False])
@@ -190,7 +191,7 @@ def test_reindex_dispatcher_json_requests_not_completed(tmp_path, monkeypatch, c
     vault = healthy_vault(tmp_path)
     monkeypatch.setattr(cli, "_configured", lambda: (vault, {"zg_bin": "/zg"}))
     monkeypatch.setattr(cli, "_default_runner", fake_runner(index_ok=index_ok))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged target must not query the managed unit"))
     assert dispatch(cli, ["reindex", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is index_ok
@@ -240,39 +241,6 @@ def test_engine_install_dispatcher_emits_one_json(monkeypatch, capsys, placement
     assert "opaque-secret" not in output
 
 
-@pytest.mark.parametrize("native", [None, "{}", '{"context_chars":0}', "opaque-secret", "[]"])
-def test_migrate_config_dispatcher_uses_shared_settings_without_health(tmp_path, monkeypatch, capsys, native):
-    cli = load_cli()
-    home = Path(os.environ["HERMES_HOME"])
-    path = home / "zvec-memory/config.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    legacy = {"auto_extract": False, "context_chars": 0, "unknown": [1, "keep"]}
-    yaml_path = home / "config.yaml"
-    yaml_path.write_text(json.dumps({"plugins": {"zvec-memory": legacy}, "unrelated": "keep"}))
-    if native is not None:
-        path.write_text(native)
-    before_yaml = yaml_path.read_bytes()
-    monkeypatch.setattr(cli, "_hermes_home", lambda: home)
-    monkeypatch.setattr(cli, "collect_checks", lambda *a, **k: pytest.fail("migration must not probe health"))
-    rc = dispatch(cli, ["migrate-config", "--json"])
-    output = capsys.readouterr().out
-    payload = json.loads(output)
-    if native in ("opaque-secret", "[]"):
-        assert rc == 1
-        assert payload["status"] == "failed"
-        assert path.read_text() == native
-    else:
-        assert rc == 0
-        assert payload["status"] == ("migrated" if native is None else "current")
-        assert payload["config"] == str(path)
-        assert cli._plugin_module("settings").load_settings(home) == (legacy if native is None else json.loads(native))
-        if native is None:
-            assert path.stat().st_mode & 0o777 == 0o600
-    assert payload["health"]["status"] == "not_checked"
-    assert "opaque-secret" not in output
-    assert yaml_path.read_bytes() == before_yaml
-
-
 @pytest.mark.parametrize("native", ["{}", "[]", "opaque-secret", None])
 def test_dispatcher_reads_authoritative_settings_once(tmp_path, monkeypatch, capsys, native):
     cli = load_cli()
@@ -286,7 +254,7 @@ def test_dispatcher_reads_authoritative_settings_once(tmp_path, monkeypatch, cap
         path.write_text(native)
     monkeypatch.setattr(cli, "_hermes_home", lambda: home)
     monkeypatch.setattr(cli, "_default_runner", fake_runner())
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged target must not query the managed unit"))
     actual_vault, config = cli._configured()
     if native is None:
         assert config == legacy
@@ -320,12 +288,12 @@ def test_doctor_json_survives_unreadable_boundaries(tmp_path, monkeypatch, capsy
         monkeypatch.setattr(cli.sqlite3, "connect", connect)
         failing = "inbox"
     elif fault == "mirror-stat":
-        original = Path.stat
-        def stat(path, *args, **kwargs):
+        original = Path.lstat
+        def lstat(path, *args, **kwargs):
             if path.name == ".mirror-map.json":
                 raise PermissionError("opaque-secret")
             return original(path, *args, **kwargs)
-        monkeypatch.setattr(Path, "stat", stat)
+        monkeypatch.setattr(Path, "lstat", lstat)
         failing = "mirror"
     elif fault == "sidecar-read":
         original = Path.read_text
@@ -350,7 +318,7 @@ def test_doctor_json_survives_unreadable_boundaries(tmp_path, monkeypatch, capsy
         failing = "service"
     monkeypatch.setattr(cli, "_configured", lambda: (vault, config))
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 1024)
+    forbid_caller_cgroup(monkeypatch)
     rc = dispatch(cli, ["doctor", "--json"])
     output = capsys.readouterr().out
     payload = json.loads(output)
@@ -363,10 +331,11 @@ def test_doctor_json_survives_unreadable_boundaries(tmp_path, monkeypatch, capsy
 
 def test_direct_unknown_task_limit_is_not_healthy(tmp_path, monkeypatch):
     cli = load_cli()
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: None)
+    forbid_caller_cgroup(monkeypatch)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Direct target must not query the managed unit"))
     result = check(cli, healthy_vault(tmp_path), "tasks")
-    assert result["ok"] is False
-    assert "unknown" in result["detail"]
+    assert result == {"name": "tasks", "ok": True,
+                      "detail": "not_managed; caller cgroup not consulted"}
 
 
 def test_engine_helper_stays_cold_in_standalone_dispatch():
@@ -460,4 +429,3 @@ def test_service_uses_installed_admitted_node_not_fixed_system_node(tmp_path, mo
     assert ok is (case in ("selected", "config-absent")), detail
     assert before == [(path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_mode) for path in paths]
     assert all(argv[:3] == ["systemctl", "--user", "show"] for argv in calls)
-

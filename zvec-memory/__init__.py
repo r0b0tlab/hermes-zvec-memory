@@ -192,10 +192,10 @@ class ZvecMemoryProvider(MemoryProvider):
         return shutil.which(self._zg()) is not None
 
     def unavailable_reason(self) -> str:
-        return "zg not found — install with: npm install -g @zvec/zvec-grep (needs Node.js >= 22)"
+        return "zg not found — fresh engine installation is unavailable; reuse requires a separately trusted runtime"
 
     def post_setup(self, hermes_home, config=None):
-        """Host hook (`hermes memory setup`): install the engine, own activation.
+        """Host hook (`hermes memory setup`): check the engine, own activation.
 
         The host looks this up on the provider *instance*
         (`hermes_cli/memory_setup.py::_post_setup_hook`), so it must exist here

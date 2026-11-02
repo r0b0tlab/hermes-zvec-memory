@@ -1,8 +1,7 @@
-"""Append-only replays of newly stale doubles, preserving original assertions.
+"""Replays of doctor fixtures, updated for the current task-target policy.
 
-Original files and failed receipts are immutable. Only fixture identity/version
-and the formerly absent read-denial target are corrected; no product boundary
-or assertion is replaced. These do not turn the raw historical suite green.
+The selection, identity, and read-denial oracles continue to use real fixture
+files. Direct targets no longer borrow the caller's cgroup ceiling.
 """
 import json
 from pathlib import Path
@@ -78,22 +77,24 @@ def test_F3_nonmanaged_selection_original_oracles_with_real_version_shape(
         config.pop("zg_bin")
     config_path = old_selection.write_settings(home, vault, config)
     before = config_path.read_bytes()
-    calls, caller_reads = [], []
+    calls, unit_reads = [], []
     def run(argv, timeout=15):
         calls.append(argv)
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
-    def caller():
-        caller_reads.append(True)
-        return ceiling
+    def unit_tasks(run):
+        unit_reads.append(ceiling)
+        pytest.fail("Nonmanaged target must not query the managed unit")
+    old_cli.forbid_caller_cgroup(monkeypatch)
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", caller)
-    assert old_health.dispatch(cli, ["doctor", "--json"]) == (0 if ok and scope != "unselected" else 1)
+    monkeypatch.setattr(cli, "_unit_tasks_max", unit_tasks)
+    assert old_health.dispatch(cli, ["doctor", "--json"]) == (0 if scope != "unselected" else 1)
     payload = json.loads(capsys.readouterr().out)
     service = next(c for c in payload["checks"] if c["name"] == "service")
     tasks = next(c for c in payload["checks"] if c["name"] == "tasks")
     assert service["ok"] is True and "not_managed" in service["detail"]
-    assert tasks["ok"] is ok and "caller cgroup" in tasks["detail"]
-    assert caller_reads == [True]
+    assert tasks == {"name": "tasks", "ok": True,
+                     "detail": "not_managed; caller cgroup not consulted"}
+    assert unit_reads == []
     assert not any(argv[0] == "systemctl" for argv in calls)
     assert config_path.read_bytes() == before
     assert cli.MIN_TASK_CEILING == 512
@@ -117,7 +118,7 @@ def test_F3_managed_selection_original_oracles_with_real_version_shape(tmp_path,
                        "\nExecStart={ path=" + str(launcher) + " ; argv[]=" + start + " ; ignore_errors=no ; }\n"), ""
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Known managed target cannot inspect caller"))
+    old_cli.forbid_caller_cgroup(monkeypatch)
     assert old_health.dispatch(cli, ["doctor", "--json"]) == (0 if ok else 1)
     payload = json.loads(capsys.readouterr().out)
     service = next(c for c in payload["checks"] if c["name"] == "service")

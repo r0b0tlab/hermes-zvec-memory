@@ -1,7 +1,9 @@
 # Reduced-core 0.3.0 validation
 
-The active release contract is [reduced-core-contract.md](reduced-core-contract.md),
-not the older full-feature candidate table. Historical failures and unexecuted
+This document records the historical v0.3.0 predecessor qualification, not
+validation of the changed 0.3.1-rc.1 candidate. Its release contract was
+[reduced-core-contract.md](reduced-core-contract.md), not the older full-feature
+candidate table. Historical failures and unexecuted
 source packets remain preserved; reducing scope is not relabeling them PASS.
 Remote publication, final integration readback and production deployment are
 separate boundaries. Deployment, real-profile/service changes and catalog
@@ -54,21 +56,26 @@ unloaded-service diagnostics in isolation; no fake systemctl output or productio
 healthy-service claim. Reindex initially reported `requested`, `completed:false`;
 a later real activated provider consumed that same request and rebuilt the index.
 
-## Exact scope reconciliation
+## Historical scope reconciliation
 
-`tests/reduced_core_scope.json` records all 179 original unique nonpasses with
-unchanged original-source hashes and exact nodeids: 120 require supported-model
+The old test manifest and selector were retired from the current tree along with
+obsolete test cases; their original contents remain available in Git at
+`edec6db6abcebae55b5c670374bd1cfe81b86335`. This section records the historical
+qualification only and is not a current test command or a claim that the old
+full suite passed.
+
+The qualification's `tests/reduced_core_scope.json` recorded all 179 original
+unique nonpasses with original-source hashes and exact nodeids: 120 require supported-model
 ordinary safety/recovery successors, 57 are explicitly deferred, and 2 unchanged
 original cases replay after proper prerequisites. All mandatory mappings resolve
 to executed passing successors. No mixed original safety file is ignored; every
 original passing neighbor remains selected. The original full-suite failure and
 historical 8x200 convergence failure remain FAIL.
 
-`scripts/core_test_scope.py` validates the complete canonical case matrix,
-original source hashes and named successor presence, then emits literal pytest
-argv as JSON. It never runs tests, installs/warms assets, or relaxes isolation.
-Use the JSON as an argument array inside a resource-capped isolated test lane,
-not shell evaluation. `${...}` in a nodeid is literal: shell quoting alone does
+At that revision `scripts/core_test_scope.py` validated the complete canonical
+case matrix, original source hashes and named successor presence, then emitted
+literal pytest argv as JSON. This description is historical evidence, not a
+current test command. `${...}` in a nodeid was literal: shell quoting alone does
 not stop systemd's argument expansion. The recorded runner successor adds only
 `systemd-run --expand-environment=no`, with an actual RED/GREEN argv witness;
 all previous caps, snapshots, namespace and cleanup guards are byte-identical.

@@ -1,7 +1,9 @@
 # Offline recovery snapshots (standalone, opt-in)
 
 `scripts/recovery_snapshot.py` creates a **raw scoped snapshot**, not a Hermes
-provider backup, live restore, migration, deployment, or service-health proof. It
+provider backup, live restore, migration, deployment, or service-health proof. For
+a separate Linux-only, explicit host-scoped metadata evidence tool and its limits,
+see [host-recovery.md](host-recovery.md). It is not a live consistency fence. It
 never discovers or reads the live home, credentials, vault, or runtime by default:
 every input path must be supplied. The snapshot does **not** encrypt or sanitize
 anything. The explicitly selected config, built-ins, vault, plugin, wiki and skills
@@ -91,6 +93,49 @@ and size, the backup method, and exclusions. If creation fails, the exclusively
 created destination may remain incomplete; preserve or dispose of it manually
 after inspection. A manifest's mere existence does not prove a capture completed.
 
+Ordinary files and raw SQLite evidence are independently counted and hashed from
+an open source before copying. Capture checks the source descriptor and pathname
+identity, size, modification/change timestamps and digest for drift, then checks
+copy size and SHA-256 and compares source and copy byte-for-byte before adding the
+source receipt to the manifest. A failure leaves an incomplete destination and
+no success digest. These checks detect the exercised copy faults and observed
+source drift; they do not create a filesystem snapshot or eliminate the need for
+quiescence and trusted, stable paths. They also add full-file reads and I/O.
+
+SQLite capture checks byte-validated scratch copies and reconstructs the
+committed pager image independently from main and WAL, comparing every page
+against each closed backup. Only the page-one change-counter and
+version-valid-for words are exempt; the schema cookie is preserved and checked.
+The two backup byte streams must also agree. The comparison uses page-sized
+buffers and a private on-disk WAL-page map rather than whole-database
+serialization. WAL-index validation is block-streamed. Multiple full database
+copies and map space are still required, and SQLite's own integrity check and
+backup have no proven universal memory ceiling. A narrow exception admits exactly
+the two specified FTS5 tables, their two exact main-schema content views, and
+the eight expected shadow tables with exact definitions. The views' dependencies
+must resolve to ordinary `main.messages` and `main.sessions` tables. Both backup
+lanes run FTS5 rank-1 index-to-content checks in rolled-back transactions, as well
+as the normal SQLite and page-image checks. All other virtual/shadow schemas,
+missing table-list inventory, attachments and nonempty temporary schemas are
+refused. Each of the four FTS/view statements must exactly match one of two
+literal stored-SQL spellings: the original one-line fixture spelling or the
+observed multiline host spelling. These may be mixed per object; no SQL text,
+whitespace, comments, or string literals are normalized. Other spellings are
+deliberately refused. Synthetic WAL and bounded-resource tests exercise the
+multiline schema and the eight independently compared shadow definitions; they
+are not live or production-scale qualification.
+
+This admission **trusts the Python interpreter, standard library and SQLite
+implementation**, including the built-in FTS5 tokenizers and functions. Run in a
+controlled private process without plugin-supplied connections, SQLite auto-extensions,
+dynamically loaded extensions, untrusted Python or startup hooks. Recovery creates
+its own SQLite connections and explicitly disables extension loading before schema
+access; it does not attest the underlying library. A module name alone is not
+implementation identity. External application functions, collations and other
+outside state are not captured or attested. Stable private directories and stopped
+writers remain mandatory. See [host-recovery.md](host-recovery.md#sqlite-policy)
+for synthetic scale evidence and its limits; no production-scale run is implied.
+
 Restore only to a new, isolated, non-live location under a private parent:
 
 ```sh
@@ -116,17 +161,23 @@ those missing bytes cannot be recovered from such snapshots.
 
 ## Standalone fixture tests
 
-`tests/test_recovery_snapshot.py` exercises the independent CLI with synthetic
-sources only, including committed WAL data while idle connections remain open,
-unchanged source bytes on success and refusal, and ambiguous sidecar collisions.
-It does not need the provider, real Hermes checkout, engine, or repo autouse
-fixtures. In a suitable isolated test environment with pytest installed:
+`tests/test_recovery_snapshot.py` and `tests/test_ordinary_capture_provenance.py`
+exercise synthetic data only, including subprocess copy faults and isolated restore.
+With pytest installed and a private `HOME`, `HERMES_HOME`, `XDG_CACHE_HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR` and
+`TMPDIR` explicitly set to isolated directories, the following excludes the
+larger 17 MB WAL case:
 
 ```sh
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest --noconftest \
-  -p no:cacheprovider -q tests/test_recovery_snapshot.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
+  python3 -B -m pytest --noconftest -o addopts= -p no:cacheprovider -q \
+  tests/test_recovery_snapshot.py tests/test_ordinary_capture_provenance.py \
+  -k 'not test_wal_page_sizes_and_multiple_index_blocks'
 ```
 
-Choose a private isolated `HOME` and `TMPDIR` for the test runner. This is a
-standalone test lane, not a substitute for the full repository suite or a live
-provider restore/reindex test.
+Do not run `tests/test_sqlite_streaming.py` unfiltered on a disk-constrained host:
+it deliberately creates a database larger than 256 MiB and multiple copies.
+Other resource/FTS scale tests also exceed 256 MiB; inspect selection first.
+This standalone lane does not prove power-loss durability, production quiescence,
+full-suite coverage, or live provider restore/reindex readiness. The snapshot
+command does not claim crash-durable publication or directory fsync.

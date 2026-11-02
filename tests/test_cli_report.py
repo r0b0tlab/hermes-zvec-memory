@@ -41,6 +41,21 @@ def test_report_accepts_complete_success_in_any_order():
         "ok": True, "checked": True, "checks": checks, "failures": []}
 
 
+@pytest.mark.parametrize("optional,checked,ok", [
+    ([True], True, True), ([False], True, False), ([True, True], False, False),
+])
+def test_report_handles_explicit_optional_builtin_check(optional, checked, ok):
+    cli = load_cli()
+    checks = healthy_checks(cli) + [
+        {"name": "builtin_mirror", "ok": value, "detail": "observed"}
+        for value in optional
+    ]
+    result = cli.report(checks)
+    assert result["checked"] is checked
+    assert result["ok"] is ok
+    assert result["failures"] == (["builtin_mirror"] if False in optional else [])
+
+
 @pytest.mark.parametrize("status", [1, "true", [True], {"passed": True}],
                          ids=["integer", "string", "list", "object"])
 def test_report_requires_literal_true_for_success(status):
@@ -82,7 +97,7 @@ def test_doctor_json_and_exit_reflect_report_coverage(coverage, tmp_path, monkey
     elif coverage == "truthy":
         checks[0]["ok"] = "true"
     monkeypatch.setattr(cli, "_configured", lambda: (tmp_path, {"zg_bin": "/not-executed"}))
-    monkeypatch.setattr(cli, "collect_checks", lambda vault, config: checks)
+    monkeypatch.setattr(cli, "collect_checks", lambda vault, config, *, builtin_entries, mirrored_contents: checks)
 
     parser = argparse.ArgumentParser()
     cli.register_cli(parser)

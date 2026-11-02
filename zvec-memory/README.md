@@ -1,15 +1,16 @@
 # zvec-memory provider
 
-**0.3.1 reduced core.** Qualified on the exact Linux/Hermes/Node/engine/model
-configuration documented by the repository's `docs/release-0.3.0-validation.md`.
-A published, remotely verified tag identifies the release; publication does not
-install or activate this code in production. Historical broader-feature notes
-are superseded by `docs/reduced-core-contract.md`.
+**0.3.1-rc.1 local, unreleased successor.** The repository's
+`docs/release-0.3.0-validation.md` records predecessor evidence for its exact
+Linux/Hermes/Node/engine/model tuple, not qualification or publication of this
+candidate's changed bytes. No production deployment is implied. The predecessor
+contract is documented in `docs/reduced-core-contract.md`.
 
-Disclosure: this provider runs a local daemon on `127.0.0.1:17999`. Setup can
-run one explicit `npm install` of `@zvec/zvec-grep@0.2.2` from
-`registry.npmjs.org`, pinned by `PINNED_ENGINE_INTEGRITY`
-(`sha512-6xsF21zgUh98W3BmH7+Nz/Esdx4Ps3ibs+DHluh/uo2O45xCMeM+pkmdRlcagkONHRO2pM2KiGgKHVmRGKxBtA==`).
+Disclosure: a managed local daemon can run on `127.0.0.1:17999`. Fresh engine
+installation is unavailable: a direct package pin or registry lookup does not
+bind the transitive dependency, lifecycle and native-asset closure to installed
+bytes. Reuse requires a separately trusted pre-provisioned runtime; metadata and
+version checks do not prove its provenance. Setup does not fetch dependencies.
 There are no cloud embeddings and no self-updater. This is not derived from
 catalog entry `memory-zvec`.
 
@@ -66,11 +67,14 @@ is disabled; the generic writer, backup declaration and legacy adoption API
 explicitly refuse. Only the actual CLI post_setup hook writes supported setup
 configuration. The vault and its ancestors must remain stationary while active.
 
-Install through the host plugin manager at the exact verified release commit,
-under separately approved maintenance authority. Do not replace live code under
-writers. CLI setup requires the already provisioned pinned engine/model, verifies
-real artifacts, writes private JSON and persists host activation; it does not
-fetch or start/reload a service. Fresh network bootstrap is not qualified.
+Install only an approved exact revision through the host plugin manager under
+separately approved maintenance authority; this candidate is not an approved
+release. Do not replace live code under writers. CLI setup requires the already
+provisioned engine/model, checks runtime compatibility, writes private JSON and
+persists host activation; it does not
+fetch or start/reload a service. Fresh engine installation remains disabled until
+an independently reviewed full platform-specific dependency and native-asset
+closure, byte verification, lifecycle policy and safe publication are proven.
 
 After setup, use a fresh session and check actual store/search citations. The
 generated launcher can run directly without a daemon. An unloaded managed

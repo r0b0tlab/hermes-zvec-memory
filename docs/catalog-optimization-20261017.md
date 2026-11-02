@@ -1,9 +1,9 @@
 # Catalog optimization measurement — 2026-10-17
 
-Copied vault: `/home/r0b0tmagic/hermes-workspace/projects/zvec-memory-catalog-opt-20261017/.test-tools/reindex-vault`
+Copied vault: `<private-test-workspace>/.test-tools/reindex-vault`
 
 - Markdown files copied: 45 (`facts/` and `sessions/` only; no `.zvec-grep`)
-- Command: `/home/r0b0tmagic/.local/share/hermes-zvec-memory/zg-default index`
+- Command: `<home>/.local/share/hermes-zvec-memory/zg-default index`
 - Exit: 0
 - elapsed_seconds: 14.439
 - Branch taken: keep the 600-second debounce. Do not force session reindex.

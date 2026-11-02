@@ -102,35 +102,6 @@ def test_ensure_engine_requires_the_expected_version(tmp_path, isolated_home, in
     assert tree_state(tmp_path) == before
 
 
-def test_fresh_explicit_install_honours_requested_version(tmp_path, isolated_home, monkeypatch):
-    from types import SimpleNamespace
-
-    engine = load_engine()
-    node = fixture_node(tmp_path / "metadata-interpreter", native_version="0.2.3")
-    config = config_for(tmp_path, node_bin=str(node))
-    real_run = engine.subprocess.run
-    calls = []
-
-    def install(argv, **kwargs):
-        if argv[-1] == "--version":
-            return real_run(argv, **kwargs)
-        calls.append(argv)
-        assert argv[:2] == [str(node), "/not-executed/npm"]
-        assert argv[-1] == f"{engine.ENGINE_PACKAGE}@0.2.3"
-        fake_runtime(tmp_path, version="0.2.3")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(engine.shutil, "which", lambda name: "/not-executed/npm")
-    monkeypatch.setattr(engine.subprocess, "run", install)
-
-    result = engine.install_engine(isolated_home, config, version="0.2.3")
-
-    assert len(calls) == 1
-    assert result["status"] == "updated" and result["version"] == "0.2.3"
-    manifest = json.loads((engine.runtime_root(isolated_home, config) / engine.MANIFEST_NAME).read_text())
-    assert manifest["version"] == "0.2.3"
-
-
 @pytest.mark.parametrize("operation", ["ensure_engine", "install_engine"])
 @pytest.mark.parametrize("condition", ["malformed", "invalid-utf8", "missing", "directory"])
 def test_unreadable_metadata_preserved_before_admission(

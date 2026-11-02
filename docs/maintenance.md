@@ -26,7 +26,7 @@ truth and the installed copy lives in `$HERMES_HOME/plugins/zvec-memory`.
 | Provider code | `$HERMES_HOME/plugins/zvec-memory/*.py` | this repo (`zvec-memory/`) |
 | Provider settings | `$HERMES_HOME/zvec-memory/config.json` | `engine.post_setup` / `save_config` |
 | Vault (facts, sessions, index, inbox, mirror map) | `$HERMES_HOME/zvec-memory/` | the provider at runtime |
-| Engine runtime | `~/.local/share/hermes-zvec-memory/runtime/` | `hermes zvec-memory engine install` |
+| Engine runtime | `~/.local/share/hermes-zvec-memory/runtime/` | separately provisioned; fresh install unavailable |
 | Engine launcher | `~/.local/share/hermes-zvec-memory/zg-default` | `engine.ensure_engine` (generated) |
 | Engine state (index home, token) | `$HERMES_HOME/zvec-runtime/` | the engine |
 | systemd unit | `~/.config/systemd/user/hermes-zvec-memory.service` | `engine.ensure_engine` (generated) |
@@ -57,20 +57,32 @@ with explicit unlimited distinguished from unknown; finite ceilings must meet
 state and incomplete health observations fail closed. CLI action results report
 request/admission separately from health and completion.
 
+Both mirror diagnostics treat a genuinely absent `.mirror-map.json` as optional;
+an unreadable, aliased, non-regular, changing, or over-16-MiB map is unhealthy.
+The 16 MiB limit is a diagnostic resource policy, not a proven maximum for all
+possible provider maps: preserve oversized maps and investigate rather than
+deleting or truncating them. Reads require no-follow and nonblocking opens and
+detect observed leaf replacement or metadata drift. They assume trusted,
+stationary vault ancestors and do not provide an atomic snapshot against a
+same-user writer or a time bound on stalled filesystem operations.
+
 `reindex` writes `.reindex-request.json` into the vault; the next provider
 session in that vault consumes it and forces a rebuild.
 
 ## Installing the engine
 
-The runtime is pinned to one npm package version (`engine.PINNED_VERSION`) and is
-fetched by one explicit command — setup hooks never reach the network:
+Fresh installation is disabled. `hermes zvec-memory engine install` can check
+and reuse a separately trusted pre-provisioned `@zvec/zvec-grep@0.2.2` runtime;
+its metadata and `--version` response do not prove provenance or trust. It does
+not fetch a new runtime. The direct package pin and a registry lookup do not
+bind the later installed bytes, transitive dependencies, lifecycle scripts or
+native assets. Re-enabling fresh installation requires an independently reviewed,
+immutable platform-specific full closure, verification of downloaded bytes before
+extraction or code execution, reviewed lifecycle/native asset policy, private
+staging and fail-closed publication, and isolated adversarial platform tests.
 
-```sh
-hermes zvec-memory engine install                # pinned 0.2.2 only
-```
-
-An alternate `--version` requires separate explicit engine-migration authority;
-plugin candidate0.3.0 does not authorize changing native package/model identity.
+An alternate `--version` is refused by the current pinned policy; changing the
+native package/model identity requires separate authority and implementation.
 Service actions below require a reviewed coherent generation and separate
 maintenance authority; SERV-01 is excluded/not certified by this work. Only
 then, if approved, restart the service so it picks up the new launcher:
@@ -83,9 +95,15 @@ hermes zvec-memory doctor
 
 `ensure_engine` refuses to write anything when the runtime is missing or the
 package version inside it does not match, so a half-installed engine cannot
-produce a launcher that points at nothing. The npm step runs with
-`SHARP_IGNORE_GLOBAL_LIBVIPS=1` so the prebuilt binaries are used instead of a
-source build against a global libvips.
+produce a launcher that points at nothing. Compatibility checks execute the
+existing runtime and therefore require the operator to trust it beforehand.
+Package metadata admission requires a regular, non-symlink `package.json` no
+larger than 256 KiB, opened without following the leaf and read with a bounded
+byte count. It refuses observed replacement, short reads or metadata drift.
+These checks assume a trusted, stable local runtime tree and interpreter; they
+are not a sandbox against concurrent same-user parent-directory substitution,
+do not guarantee progress on a stalled filesystem, and do not authenticate the
+runtime or the code executed by the compatibility check.
 
 ## Upgrading the plugin
 
@@ -275,11 +293,13 @@ privacy and broader release gates remain unapproved.
 ## `hermes memory setup`
 
 `hermes memory setup zvec-memory` calls `ZvecMemoryProvider.post_setup(hermes_home,
-config)`. That hook installs the engine runtime, writes the provider's
-`config.json` (preserving every value you set), and owns activation: it persists
-`memory.provider: zvec-memory` and the `plugins.zvec-memory` block in
-`config.yaml`. Re-running it is idempotent — files are only rewritten when their
-content changes.
+config)`. The hook requires a separately trusted, pre-provisioned compatible
+engine; it does not install one. With a full host configuration, it preserves
+supported settings in the provider's private `config.json`, sets `zg_bin` to the
+managed launcher, and persists `memory.provider: zvec-memory` through the host
+configuration API. It does not write a `plugins.zvec-memory` block. Conflicting
+managed artifacts are preserved and cause refusal; setup does not start or
+restart a service. Compatibility checks do not authenticate runtime provenance.
 
 ## Versioned durable formats
 
@@ -296,8 +316,8 @@ content changes.
   measured peak during warm churn is 138–150 tasks.
 - The stress harness defaults to `--tasks 256`; `128` is a proven non-viable
   budget for the native lanes (see `docs/stress-results.md`).
-- `MemoryMax` is left at the user manager's default; `MemoryHigh=4G` is the knob
-  to throttle before an OOM if the vault grows a lot.
+- `MemoryMax=4294967296` in the generated unit; this is a limit, not a guarantee
+  that a particular workload will fit.
 
 ## Troubleshooting
 
@@ -305,8 +325,8 @@ content changes.
 | --- | --- | --- |
 | Recall goes dark, engine exits | `journalctl --user -u hermes-zvec-memory.service -n 50` for the abort signature | the service hit a task/thread ceiling — confirm `TasksMax=1024` and `systemctl --user restart` |
 | `doctor` says `index not ready` | `hermes zvec-memory reindex`, then a fresh session | the engine rebuilt or the vault moved |
-| `doctor` says `engine` FAIL | run the launcher by hand: `~/.local/share/hermes-zvec-memory/zg-default --version` | re-run `hermes zvec-memory engine install` |
-| `unit_status: conflict` | `diff ~/.config/systemd/user/hermes-zvec-memory.service{.new,}` | keep your edit and re-apply ours, or accept ours |
+| `doctor` says `engine` FAIL | inspect the configured runtime and launcher without executing untrusted code | fresh installation is unavailable; investigate a separately trusted runtime under approved maintenance |
+| Managed artifact conflict | inspect the existing launcher, unit and manifest without changing them | setup refuses and preserves the existing artifact; resolve only under separately approved maintenance, then retry |
 | Provider not active | `hermes memory status` | `hermes memory setup zvec-memory` |
 
 ## Publishing to the plugin catalog

@@ -47,18 +47,23 @@ hermes zvec-memory status --json
 hermes zvec-memory doctor --json
 ```
 
-The qualified setup prerequisite is an already provisioned, exact
-`@zvec/zvec-grep@0.2.2` runtime in a stable user-owned prefix and the cached
-`local/potion-retrieval-32m` model. Setup verifies the real package/executable,
-creates and reads back its complete six-member artifact set, writes private canonical
-JSON and publishes `memory.provider`. It does not fetch dependencies or start,
-reload or restart a service. A fresh network/bootstrap install is not covered
-by the isolated qualification. Never use a test checkout as a production SDK.
+Setup requires an already provisioned `@zvec/zvec-grep@0.2.2` runtime in a
+stable user-owned prefix and the cached `local/potion-retrieval-32m` model.
+Setup checks package metadata and executable compatibility, creates and reads
+back its six-member artifact set, writes private canonical JSON and publishes
+`memory.provider`. These checks do not establish runtime provenance or trust.
+Setup does not fetch dependencies or start, reload or restart a service.
+Never use a test checkout as a production SDK.
 
-The explicit fetching command is `hermes zvec-memory engine install`; custom
-provider CLI discovery requires the provider already be selected. Do not assume
-this command is exposed before initial selection/setup. Existing-SDK engine
-verification was exercised; a fresh npm download was not.
+Fresh engine installation is **unavailable**. `hermes zvec-memory engine install`
+can compatibility-check and reuse a separately trusted, pre-provisioned runtime;
+it cannot establish trust in one. Provider CLI discovery may require prior
+selection. A direct package pin or registry metadata lookup does not bind the
+bytes of a later install or its transitive dependencies and lifecycle/native
+assets. A future installer needs an independently reviewed, immutable full
+platform-specific closure, byte verification before extraction or execution,
+reviewed lifecycle/native asset policy, and safe staged publication with
+adversarial and isolated platform tests. No fresh installation is qualified.
 
 Start a fresh Hermes session after setup. The generated launcher can run the
 local engine directly when no daemon is present. If a managed daemon is wanted,
@@ -223,8 +228,13 @@ env HOME="$T/home" HERMES_HOME="$T/hermes" \
   HERMES_ZVEC_RUNTIME_DIR="$T/runtime" HERMES_ZVEC_MODEL_CACHE="$T/models" \
   ZVEC_TEST_ROOT="$T" HERMES_AGENT_DIR=/absolute/hermes-agent \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  .venv/bin/python -m pytest tests/ -m 'not integration' -q
+  .venv/bin/python -m pytest tests/ --collect-only -q
 ```
+
+Collection does not execute tests. Inspect test bodies and fixtures before
+choosing a bounded offline run: the suite includes large disk/memory fixtures
+and separate native/integration workloads. Do not run the full suite on a
+resource-reserved machine without explicit admission.
 
 Native tests require explicit opt-in, an isolated engine launcher that respects
 its caller's environment, and a disposable copy of the local model cache. Use

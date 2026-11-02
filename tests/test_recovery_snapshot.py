@@ -64,6 +64,40 @@ def source_bytes(root):
             for p in root.rglob('*') if p.is_file()}
 
 
+@pytest.mark.parametrize('suffix', ['', '-wal', '-shm'])
+def test_raw_evidence_capture_copy_is_source_bound(tmp_path, monkeypatch, suffix):
+    from argparse import Namespace
+    spec = importlib.util.spec_from_file_location('snapshot_raw_boundary', SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root, state, inbox = fixture(tmp_path)
+    before = source_bytes(root)
+    original = module.shutil.copyfileobj
+    injected = []
+    def corrupt(inp, out, *args, **kwargs):
+        original(inp, out, *args, **kwargs)
+        name = Path(out.name)
+        if name.name == 'state.db' + suffix and ('sidecar-evidence' in name.parts or 'raw-database-evidence' in name.parts):
+            out.seek(0)
+            out.write(bytes([before['state.db' + suffix][0] ^ 1]))
+            out.flush()
+            injected.append(True)
+    monkeypatch.setattr(module.shutil, 'copyfileobj', corrupt)
+    destination = tmp_path / 'snapshot'
+    args = Namespace(builtins=root/'builtins', vault=root/'vault', plugin=root/'plugin',
+                     wiki=None, skills=None, hermes_config=root/'config.yaml',
+                     provider_config=root/'vault/config.json', state_db=root/'state.db', destination=destination)
+    try:
+        with pytest.raises(module.Refusal, match='evidence copy drift'):
+            module.create(args)
+        assert injected and source_bytes(root) == before
+        assert not (destination/'manifest.json').exists()
+    finally:
+        state.close()
+        inbox.close()
+
+
 def test_sidecar_named_user_data_and_index_identity_survive_restore(tmp_path):
     root, state, inbox = fixture(tmp_path)
     try:
@@ -296,11 +330,16 @@ def test_busy_backup_refuses_immediately_without_polling(tmp_path, monkeypatch):
 
     class Connection:
         def close(self): pass
+        def enable_load_extension(self, enabled): assert enabled is False
+        def execute(self, sql): return self
+        def fetchall(self): return [('ok',)]
+        def fetchone(self): return (1,)
         def backup(self, dest, **kwargs):
             calls.append(kwargs)
             kwargs['progress'](sqlite3.SQLITE_BUSY, 1, 1)
 
     monkeypatch.setattr(module.sqlite3, 'connect', lambda *a, **kw: Connection())
+    monkeypatch.setattr(module, 'admit_sqlite_schema', lambda db: False)
     with pytest.raises(module.Refusal, match='locked'):
         module.sqlite_copy(raw, tmp_path / 'no-sidecar', tmp_path / 'output', tmp_path)
     assert len(calls) == 1 and calls[0]['sleep'] == 0 and calls[0]['pages'] == -1

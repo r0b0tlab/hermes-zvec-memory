@@ -35,7 +35,7 @@ def test_unknown_configured_vault_is_redacted_json_without_default_admission(
     original_config = config_path.read_bytes()
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: pytest.fail(
         "Unknown vault cannot probe an engine or service"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail(
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail(
         "Unknown vault cannot borrow the caller task target"))
     requests = []
     request = cli._request_reindex
@@ -72,7 +72,7 @@ def selected_home(tmp_path, monkeypatch, native):
 
 
 def prohibit_unknown_work(cli, monkeypatch):
-    for name in ("collect_checks", "_default_runner", "_task_ceiling", "_request_reindex"):
+    for name in ("collect_checks", "_default_runner", "_unit_tasks_max", "_request_reindex"):
         monkeypatch.setattr(cli, name, lambda *a, **k: pytest.fail(
             "Unknown selection must not inspect or admit any target"))
 
@@ -128,7 +128,7 @@ def test_valid_override_bypasses_bad_configured_path_with_real_admission(
             assert Path(argv[2]).resolve() == vault.resolve()
         return 1, "", "not ready"
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 128)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     settings = cli._plugin_module("settings")
     actual_load = settings.load_settings
     reads = []
@@ -183,7 +183,7 @@ def test_typed_path_resolution_fault_never_admits_an_unknown_target(
     assert not any((v / cli.REINDEX_REQUEST).exists() for v in (configured, explicit, home / "zvec-memory"))
 
 
-@pytest.mark.parametrize("command", ["doctor", "status", "reindex", "engine", "migrate-config"])
+@pytest.mark.parametrize("command", ["doctor", "status", "reindex", "engine"])
 @pytest.mark.parametrize("exception", [OSError, ValueError, TypeError, RuntimeError])
 def test_canonical_home_helper_fault_is_single_class_only_json(
         tmp_path, monkeypatch, capsys, command, exception):
@@ -201,7 +201,7 @@ def test_canonical_home_helper_fault_is_single_class_only_json(
         argv = [command, "install", "--json"]
     elif command in ("doctor", "status", "reindex"):
         argv += ["--vault", str(tmp_path / "actual-vault")]
-    if command in ("engine", "migrate-config"):
+    if command == "engine":
         rc = None
         try:
             rc = dispatch(cli, argv)
@@ -231,30 +231,6 @@ def test_invalid_explicit_override_is_not_a_default_selection(
                     "ValueError" if fault == "nul" else "RuntimeError")
     assert path.read_bytes() == before
     assert not (home / "zvec-memory" / cli.REINDEX_REQUEST).exists()
-
-
-@pytest.mark.parametrize("command", ["migrate-config"])
-@pytest.mark.parametrize("exception", [OSError, ValueError, TypeError, RuntimeError])
-def test_migration_refuses_unknown_resolved_home(
-        tmp_path, monkeypatch, capsys, command, exception):
-    cli = load_cli()
-    home, path = selected_home(tmp_path, monkeypatch, "{}")
-    before = path.read_bytes()
-    original = Path.resolve
-    def resolve(p, *a, **k):
-        if p == home:
-            raise exception("opaque-private-home-resolution")
-        return original(p, *a, **k)
-    monkeypatch.setattr(Path, "resolve", resolve)
-    argv = [command, "--json"]
-    assert dispatch(cli, argv) == 1
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert captured.err == "" and "opaque-private" not in captured.out
-    assert payload["action"]["status"] == "failed"
-    assert payload["error"] == exception.__name__
-    assert payload["health"]["status"] == "not_checked"
-    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("command", ["doctor", "status", "reindex"])
@@ -289,7 +265,7 @@ def test_valid_canonical_home_forms_preserve_configured_home_relative_vault(
             assert Path(argv[2]) == vault
         return 1, "", "not ready"
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 128)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     assert cli._hermes_home().resolve() == home
     assert dispatch(cli, [command, "--json"]) == (1 if command == "doctor" else 0)
     captured = capsys.readouterr()
@@ -330,7 +306,7 @@ def test_configured_vault_valid_forms_keep_their_existing_resolution_semantics(
             assert Path(argv[2]) == vault
         return 1, "", "not ready"
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 128)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     assert dispatch(cli, [command, "--json"]) == (1 if command == "doctor" else 0)
     payload = json.loads(capsys.readouterr().out)
     assert payload["checked"] is True and payload["ok"] is False
@@ -367,7 +343,7 @@ def test_override_does_not_replace_native_authority_with_legacy_settings(
             assert Path(argv[2]).resolve() == actual
         return 1, "", "not ready"
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 128)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     assert dispatch(cli, [command, "--json", "--vault", str(actual)]) == (1 if command == "doctor" else 0)
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -376,7 +352,7 @@ def test_override_does_not_replace_native_authority_with_legacy_settings(
     config_check = next(c for c in payload["checks"] if c["name"] == "config")
     assert config_check["ok"] is (native is None or native == '{"context_chars":0}')
     if native in ("opaque-private-invalid-json", "[]"):
-        assert config_check["detail"] == "unreadable: " + ("ValueError" if native == "[]" else "JSONDecodeError")
+        assert config_check["detail"] == "configuration unavailable or invalid"
     assert len(calls) == (2 if native is None else 0)
     if command == "reindex":
         assert payload["action"]["status"] == "requested"
@@ -409,7 +385,7 @@ def test_actual_nul_context_home_with_valid_override_cannot_borrow_default_profi
 @pytest.mark.parametrize("command,target", [
     (command, target) for command in ("doctor", "status", "reindex")
     for target in ("home", "configured", "override")
-] + [("migrate-config", "home")])
+])
 def test_selection_assertion_errors_are_real_logic_errors_not_public_failures(
         tmp_path, monkeypatch, capsys, command, target):
     cli = load_cli()
@@ -418,9 +394,7 @@ def test_selection_assertion_errors_are_real_logic_errors_not_public_failures(
     before = path.read_bytes()
     original = Path.resolve
     bad = {"home": home, "configured": configured, "override": explicit}[target]
-    # Migration selects only the home, not a vault: test its actual boundary.
-    if command == "migrate-config":
-        bad = home
+
     def resolve(p, *a, **k):
         if p == bad:
             raise AssertionError("opaque-private-logic-control")
@@ -428,7 +402,7 @@ def test_selection_assertion_errors_are_real_logic_errors_not_public_failures(
     monkeypatch.setattr(Path, "resolve", resolve)
     prohibit_unknown_work(cli, monkeypatch)
     argv = [command, "--json"]
-    if target in ("home", "override") and command != "migrate-config":
+    if target in ("home", "override"):
         argv += ["--vault", str(explicit)]
     with pytest.raises(AssertionError, match="opaque-private-logic-control"):
         dispatch(cli, argv)
@@ -452,7 +426,7 @@ def test_service_selection_type_error_preserves_unknown_tasks_without_caller_fal
         calls.append(argv)
         assert argv[0] != "systemctl"
         return 1, "", "not ready"
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Unknown service cannot borrow caller"))
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Unknown service cannot borrow caller"))
     checks = cli.collect_checks(healthy_vault(tmp_path), {"zg_bin": "/zg"}, runner=run)
     service = next(c for c in checks if c["name"] == "service")
     tasks = next(c for c in checks if c["name"] == "tasks")

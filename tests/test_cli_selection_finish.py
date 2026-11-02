@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cli import healthy_vault, load_cli
+from test_cli import forbid_caller_cgroup, healthy_vault, load_cli
 from test_cli_health_finish import dispatch
 
 
@@ -84,16 +84,17 @@ def test_unknown_selection_does_not_claim_caller_task_target(
     def run(argv, timeout=15):
         calls.append(argv)
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
-    caller_reads = []
-    def caller():
-        caller_reads.append(True)
-        return caller_ceiling
+    unit_reads = []
+    def unit_tasks(run):
+        unit_reads.append(caller_ceiling)
+        pytest.fail("Unknown selection must not query the managed unit")
+    forbid_caller_cgroup(monkeypatch)
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", caller)
+    monkeypatch.setattr(cli, "_unit_tasks_max", unit_tasks)
     rc = dispatch(cli, [command, "--json"])
     payload = json.loads(capsys.readouterr().out)
     tasks = next(c for c in payload["checks"] if c["name"] == "tasks")
-    assert not caller_reads, "Unknown selection cannot establish caller cgroup as engine target"
+    assert not unit_reads, "Unknown selection cannot establish a managed task target"
     assert tasks["ok"] is False
     assert "unknown" in tasks["detail"] and "selection" in tasks["detail"]
     assert "caller cgroup" not in tasks["detail"]
@@ -148,15 +149,17 @@ def test_managed_artifact_runtime_error_is_class_only_json(
     cli = load_cli()
     home, config, node, launcher, unit, manifest_path = rendered_managed_artifacts(cli, tmp_path)
     sentinel = "opaque-artifact-resolution-detail"
+    reached = []
     if seam == "configured-node":
         config["node_bin"] = "~zvec_nonexistent_user_726894/node"
     elif seam == "admitted-node":
-        original = Path.stat
+        original = os.stat
         def stat(path, *args, **kwargs):
-            if path == node:
+            if isinstance(path, (str, bytes, os.PathLike)) and Path(os.fsdecode(path)) == node:
+                reached.append(True)
                 raise RuntimeError(sentinel)
             return original(path, *args, **kwargs)
-        monkeypatch.setattr(Path, "stat", stat)
+        monkeypatch.setattr(os, "stat", stat)
     elif seam == "artifact-path":
         config["engine_home"] = "~zvec_nonexistent_user_726894/state"
     else:
@@ -179,7 +182,7 @@ def test_managed_artifact_runtime_error_is_class_only_json(
             return 0, "LoadState=loaded\nTasksMax=512\n", ""
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Known managed target cannot use caller"))
+    forbid_caller_cgroup(monkeypatch)
     try:
         rc = dispatch(cli, [command, "--json"])
     except RuntimeError:
@@ -190,6 +193,8 @@ def test_managed_artifact_runtime_error_is_class_only_json(
     tasks = next(c for c in payload["checks"] if c["name"] == "tasks")
     assert service["ok"] is False
     assert service["detail"] == "unreadable artifacts: RuntimeError"
+    if seam == "admitted-node":
+        assert reached, "The actual admitted-node stat must be reached"
     assert tasks["ok"] is True and cli.UNIT_NAME in tasks["detail"]
     assert sentinel not in output and "zvec_nonexistent_user_726894" not in output
     assert before == [p.read_bytes() for p in paths]
@@ -239,7 +244,8 @@ def test_guarded_home_and_runtime_selection_boundaries(
         calls.append(argv)
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Unknown target cannot inspect caller"))
+    forbid_caller_cgroup(monkeypatch)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Unknown target cannot query managed unit"))
     rc = dispatch(cli, [command, "--json"])
     output = capsys.readouterr().out
     payload = json.loads(output)
@@ -280,22 +286,24 @@ def test_valid_nonmanaged_selection_keeps_noninspection_and_task_floor(
     sidecar.write_text(json.dumps(identity))
     config_path = write_settings(home, vault, config)
     before = config_path.read_bytes()
-    calls, caller_reads = [], []
+    calls, unit_reads = [], []
     def run(argv, timeout=15):
         calls.append(argv)
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
-    def caller():
-        caller_reads.append(True)
-        return ceiling
+    def unit_tasks(run):
+        unit_reads.append(ceiling)
+        pytest.fail("Nonmanaged target must not query the managed unit")
+    forbid_caller_cgroup(monkeypatch)
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", caller)
-    assert dispatch(cli, ["doctor", "--json"]) == (0 if ok and scope != "unselected" else 1)
+    monkeypatch.setattr(cli, "_unit_tasks_max", unit_tasks)
+    assert dispatch(cli, ["doctor", "--json"]) == (0 if scope != "unselected" else 1)
     payload = json.loads(capsys.readouterr().out)
     service = next(c for c in payload["checks"] if c["name"] == "service")
     tasks = next(c for c in payload["checks"] if c["name"] == "tasks")
     assert service["ok"] is True and "not_managed" in service["detail"]
-    assert tasks["ok"] is ok and "caller cgroup" in tasks["detail"]
-    assert caller_reads == [True]
+    assert tasks == {"name": "tasks", "ok": True,
+                     "detail": "not_managed; caller cgroup not consulted"}
+    assert unit_reads == []
     assert not any(argv[0] == "systemctl" for argv in calls)
     assert config_path.read_bytes() == before
     assert cli.MIN_TASK_CEILING == 512
@@ -322,7 +330,7 @@ def test_valid_managed_selection_keeps_exact_target_and_task_floor(
                        "\nExecStart={ path=" + str(launcher) + " ; argv[]=" + start + " ; ignore_errors=no ; }\n"), ""
         return 0, "0.2.2\n" if argv[-1] == "--version" else "fixture ready", ""
     monkeypatch.setattr(cli, "_default_runner", run)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: pytest.fail("Known managed target cannot inspect caller"))
+    forbid_caller_cgroup(monkeypatch)
     assert dispatch(cli, ["doctor", "--json"]) == (0 if ok else 1)
     payload = json.loads(capsys.readouterr().out)
     service = next(c for c in payload["checks"] if c["name"] == "service")

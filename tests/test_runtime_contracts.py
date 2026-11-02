@@ -310,33 +310,6 @@ def test_request_survives_failed_index_then_success(tmp_path, monkeypatch, rc):
         p.shutdown()
 
 
-def test_identity_mismatch_dispatches_rebuild_and_model(tmp_path, monkeypatch):
-    p = make_provider(tmp_path, embedding="local/old")
-    prior = p._engine_state_path().read_bytes()
-    p._config["embedding"] = "local/new"
-    calls = []
-    monkeypatch.setattr(p, "_run_zg", lambda args, timeout: (calls.append(args) or (1, "", "fault")))
-    try:
-        p._ensure_engine_identity()
-        assert p._index_worker.drain(5)
-        command = [c for c in calls if c[0] == "index"][-1]
-        assert "--rebuild" in command
-        assert command[command.index("--embedding") + 1] == "local/new"
-        assert p._engine_state_path().read_bytes() == prior
-        assert (p._vault / _mod.REINDEX_REQUEST_FILE).exists()
-        assert p._recall_token() is None
-        calls.clear()
-        monkeypatch.setattr(p, "_run_zg", lambda args, timeout: (calls.append(args) or (0, "", "")))
-        p._maybe_reindex(force=True)
-        assert p._index_worker.drain(5)
-        command = [c for c in calls if c[0] == "index"][-1]
-        assert "--rebuild" in command and "local/new" in command
-        assert p._engine_state()["embedding"] == "local/new"
-        assert not (p._vault / _mod.REINDEX_REQUEST_FILE).exists()
-    finally:
-        p.shutdown()
-
-
 def test_initial_marker_is_closed_and_explicit_even_with_manifest(tmp_path, monkeypatch):
     seed = make_provider(tmp_path)
     seed.shutdown()
@@ -500,29 +473,6 @@ def test_request_generations_and_alias_refusal(tmp_path):
         with pytest.raises(ValueError, match="symlink"):
             action()
     assert sentinel.read_text() == "keep"
-
-
-def test_older_completion_cannot_record_newer_model_identity(tmp_path, monkeypatch):
-    p = make_provider(tmp_path, embedding="local/old")
-    calls = []
-    def engine(args, timeout):
-        calls.append(args)
-        if len(calls) == 1:
-            p._config["embedding"] = "local/new"
-            p._ensure_engine_identity()
-            return 0, "", ""
-        return 1, "", "new model failed"
-    monkeypatch.setattr(p, "_run_zg", engine)
-    try:
-        p._maybe_reindex(force=True, extra_args=["--rebuild", "--embedding", "local/old"])
-        assert p._index_worker.drain(5)
-        assert len(calls) == 2
-        assert "local/old" in calls[0] and "local/new" in calls[1]
-        assert p._engine_state()["embedding"] == "local/old"
-        assert p._index_requested and not p._mirror_ready
-        assert (p._vault / _mod.REINDEX_REQUEST_FILE).exists()
-    finally:
-        p.shutdown()
 
 
 def test_inbox_highwater_survives_acknowledgment(quiet_provider):

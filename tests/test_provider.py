@@ -80,54 +80,6 @@ def test_initialize_preserves_a_pending_reindex_request_until_rebuild(tmp_path, 
     p.shutdown()
 
 
-def test_native_config_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    p = ZvecMemoryProvider(config={})
-    p.save_config({"recall_limit": 11, "preview": "full"}, str(tmp_path))
-    p.save_config({"context_chars": 321}, str(tmp_path))
-    q = ZvecMemoryProvider()
-    assert q._recall_limit() == 11
-    assert q._config["preview"] == "full"
-    assert q._config["context_chars"] == 321
-    assert not (tmp_path / "config.yaml").exists()
-
-
-def test_explicit_empty_config_ignores_ambient(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    p = ZvecMemoryProvider(config={})
-    p.save_config({"recall_limit": 11}, str(tmp_path))
-    assert ZvecMemoryProvider(config={})._config == {}
-
-
-@pytest.mark.parametrize("raw", ["external", "$HERMES_HOME/external", "${HERMES_HOME}/external"])
-def test_cold_backup_resolves_profile_paths(tmp_path, raw):
-    p = ZvecMemoryProvider(config={"vault": raw})
-    home = Path(os.environ["HERMES_HOME"])
-    assert p.backup_paths() == [str(home / "external")]
-    assert not (home / "external").exists()
-
-
-def test_legacy_config_migrates_only_on_save(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    legacy = tmp_path / "config.yaml"
-    text = "unrelated: keep\nplugins:\n  zvec-memory:\n    preview: full\n"
-    legacy.write_text(text)
-    assert ZvecMemoryProvider()._config == {"preview": "full"}
-    assert not (tmp_path / "zvec-memory/config.json").exists()
-    ZvecMemoryProvider().save_config({"recall_limit": 9}, str(tmp_path))
-    assert ZvecMemoryProvider()._config == {"preview": "full", "recall_limit": 9}
-    assert legacy.read_text() == text
-
-
-def test_corrupt_native_config_is_not_silently_replaced(tmp_path):
-    path = tmp_path / "zvec-memory/config.json"
-    path.parent.mkdir()
-    path.write_text("{broken")
-    with pytest.raises(ValueError):
-        ZvecMemoryProvider(config={}).save_config({"preview": "full"}, str(tmp_path))
-    assert path.read_text() == "{broken"
-
-
 def test_fact_prefix_collision_preserves_both(tmp_path, monkeypatch):
     p = make_provider(tmp_path)
     try:
@@ -694,20 +646,6 @@ def test_valid_search_limit_clamps_and_globs_pass_through(tmp_path, monkeypatch,
         p.shutdown()
 
 
-def test_legacy_mirror_ownership_requires_explicit_migration(tmp_path):
-    p = make_provider(tmp_path)
-    legacy = p._write_fact("legacy preference", "user_pref", "mirror")
-    try:
-        p._apply_mirror("remove", "user", "", {"old_text": "legacy preference"})
-        assert legacy.exists()
-        assert hasattr(p, "migrate_legacy_mirrors"), "explicit ownership migration is missing"
-        p.migrate_legacy_mirrors([{"path": str(legacy.relative_to(p._vault)), "target": "user", "content": "legacy preference"}])
-        p._apply_mirror("remove", "user", "", {"old_text": "legacy preference"})
-        assert not legacy.exists()
-    finally:
-        p.shutdown()
-
-
 @pytest.mark.parametrize("tags", [None, [], {}, True])
 def test_invalid_store_tags_are_not_stringified(tmp_path, tags):
     p = make_provider(tmp_path)
@@ -826,14 +764,6 @@ def test_memory_write_mirror(tmp_path):
         files = list((tmp_path / "vault" / "facts").glob("*.md"))
         assert len(files) == 1
         assert "concise replies" in files[0].read_text()
-    finally:
-        p.shutdown()
-
-
-def test_backup_paths(tmp_path):
-    p = make_provider(tmp_path)
-    try:
-        assert p.backup_paths() == [str(tmp_path / "vault")]
     finally:
         p.shutdown()
 

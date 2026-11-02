@@ -1,5 +1,11 @@
 # Measured zvec-memory stress envelope
 
+**Historical evidence, not current operating instructions.** The service limits,
+setup, installer and upgrade/rollback behavior described below reflect the
+measured revision; consult [maintenance.md](maintenance.md) for current behavior.
+In particular, the current generated unit uses `MemoryMax=4G`, and
+`scripts/upgrade.py` is retired and must not be used for a swap or rollback.
+
 Every number below comes from a receipt under `.test-tools/` produced by the committed harness.
 Failures are kept in the record, including the first failing attempt of every lane. The
 reproduction guide is `docs/stress-testing.md`; the shareable aggregate is
@@ -12,7 +18,7 @@ superseded by a later passing attempt of the same lane).
 |---|---|
 | Host | Linux 7.2.3-arch1-3, x86_64, AMD Ryzen 7 6800H, 16 logical CPUs, 15.6 GiB RAM |
 | Test interpreter | Python 3.11.16 (`.venv`) |
-| Host checkout | `/home/r0b0tmagic/.hermes/hermes-agent` @ `a6102b8d809d6b32824757b547b60f9d22d6a88e` |
+| Host checkout | `<home>/.hermes/hermes-agent` @ `a6102b8d809d6b32824757b547b60f9d22d6a88e` |
 | Plugin revision | `test/stress-memory` @ `8f93da2` (product code `cee492c` + inbox race fix) |
 | Engine | `@zvec/zvec-grep` 0.2.2 (raw test package), local `potion-retrieval-32m` embeddings |
 | Limits | `MemoryMax=2G`, `CPUQuota=200%`, `TasksMax=128` or `256`, per-case `RuntimeMaxSec` |
@@ -125,11 +131,11 @@ exception` plus service restarts. If revisited, the bar is the full acceptance t
 passed: 30-minute soak, corpus ladder, and a two-process contention run, all green with the patched
 engine.
 
-**Service task ceiling: adopted.** `hermes-zvec-memory.service` now declares `TasksMax=1024` instead
+**Service task ceiling: adopted in the measured revision.** `hermes-zvec-memory.service` then declared `TasksMax=1024` instead
 of inheriting the user manager's ambient default (18232 at the time of measurement). The value is
 load-bearing and was previously invisible: below roughly 150 tasks the engine does not degrade, it
 aborts, which the 128-task lanes reproduced. 1024 is ~7× the measured 138-task peak and still bounds
-runaway thread or fork creation. `MemoryMax` stays `infinity` on purpose — measured peak was 1.6 GB
+runaway thread or fork creation. At that revision, `MemoryMax` stayed `infinity` — measured peak was 1.6 GB
 against 15.6 GB of host RAM, and OOM-killing the memory engine is worse than letting the host
 reclaim; `MemoryHigh=4G` would be the throttle-first option if a guard is ever wanted.
 
@@ -191,8 +197,9 @@ behaviour regressed and the campaign manifest stays `complete_with_recorded_limi
   engine, index, inbox, mirror, identity, task ceiling), exit 0 only when all pass.
 - The engine launcher and systemd unit are now generated and installed by
   `ZvecMemoryProvider.post_setup` (the `hermes memory setup` hook), which also owns activation;
-  `python scripts/upgrade.py` gates a swap behind the offline suite, the native lane, a verified
-  backup, a re-baseline and doctor, and can roll back.
+  at that historical revision, `python scripts/upgrade.py` gated a swap behind the offline suite, the native lane, a verified
+  backup, a re-baseline and doctor, and could roll back. **That script is now retired:**
+  it must not be used for a swap or rollback; see [current maintenance guidance](maintenance.md).
 
 **Verification after the rework**
 

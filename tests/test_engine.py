@@ -93,7 +93,6 @@ def test_unit_template_declares_the_task_ceiling_and_the_listen_address(tmp_path
     config = config_for(tmp_path, server_url="http://127.0.0.1:18099/mcp")
     unit = engine.unit_template(tmp_path / "hermes-home", config)
     assert f"TasksMax={engine.TASKS_MAX}\n" in unit
-    assert "MemoryMax=4294967296\n" in unit
     assert f'ExecStart="{tmp_path}/runtime_root/zg-default" server run --listen "127.0.0.1:18099"' in unit
     assert f'--token-file "{tmp_path}/engine-home/server.token"' in unit
     assert "WantedBy=default.target\n" in unit
@@ -130,7 +129,10 @@ def test_ensure_engine_fails_closed_without_a_verified_runtime(tmp_path, unit_di
     config = config_for(tmp_path)
     result = engine.ensure_engine(home, config)
     assert result["status"] == "missing-engine"
-    assert "engine install" in result["detail"]
+    detail = result["detail"].lower()
+    assert "fresh" in detail and "installation" in detail
+    assert "unavailable" in detail or "disabled" in detail
+    assert "separately trusted" in detail
     assert not (tmp_path / "runtime_root/zg-default").exists()
     assert not (unit_dir / engine.UNIT_NAME).exists()
 
@@ -150,32 +152,6 @@ def test_ensure_engine_never_clobbers_a_hand_edited_unit(tmp_path, unit_dir):
     assert not (unit_dir / f"{engine.UNIT_NAME}.new").exists()
     assert not engine.launcher_path(home, config).exists()
     assert not (engine.runtime_root(home, config) / engine.MANIFEST_NAME).exists()
-
-
-def test_post_setup_preserves_user_settings_and_records_the_launcher(tmp_path, unit_dir, monkeypatch):
-    engine = load_engine()
-    fake_runtime(tmp_path)
-    home = Path(os.environ["HERMES_HOME"])
-    (home / "zvec-memory").mkdir(parents=True)
-    (home / "zvec-memory/config.json").write_text(json.dumps(
-        {**config_for(tmp_path), "embedding": "local/custom", "recall_limit": 9, "vault": "$HERMES_HOME/my-vault"}))
-    saved = []
-    monkeypatch.setattr(engine, "_save_host_config", lambda config: saved.append(config) or True)
-    config = {"plugins": {"zvec-memory": {"runtime_dir": str(tmp_path / "runtime_root"),
-                                          "engine_home": str(tmp_path / "engine-home")}},
-              "memory": {}}
-
-    result = engine.post_setup(home, config)
-    stored = json.loads((home / "zvec-memory/config.json").read_text())
-    assert stored["embedding"] == "local/custom" and stored["recall_limit"] == 9
-    assert stored["vault"] == "$HERMES_HOME/my-vault"
-    assert stored["zg_bin"] == result["zg_bin"] == str(tmp_path / "runtime_root/zg-default")
-    assert config["memory"] == {}
-    assert saved == [home]
-
-    stamps = (home / "zvec-memory/config.json").stat().st_mtime_ns
-    engine.post_setup(home, config)
-    assert (home / "zvec-memory/config.json").stat().st_mtime_ns == stamps
 
 
 def test_post_setup_missing_engine_refuses_a_bare_block(tmp_path, unit_dir, monkeypatch):
@@ -240,41 +216,7 @@ def test_provider_package_exports_strict_post_setup_for_a_bare_block(tmp_path, u
     assert not (Path(os.environ["HERMES_HOME"]) / "zvec-memory/config.json").exists()
 
 
-def test_install_engine_resolves_npm_from_path(tmp_path, monkeypatch, default_node):
-    engine = load_engine()
-    real_run = engine.subprocess.run
-
-    def fake_which(name):
-        if name == "node":
-            return str(default_node)
-        if name == "npm":
-            return "/opt/node/bin/npm"
-        return name if name == "/opt/node/bin/npm" else None
-
-    monkeypatch.setattr(engine.shutil, "which", fake_which)
-    monkeypatch.setattr(engine, "registry_integrity", lambda version: engine.PINNED_ENGINE_INTEGRITY)
-    seen = []
-
-    def npm_failure(argv, **kwargs):
-        if argv == [str(default_node), "--version"]:
-            return real_run(argv, **kwargs)
-        assert argv[:2] == [str(default_node), "/opt/node/bin/npm"]
-        seen.append({"argv": argv, "env": kwargs.get("env")})
-        return engine.subprocess.CompletedProcess(argv, 1, "", "registry unreachable")
-
-    monkeypatch.setattr(engine.subprocess, "run", npm_failure)
-    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path))
-    assert result["status"] == "install-failed"
-    argv, environment = seen[0]["argv"], seen[0]["env"]
-    assert argv[:2] == [str(default_node), "/opt/node/bin/npm"], \
-        "PATH npm is run through the verified interpreter, not the hardcoded default"
-    assert f"{engine.ENGINE_PACKAGE}@{engine.PINNED_VERSION}" in argv
-    assert str(tmp_path / "runtime_root/runtime") in argv
-    assert environment["SHARP_IGNORE_GLOBAL_LIBVIPS"] == "1", \
-        "sharp must not attempt a source build against a global libvips"
-
-
-@pytest.mark.parametrize("operation", ["install_engine", "ensure_engine"])
+@pytest.mark.parametrize("operation", ["ensure_engine"])
 @pytest.mark.parametrize("selection", ["missing", "relative", "absent", "directory", "non-executable"])
 def test_node_admission_refuses_before_npm_or_writes(tmp_path, monkeypatch, selection, operation):
     engine = load_engine()
@@ -294,14 +236,12 @@ def test_node_admission_refuses_before_npm_or_writes(tmp_path, monkeypatch, sele
     monkeypatch.setattr(engine.shutil, "which", lambda name: None)
     monkeypatch.setattr(engine.subprocess, "run", lambda *a, **k: pytest.fail("must not run npm"))
     home = Path(os.environ["HERMES_HOME"])
-    if operation == "ensure_engine":
-        fake_runtime(tmp_path)
+    fake_runtime(tmp_path)
     before = {p: p.read_bytes() for p in engine.runtime_root(home, config).rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="Node|node_bin"):
         getattr(engine, operation)(home, config)
     assert {p: p.read_bytes() for p in before} == before
-    if operation == "install_engine":
-        assert not engine.runtime_root(home, config).exists()
+
     assert not engine.launcher_path(home, config).exists()
     assert not (engine.runtime_root(home, config) / engine.MANIFEST_NAME).exists()
     assert not engine.unit_path().exists()
@@ -351,96 +291,6 @@ def test_native_executable_version_must_match_metadata_before_artifacts(tmp_path
     assert not engine.launcher_path(home, config).exists()
     assert not (engine.runtime_root(home, config) / engine.MANIFEST_NAME).exists()
     assert not (unit_dir / engine.UNIT_NAME).exists()
-
-
-@pytest.mark.parametrize("version,rc", [
-    ("v21.9.0", 0), ("v20.0.0", 0), ("22.0.0", 0), ("v22.0", 0),
-    ("v22.0.0 extra", 0), ("", 0), ("v22.0.0", 1),
-])
-def test_node_version_refused_before_npm_or_writes(tmp_path, monkeypatch, version, rc):
-    engine = load_engine()
-    node = fixture_node(tmp_path, version=version, rc=rc)
-    config = config_for(tmp_path, node_bin=str(node))
-    real_run = engine.subprocess.run
-    seen = []
-
-    def only_version(argv, **kwargs):
-        assert argv == [str(node), "--version"], "npm must never be invoked"
-        seen.append((argv, kwargs))
-        return real_run(argv, **kwargs)
-
-    monkeypatch.setattr(engine.subprocess, "run", only_version)
-    with pytest.raises(ValueError, match="Node.js >=22"):
-        engine.install_engine(Path(os.environ["HERMES_HOME"]), config)
-    assert len(seen) == 1
-    assert seen[0][1]["stdin"] == engine.subprocess.DEVNULL
-    assert seen[0][1]["timeout"] == 10
-    assert not engine.runtime_root(Path(os.environ["HERMES_HOME"]), config).exists()
-    assert not engine.unit_path().exists()
-
-
-@pytest.mark.parametrize("requested", ["0.2.2", "0.2.3"])
-@pytest.mark.parametrize("selection", ["path", "explicit"])
-def test_node_path_selected_for_install_readiness_and_launcher(tmp_path, unit_dir, monkeypatch, requested, selection):
-    """A version-manager symlink resolves once; later PATH cannot switch Node."""
-    import shlex
-    import subprocess
-
-    engine = load_engine()
-    selected = fixture_node(tmp_path / "node path with spaces ' literal", native_version=requested,
-                            version="v22.0.0" if requested == "0.2.2" else "v24.1.0")
-    manager = tmp_path / "manager/bin"
-    manager.mkdir(parents=True)
-    (manager / "node").symlink_to(selected)
-    npm = manager / "npm"
-    npm.write_text("// npm boundary fixture: never execute\n")
-    npm.chmod(0o700)
-    # Use the real PATH resolver, rather than the legacy tests' default double.
-    monkeypatch.setattr(engine.shutil, "which", RESOLVE_EXECUTABLE)
-    monkeypatch.setenv("PATH", f"{manager}:/usr/bin:/bin")
-    config = config_for(tmp_path)
-    if selection == "explicit":
-        config["node_bin"] = str(manager / "node")
-    original_config = dict(config)
-    home = tmp_path / "user-home/.hermes"
-    real_run = subprocess.run
-    seen = []
-
-    def fixture_install(argv, **kwargs):
-        seen.append((argv, kwargs))
-        if argv[:2] == ["npm", "view"]:
-            return subprocess.CompletedProcess(argv, 0, json.dumps(engine.PINNED_ENGINE_INTEGRITY), "")
-        if "install" in argv:
-            assert argv[:2] == [str(selected), str(npm)]
-            assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(selected.parent)
-            assert kwargs["env"]["SHARP_IGNORE_GLOBAL_LIBVIPS"] == "1"
-            assert argv[2:] == ["install", "--prefix", str(tmp_path / "runtime_root/runtime"),
-                                "--no-audit", "--no-fund", "--save-exact",
-                                f"@zvec/zvec-grep@{requested}"]
-            fake_runtime(tmp_path, version=requested)
-            monkeypatch.setattr(engine.shutil, "which", lambda name: None)
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        assert argv[0] == str(selected), "all readiness calls use the admitted absolute Node"
-        return real_run(argv, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", fixture_install)
-    result = engine.install_engine(home, config, version=requested)
-    assert result["status"] == "updated"
-    assert config == original_config, "the installer must not mutate caller-owned settings"
-    manifest = json.loads((tmp_path / "runtime_root/manifest.json").read_text())
-    assert manifest["node"] == str(selected)
-    assert manifest["version"] == requested
-    launcher = Path(result["zg_bin"])
-    assert f'exec {shlex.quote(str(selected))} ' in launcher.read_text()
-    assert [str(selected), str(engine.entry_path(home, config)), "--version"] in [a for a, _ in seen]
-    # A different PATH Node must not affect the already generated launcher.
-    decoy = tmp_path / "decoy"
-    decoy.mkdir()
-    (decoy / "node").write_text("#!/bin/sh\nexit 98\n")
-    (decoy / "node").chmod(0o700)
-    proc = real_run([str(launcher), "--version"], capture_output=True, text=True,
-                    env={**os.environ, "PATH": f"{decoy}:/usr/bin:/bin"}, timeout=10)
-    assert (proc.returncode, proc.stdout.strip()) == (0, requested)
 
 
 def test_matching_installed_version_verifies_without_npm(tmp_path, unit_dir, monkeypatch, default_node):
@@ -503,17 +353,6 @@ def test_runtime_version_execution_failures_refuse_before_artifacts(
     assert not engine.unit_path().exists()
 
 
-def test_node_with_invalid_executable_format_refuses_before_npm(tmp_path, monkeypatch):
-    engine = load_engine()
-    node = tmp_path / "broken-node"
-    node.write_text("#!/no/such/fixture-interpreter\n")
-    node.chmod(0o700)
-    with pytest.raises(ValueError, match="Node.js >=22 verification failed"):
-        engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(node)))
-    assert not (tmp_path / "runtime_root").exists()
-    assert not engine.unit_path().exists()
-
-
 @pytest.mark.parametrize("version", ["latest", "^0.2.2", "~0.2.2", ">=0.2.2", "0.2", " 0.2.2", "0.2.2 ", "", None, True])
 def test_requested_package_version_must_be_exact_before_npm(tmp_path, monkeypatch, version):
     engine = load_engine()
@@ -522,25 +361,3 @@ def test_requested_package_version_must_be_exact_before_npm(tmp_path, monkeypatc
         engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path), version=version)
     assert not (tmp_path / "runtime_root").exists()
     assert not engine.unit_path().exists()
-
-
-def test_install_engine_without_npm_says_so(tmp_path, monkeypatch, default_node):
-    engine = load_engine()
-    monkeypatch.setattr(engine.shutil, "which", lambda name: None)
-    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(default_node)))
-    assert result["status"] == "no-npm" and "Node.js" in result["detail"]
-
-
-def test_install_engine_refuses_integrity_mismatch_before_npm(tmp_path, monkeypatch, default_node):
-    engine = load_engine()
-    monkeypatch.setattr(engine, "registry_integrity", lambda version: "sha512-different")
-
-    def run(argv, **kwargs):
-        if argv == [str(default_node), "--version"]:
-            return engine.subprocess.CompletedProcess(argv, 0, "v26.8.1\n", "")
-        pytest.fail("npm install must not run")
-
-    monkeypatch.setattr(engine.subprocess, "run", run)
-    monkeypatch.setattr(engine.shutil, "which", lambda name: "/opt/node/bin/npm" if name == "npm" else str(default_node))
-    result = engine.install_engine(Path(os.environ["HERMES_HOME"]), config_for(tmp_path, node_bin=str(default_node)))
-    assert result["status"] == "integrity-mismatch"

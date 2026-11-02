@@ -33,6 +33,8 @@ UNIT_NAME = "hermes-zvec-memory.service"
 # Durable half of the deferred rebuild: admitted by the CLI and acknowledged
 # only after the provider publishes a successful managed index generation.
 REINDEX_REQUEST = ".reindex-request.json"
+# Diagnostics refuse larger maps rather than allocating unbounded memory.
+MIRROR_MAP_MAX_BYTES = 16 * 1024 * 1024
 
 
 def unmirrored_builtin_count(entries, mirrored_contents) -> int:
@@ -47,24 +49,105 @@ def builtin_mirror_check(entries, mirrored_contents) -> dict:
 
 
 def read_builtin_entries() -> list:
+    """Read optional regular built-ins; unsafe or inaccessible is not absent.
+
+    The configured home and its ancestors must be trusted and stationary.
+    Reject a symlinked memories directory. No-follow/nonblocking leaf opens
+    also reject a leaf replaced between observation and open.
+    """
     home = _hermes_home() / "memories"
     entries = []
+    try:
+        directory = home.lstat()
+    except FileNotFoundError:
+        return entries
+    if not stat.S_ISDIR(directory.st_mode):
+        raise OSError("Unsafe built-in memory directory")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise OSError("Safe built-in memory open unavailable")
     for name in ("MEMORY.md", "USER.md"):
         path = home / name
-        if path.is_symlink() or not path.is_file():
+        try:
+            observed = path.lstat()
+        except FileNotFoundError:
             continue
-        parts = [part.strip() for part in path.read_text(encoding="utf-8").split("\n§\n") if part.strip()]
+        if not stat.S_ISREG(observed.st_mode):
+            raise OSError("Unsafe built-in memory file")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or
+                    (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino)):
+                raise OSError("Built-in memory changed during admission")
+            with os.fdopen(fd, encoding="utf-8") as stream:
+                fd = -1
+                text = stream.read()
+        finally:
+            if fd != -1:
+                os.close(fd)
+        parts = [part.strip() for part in text.split("\n§\n") if part.strip()]
         if parts and parts[0].startswith("#"):
             parts = parts[1:]
         entries.extend(parts)
     return entries
 
 
-def read_mirrored_contents(vault: Path) -> set:
+def _read_mirror_map(vault: Path) -> str | None:
+    """Read one stable regular leaf; only a genuinely absent entry is optional.
+
+    Vault ancestors must be trusted and stationary. Metadata checks detect
+    observable drift, not an atomic snapshot against a same-user attacker.
+    """
     path = vault / ".mirror-map.json"
-    if not path.is_file():
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(observed.st_mode):
+        raise ValueError("Mirror map is not a regular file")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise OSError("Safe mirror map open unavailable")
+
+    def signature(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    if observed.st_size > MIRROR_MAP_MAX_BYTES:
+        raise ValueError("Mirror map exceeds diagnostic limit")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError as exc:
+        raise ValueError("Mirror map disappeared") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or signature(opened) != signature(observed):
+            raise ValueError("Mirror map changed during admission")
+        chunks = []
+        size = 0
+        while size <= MIRROR_MAP_MAX_BYTES:
+            chunk = os.read(fd, min(65536, MIRROR_MAP_MAX_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > MIRROR_MAP_MAX_BYTES or size != opened.st_size:
+            raise ValueError("Mirror map size changed or exceeds diagnostic limit")
+        try:
+            current = path.lstat()
+        except FileNotFoundError as exc:
+            raise ValueError("Mirror map disappeared") from exc
+        if signature(os.fstat(fd)) != signature(opened) or signature(current) != signature(opened):
+            raise ValueError("Mirror map changed during read")
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        os.close(fd)
+
+
+def read_mirrored_contents(vault: Path) -> set:
+    text = _read_mirror_map(vault)
+    if text is None:
         return set()
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(text)
     records = value.get("records", {}) if isinstance(value, dict) else {}
     return {record.get("content") for record in records.values() if isinstance(record, dict)}
 
@@ -131,19 +214,42 @@ def _read_engine_state(path: Path) -> Dict | None:
     return value
 
 
+def _stat_or_none(path: Path, *, follow_symlinks: bool = True):
+    """Only a missing entry is absence; other filesystem errors are evidence."""
+    try:
+        return path.stat() if follow_symlinks else path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _is_symlink(path: Path) -> bool:
+    observed = _stat_or_none(path, follow_symlinks=False)
+    return observed is not None and stat.S_ISLNK(observed.st_mode)
+
+
+def _markdown_count(path: Path):
+    observed = _stat_or_none(path)
+    if observed is None or not stat.S_ISDIR(observed.st_mode):
+        return None
+    # Path.glob suppresses directory scan errors, including EACCES on 3.14.
+    # Scandir both enumerates and propagates failures, including iteration errors.
+    with os.scandir(path) as entries:
+        return sum(1 for entry in entries if entry.name.endswith('.md'))
+
+
 def _validate_mirror_paths(vault: Path, value: Dict) -> None:
     """Read-only equivalent of provider live containment, including staging."""
     roots = {}
     for directory in ("facts", ".mirror-staging"):
         root = vault / directory
-        if root.is_symlink() or root.resolve() != root:
+        if _is_symlink(root) or root.resolve() != root:
             raise ValueError("Aliased mirror root")
         roots[directory] = root
 
     def owned(relative, directory):
         rel = Path(relative)
         path = vault / rel
-        if (rel.is_absolute() or ".." in rel.parts or path.is_symlink()
+        if (rel.is_absolute() or ".." in rel.parts or _is_symlink(path)
                 or path.resolve() != path or not path.is_relative_to(roots[directory])
                 or path.suffix != ".md"):
             raise ValueError("Invalid scoped mirror path")
@@ -162,17 +268,15 @@ def vault_state(vault: Path) -> Dict[str, object]:
     facts = vault / "facts"
     sessions = vault / "sessions"
     state: Dict[str, object] = {
-        "facts": len(list(facts.glob("*.md"))) if facts.is_dir() else None,
-        "sessions": len(list(sessions.glob("*.md"))) if sessions.is_dir() else None,
+        "facts": _markdown_count(facts),
+        "sessions": _markdown_count(sessions),
         "inbox_journal": None, "inbox_pending": None,
         "inbox_high_watermark": 0,
         "mirror_records": None, "mirror_pending": None,
-        "delivery_failed": (vault / ".mirror-delivery-failed.json").exists(),
-        "rebuild_pending": ((vault / REINDEX_REQUEST).exists() or
-                            (vault / REINDEX_REQUEST).is_symlink()),
-        "refresh_pending": ((vault / ".index-refresh.json").exists() or
-                            (vault / ".index-refresh.json").is_symlink()),
-        "index_manifest": (vault / ".zvec-grep" / "manifest.json").exists(),
+        "delivery_failed": _stat_or_none(vault / ".mirror-delivery-failed.json", follow_symlinks=False) is not None,
+        "rebuild_pending": _stat_or_none(vault / REINDEX_REQUEST, follow_symlinks=False) is not None,
+        "refresh_pending": _stat_or_none(vault / ".index-refresh.json", follow_symlinks=False) is not None,
+        "index_manifest": _stat_or_none(vault / ".zvec-grep" / "manifest.json") is not None,
         "engine_state": None,
     }
     inbox = vault / ".mirror-inbox.sqlite3"
@@ -202,22 +306,19 @@ def vault_state(vault: Path) -> Dict[str, object]:
     except (OSError, sqlite3.Error) as exc:
         state["inbox_journal"] = f"unreadable: {type(exc).__name__}"
         state["inbox_high_watermark"] = None
-    mapping = vault / ".mirror-map.json"
     try:
-        mapping.stat()
-        value = _plugin_module("journal").validate_journal(
-            json.loads(mapping.read_text(encoding="utf-8")))
-        _validate_mirror_paths(vault, value)
-        high = state["inbox_high_watermark"]
-        if high is None or value.get("last_notification", 0) > high:
-            raise ValueError("Mirror watermark exceeds or cannot verify inbox history")
-        state["mirror_records"] = len(value["records"])
-        state["mirror_pending"] = sum(len(value[key]) for key in
-                                       ("pending_creates", "pending_deletes"))
-        state["mirror_refresh_required"] = bool(value.get("refresh_required"))
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError, TypeError) as exc:
+        text = _read_mirror_map(vault)
+        if text is not None:
+            value = _plugin_module("journal").validate_journal(json.loads(text))
+            _validate_mirror_paths(vault, value)
+            high = state["inbox_high_watermark"]
+            if high is None or value.get("last_notification", 0) > high:
+                raise ValueError("Mirror watermark exceeds or cannot verify inbox history")
+            state["mirror_records"] = len(value["records"])
+            state["mirror_pending"] = sum(len(value[key]) for key in
+                                           ("pending_creates", "pending_deletes"))
+            state["mirror_refresh_required"] = bool(value.get("refresh_required"))
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
         state["mirror_error"] = type(exc).__name__
     sidecar = vault / ".zvec-grep" / ".zvec-memory-state.json"
     try:
@@ -257,7 +358,8 @@ def _service_diagnostics(config: Dict, run: Callable) -> tuple:
         if not isinstance(raw_node, str) or not Path(raw_node).is_absolute():
             raise ValueError("Invalid admitted interpreter")
         node = Path(raw_node)
-        if not node.is_file() or not os.access(node, os.X_OK):
+        node_info = _stat_or_none(node)
+        if node_info is None or not stat.S_ISREG(node_info.st_mode) or not os.access(node, os.X_OK):
             raise ValueError("Admitted interpreter unavailable")
         if config.get("node_bin"):
             configured = Path(config["node_bin"]).expanduser()
@@ -267,12 +369,13 @@ def _service_diagnostics(config: Dict, run: Callable) -> tuple:
         artifacts = engine._artifact_set(home, config, node=node, version=engine.PINNED_VERSION)
         for name, path, text, mode in artifacts:
             conflict = path.with_name(path.name + ".new")
-            if conflict.exists() or conflict.is_symlink():
+            if _stat_or_none(conflict, follow_symlinks=False) is not None:
                 issues.append(name + " .new conflict")
-            if path.is_symlink() or not path.is_file():
+            observed = _stat_or_none(path, follow_symlinks=False)
+            if observed is None or not stat.S_ISREG(observed.st_mode):
                 issues.append(name + " missing/unsafe file kind")
                 continue
-            if path.stat().st_mode & 0o7777 != mode:
+            if observed.st_mode & 0o7777 != mode:
                 issues.append(name + " mode drift")
             current = path.read_text(encoding="utf-8")
             if name == "manifest":
@@ -327,21 +430,21 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None, *,
     zg = str(config.get("zg_bin") or "")
     state = vault_state(vault)
     add("config", bool(config) and not config.get("_config_error"),
-        "unreadable: " + (config["_config_error"] if isinstance(config["_config_error"], str)
-                          else type(config["_config_error"]).__name__)
-        if config.get("_config_error") else
+        "configuration unavailable or invalid" if config.get("_config_error") else
         f"embedding={config.get('embedding')} zg_bin={'set' if zg else 'MISSING'}")
     add("vault", state["facts"] is not None and state["sessions"] is not None,
         f"{vault} facts={state['facts']} sessions={state['sessions']}")
-    engine_rc, engine_out, engine_err = run([zg, "--version"]) if zg else (127, "", "no zg_bin")
+    engine_rc, engine_out, _ = run([zg, "--version"]) if zg else (127, "", "")
     settings = _plugin_module("settings")
     version = engine_out.strip() if engine_rc == 0 else None
-    add("engine", engine_rc == 0 and version == settings.PINNED_ENGINE_VERSION,
-        (engine_out.strip() or engine_err.strip() or "unavailable").splitlines()[0][:60])
-    index_rc, index_out, index_err = run([zg, "status", str(vault), "--check-ready"]) if zg else (127, "", "no zg_bin")
+    engine_ok = engine_rc == 0 and version == settings.PINNED_ENGINE_VERSION
+    # Subprocess output is untrusted, even on success. Only emit fixed text
+    # (or the pinned version, after exact comparison), never stdout or stderr.
+    add("engine", engine_ok, settings.PINNED_ENGINE_VERSION if engine_ok else
+        ("version mismatch" if engine_rc == 0 else "unavailable"))
+    index_rc, _, _ = run([zg, "status", str(vault), "--check-ready"]) if zg else (127, "", "")
     ready = index_rc == 0
-    add("index", ready, (index_err.strip().splitlines()[0] if index_err.strip() else
-                         ("ready" if ready else index_out.strip()[:60] or "not ready")))
+    add("index", ready, "ready" if ready else "not ready")
     if state["inbox_journal"] is None:
         add("inbox", True, "absent (no durable notifications yet)")
     else:
@@ -393,7 +496,10 @@ def collect_checks(vault: Path, config: Dict, runner: Callable | None = None, *,
 
 def report(checks: List[Dict]) -> Dict:
     required = [c["name"] for c in checks if c["name"] in REQUIRED_CHECKS]
-    checked = sorted(required) == sorted(REQUIRED_CHECKS) and len(required) == len(REQUIRED_CHECKS)
+    optional = [c["name"] for c in checks if c["name"] not in REQUIRED_CHECKS]
+    checked = (sorted(required) == sorted(REQUIRED_CHECKS) and
+               len(required) == len(REQUIRED_CHECKS) and
+               (not optional or optional == ["builtin_mirror"]))
     failures = [c for c in checks if c["ok"] is not True]
     return {"ok": checked and not failures, "checks": checks,
             "failures": [c["name"] for c in failures], "checked": checked}
@@ -442,7 +548,7 @@ def _engine_module():
 
 
 def _engine_command(args) -> int:
-    """`hermes zvec-memory engine install [--version X]`: the explicit fetch step."""
+    """Check an existing engine; fresh installation is unavailable."""
     action = getattr(args, "engine_action", None)
     if action != "install":
         print("usage: hermes zvec-memory engine install [--version 0.2.2]")
@@ -452,11 +558,13 @@ def _engine_command(args) -> int:
         if config.get("_config_error"):
             raise ValueError("Invalid provider settings; install refused")
         engine = _engine_module()
-        version = getattr(args, "version", None) or engine.PINNED_VERSION
+        version = getattr(args, "version", None)
+        if version is None:
+            version = engine.PINNED_VERSION
         home = _hermes_home()
         root = engine.runtime_root(home, config)
         if not getattr(args, "json", False):
-            print(f"  Installing {engine.ENGINE_PACKAGE}@{version} under {root}")
+            print(f"  Checking existing {engine.ENGINE_PACKAGE}@{version} under {root}")
         result = engine.install_engine(home, config, version=version)
     except Exception as exc:
         result = {"status": "failed", "error": type(exc).__name__}
@@ -540,8 +648,28 @@ def zvec_memory_command(args) -> int:
             print(f"  Could not select the vault: {action['error']}")
         return 1
     try:
-        checks = collect_checks(vault, config, builtin_entries=read_builtin_entries(),
-                                mirrored_contents=read_mirrored_contents(vault))
+        try:
+            entries = read_builtin_entries()
+        except (OSError, UnicodeError):
+            # A failed read is not an empty memory. Retain the selected vault
+            # and complete the other checks without echoing exception content.
+            entries = None
+        mirror_error = None
+        try:
+            mirrored = read_mirrored_contents(vault)
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError) as exc:
+            # Still run the durable mirror check, but never claim the optional
+            # builtin comparison succeeded when its inputs were unreadable.
+            mirrored = None
+            mirror_error = type(exc).__name__
+        checks = collect_checks(vault, config, builtin_entries=entries,
+                                mirrored_contents=mirrored)
+        if entries is None:
+            checks.append({"name": "builtin_mirror", "ok": False,
+                           "detail": "unreadable built-in memory"})
+        elif mirror_error:
+            checks.append({"name": "builtin_mirror", "ok": False,
+                           "detail": "unreadable: " + mirror_error})
     except OSError as exc:
         # Selection already succeeded. Incomplete health is neither absence nor
         # an unknown target: retain this vault for explicit durable admission.

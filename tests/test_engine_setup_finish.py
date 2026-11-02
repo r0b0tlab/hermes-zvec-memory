@@ -156,27 +156,6 @@ def test_fresh_install_preflights_artifacts_before_fetch(
     assert tree_state(tmp_path) == before
 
 
-@pytest.mark.parametrize("native", [None, {}, {"auto_extract": False, "recall_limit": 0, "unknown": {"keep": [1, False]}, "embedding": "local/native"}])
-def test_shared_settings_presence_and_lossless_legacy_setup(
-        tmp_path, isolated_home, monkeypatch, default_node, native):
-    engine = load_engine()
-    root = fake_runtime(tmp_path)
-    monkeypatch.setenv("HERMES_ZVEC_RUNTIME_DIR", str(root))
-    # Isolate settings ownership from the host save contract tested separately.
-    monkeypatch.setattr(engine, "_save_host_config", lambda home: True)
-    legacy = {"auto_extract": False, "recall_limit": 0,
-              "unknown": {"legacy": [0, False]}, "embedding": "local/legacy"}
-    config = {"memory": {}, "plugins": {"zvec-memory": legacy}}
-    path = engine.provider_config_path(isolated_home)
-    if native is not None:
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps(native))
-    expected = dict(legacy if native is None else native)
-    result = engine.post_setup(isolated_home, config)
-    assert json.loads(path.read_text()) == {**expected, "zg_bin": result["zg_bin"]}
-    assert result["recall_readiness"] == "not_checked"
-
-
 @pytest.mark.parametrize("raw", [b'{"broken":', b'[]', b'null', b'1', b'"text"', b'\xff'])
 def test_real_host_hook_preserves_invalid_present_config_before_effects(
         setup_host, monkeypatch, default_node, raw):

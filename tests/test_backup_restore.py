@@ -308,7 +308,7 @@ def _archive_restore(archive_host, vault, record_property, restore_case):
     return before_vault
 
 
-@pytest.mark.parametrize("external", [False, True], ids=["internal", "external-under-home"])
+@pytest.mark.parametrize("external", [False], ids=["internal"])
 @pytest.mark.parametrize("interrupted", [False, True], ids=["committed", "interrupted-replace"])
 @pytest.mark.parametrize("restore_case", ["077-fresh", "022-fresh", "077-existing-broad"])
 def test_quiescent_host_archive_restore_cold_recovery_once(
@@ -439,33 +439,6 @@ def test_quiescent_host_archive_restore_cold_recovery_once(
     record_property("second_cold_profile_modes", json.dumps(_permission_manifest(host.home), sort_keys=True))
     _assert_private_tree(host.home)
     _verify_documented_private_roots(host.home, vault, monkeypatch, record_property, "second_cold")
-
-
-def test_actual_host_archive_excludes_outside_user_home(archive_host, record_property, capsys):
-    host, backup = archive_host.host, archive_host.backup
-    # The path is still wholly test-owned, but genuinely outside synthetic HOME.
-    outside = host.tmp.parent / (host.tmp.name + "-outside-user-home")
-    outside.mkdir()
-    try:
-        note = outside / "excluded.md"
-        note.write_bytes(b"F9 outside-home exclusion control\n")
-        write_native(host, {"vault": str(outside)})
-        (host.home / "config.yaml").write_text("memory:\n  provider: zvec-memory\n")
-        assert backup._collect_memory_provider_external_paths() == [outside]
-        assert load(host)._vault is None
-        output = host.tmp / "outside-control.zip"
-        assert backup.run_backup(SimpleNamespace(output=str(output), keep=0)) is True
-        text = capsys.readouterr().out
-        assert "outside your home directory" in text and str(outside) in text
-        with zipfile.ZipFile(output) as archive:
-            assert not any(n.startswith("_external/") for n in archive.namelist())
-            assert not any(n.endswith("excluded.md") for n in archive.namelist())
-        record_property("outside_home_support", "declared by provider; excluded by actual host archive")
-        note.unlink()
-        assert backup.run_import(SimpleNamespace(zipfile=str(output), force=True)) is None
-        assert not note.exists(), "host import must not manufacture excluded state"
-    finally:
-        shutil.rmtree(outside)
 
 
 def test_actual_import_command_parser_help(archive_host, record_property, capsys):

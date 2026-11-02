@@ -1,9 +1,10 @@
 """Lay out the local zvec-grep engine runtime, launcher and systemd unit.
 
-``ensure_engine`` admits a verified default-profile runtime and a matching
+``ensure_engine`` compatibility-checks a default-profile runtime and a matching
 complete artifact generation, creating only missing members. Operator edits
-are refused before mutation. ``install_engine`` is the one explicit,
-user-invoked command that fetches the pinned npm package; setup never fetches.
+are refused before mutation. ``install_engine`` can reuse a pre-provisioned
+runtime, but refuses fresh installation until the complete dependency closure
+and native assets can be authenticated. Compatibility is not provenance.
 
 ``post_setup`` is the hook ``hermes memory setup`` calls on the provider package
 (``hermes_cli/memory_setup.py::_post_setup_hook``). Because that hook makes this
@@ -16,17 +17,17 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .hostio import atomic_json_write
-from .settings import DEFAULT_EMBEDDING, PINNED_ENGINE_INTEGRITY, PINNED_ENGINE_VERSION, validate_core_config
+from .settings import DEFAULT_EMBEDDING, PINNED_ENGINE_VERSION, validate_core_config
 
 ENGINE_PACKAGE = "@zvec/zvec-grep"
 PINNED_VERSION = PINNED_ENGINE_VERSION
 NODE_BIN = "/usr/bin/node"
-NPM_BIN = "/usr/bin/npm"
 LAUNCHER_NAME = "zg-default"
 UNIT_NAME = "hermes-zvec-memory.service"
 PROVIDER_NAME = "zvec-memory"
@@ -40,6 +41,7 @@ RUNTIME_DIR = "~/.local/share/hermes-zvec-memory"
 ENGINE_HOME_NAME = "zvec-runtime"
 ENTRY_RELATIVE = Path("runtime/node_modules/@zvec/zvec-grep/dist/cli/index.js")
 MANIFEST_NAME = "manifest.json"
+MAX_PACKAGE_JSON_BYTES = 256 * 1024
 
 
 
@@ -109,9 +111,43 @@ def token_file(hermes_home, config=None) -> Path:
 
 
 def installed_version(hermes_home, config=None):
+    """Read a bounded, stable regular metadata leaf in a trusted runtime tree."""
     try:
-        metadata = json.loads(package_json_path(hermes_home, config).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        path = package_json_path(hermes_home, config)
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_PACKAGE_JSON_BYTES:
+            return None
+        # Refuse rather than silently follow a leaf on platforms lacking these flags.
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+            return None
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0)
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+
+            def identity(st):
+                return (st.st_dev, st.st_ino, st.st_mode, st.st_nlink, st.st_size,
+                        st.st_mtime_ns, st.st_ctime_ns)
+
+            if not stat.S_ISREG(opened.st_mode) or identity(opened) != identity(before):
+                return None
+            chunks = []
+            remaining = MAX_PACKAGE_JSON_BYTES + 1
+            while remaining:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if (len(data) != opened.st_size or len(data) > MAX_PACKAGE_JSON_BYTES
+                    or identity(os.fstat(fd)) != identity(opened)
+                    or identity(path.lstat()) != identity(opened)):
+                return None
+        finally:
+            os.close(fd)
+        metadata = json.loads(data.decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(metadata, dict) or metadata.get("name") != ENGINE_PACKAGE:
         return None
@@ -261,7 +297,7 @@ def _preflight_artifacts(artifacts):
 
 
 def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VERSION) -> dict:
-    """Idempotently lay out launcher + unit for the verified local runtime."""
+    """Idempotently lay out launcher + unit for a compatible local runtime."""
     config = plugin_block(config)
     validate_core_config(config, engine_version=expected_version)
     _require_managed_scope(hermes_home)
@@ -273,7 +309,7 @@ def ensure_engine(hermes_home, config=None, *, expected_version: str = PINNED_VE
     if not entry_path(hermes_home, config).is_file():
         return {"status": "missing-engine", "runtime_root": str(root), "version": version,
                 "detail": (f"{ENGINE_PACKAGE} runtime not found under {root}/runtime; "
-                           f"run 'hermes {PROVIDER_NAME} engine install'")}
+                           "fresh installation is unavailable; reuse requires a separately trusted runtime")}
     if version is None:
         return {"status": "invalid-engine-metadata", "runtime_root": str(root),
                 "detail": "Engine package metadata must identify the expected package and a version"}
@@ -334,22 +370,9 @@ def verified_node(config) -> Path:
     return node
 
 
-def registry_integrity(version: str) -> str:
-    """Official registry integrity for the exact package version. No install."""
-    proc = subprocess.run(
-        ["npm", "view", f"{ENGINE_PACKAGE}@{version}", "dist.integrity", "--json"],
-        capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0:
-        raise ValueError("registry integrity lookup failed")
-    value = json.loads(proc.stdout)
-    if not isinstance(value, str) or not value.startswith("sha512-"):
-        raise ValueError("registry integrity is not a sha512 pin")
-    return value
-
-
 def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
                    npm: str | None = None) -> dict:
-    """Fetch the pinned engine package, then lay the runtime out. Explicit only."""
+    """Reuse a compatible existing runtime; fresh installation is unavailable."""
     config = plugin_block(config)
     validate_core_config(config, engine_version=version)
     _require_managed_scope(hermes_home)
@@ -357,8 +380,8 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
     _require_managed_executable(hermes_home, config)
     # Validate systemd-bound values before npm or any filesystem mutation.
     unit_template(hermes_home, config)
-    # Only a literal package version may reach npm: no tags, ranges, or token
-    # repair. The engine pin is separate from the plugin's release version.
+    # Preserve literal version validation even though no fresh fetch is allowed.
+    # The engine pin is separate from the plugin's release version.
     exact_version = (r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
                      r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
                      r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
@@ -374,36 +397,13 @@ def install_engine(hermes_home, config=None, *, version: str = PINNED_VERSION,
             return {"status": "migration-required", "expected": version, "found": found,
                     "detail": "Changing an installed engine version requires separately approved migration"}
         return ensure_engine(hermes_home, config, expected_version=version)
-    node = verified_node(config)
-    _preflight_artifacts(_artifact_set(hermes_home, config, node=node, version=version))
-    prefix = runtime_root(hermes_home, config) / "runtime"
-    npm_bin = shutil.which(npm or "npm")
-    if npm_bin is None and npm is None:
-        npm_bin = shutil.which(NPM_BIN)
-    if npm_bin is None:
-        return {"status": "no-npm", "detail": "npm not found; install Node.js >= 22"}
-    npm_bin = str(Path(npm_bin).resolve())
-    try:
-        published = registry_integrity(version)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"status": "integrity-mismatch", "detail": type(exc).__name__}
-    if published != PINNED_ENGINE_INTEGRITY:
-        return {"status": "integrity-mismatch", "expected": PINNED_ENGINE_INTEGRITY, "found": published}
-    prefix.mkdir(parents=True, exist_ok=True)
-    # Execute npm's CLI with the exact admitted interpreter; PATH also pins its
-    # ordinary env-node children. No later resolver may switch this installation.
-    environment = {**os.environ, "PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", ""),
-                   "SHARP_IGNORE_GLOBAL_LIBVIPS": os.environ.get("SHARP_IGNORE_GLOBAL_LIBVIPS", "1")}
-    proc = subprocess.run([str(node), npm_bin, "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
-                           "--save-exact", f"{ENGINE_PACKAGE}@{version}"],
-                          capture_output=True, text=True, timeout=900, env=environment)
-    if proc.returncode != 0:
-        return {"status": "install-failed", "detail": (proc.stderr or proc.stdout).strip()[-400:]}
-    found = installed_version(hermes_home, config)
-    if found != version:
-        return {"status": "version-mismatch", "expected": version, "found": found}
-    config["node_bin"] = str(node)
-    return ensure_engine(hermes_home, config, expected_version=version)
+    # Registry metadata is not bound to a later install, and the direct pin
+    # does not authenticate transitive packages, lifecycle scripts or native
+    # assets. Refuse before resolving Node/npm or mutating any artifact.
+    return {"status": "fresh-install-unavailable",
+            "detail": ("Fresh engine installation is disabled until the full "
+                       "transitive dependency and native asset closure is verified. "
+                       "Reuse requires a separately trusted pre-provisioned runtime.")}
 
 
 def provider_config_path(hermes_home) -> Path:

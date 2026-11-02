@@ -52,7 +52,7 @@ def test_unknown_settings_without_override_cannot_admit_default_rebuild(
         runner_calls.append(argv)
         return 1, "", "isolated fixture unavailable"
     monkeypatch.setattr(cli, "_default_runner", unavailable)
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     actual_request = cli._request_reindex
     admitted = []
     def request(vault):
@@ -153,7 +153,7 @@ def test_real_dispatch_cold_settings_and_provider_select_identical_vault(
     monkeypatch.setattr(_mod.ZvecMemoryProvider, "initialize", forbidden)
     monkeypatch.setattr(_mod.ZvecMemoryProvider, "_run_zg", forbidden)
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     real_state, real_request = cli.vault_state, cli._request_reindex
     observed, admitted = [], []
     def state(vault):
@@ -223,7 +223,7 @@ def test_unknown_read_refuses_before_any_address_or_health_step(
     def forbidden(*a, **k):
         pytest.fail("Unknown settings must not select an address, diagnose, or admit")
     for name in ("resolve_vault", "collect_checks", "vault_state", "_service_diagnostics",
-                 "_task_ceiling", "_default_runner", "_request_reindex"):
+                 "_unit_tasks_max", "_default_runner", "_request_reindex"):
         monkeypatch.setattr(cli, name, forbidden)
     assert dispatch(cli, ["reindex", "--json"]) == 1
     captured = capsys.readouterr()
@@ -259,7 +259,7 @@ def test_real_yaml_unknown_target_refuses_but_valid_override_admits(
         return real_request(vault)
     monkeypatch.setattr(cli, "_request_reindex", request)
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     if not override:
         monkeypatch.setattr(cli, "collect_checks", lambda *a: pytest.fail("Unknown target inspected"))
     rc = dispatch(cli, ["reindex", "--json"] + (["--vault", str(target)] if override else []))
@@ -272,7 +272,7 @@ def test_real_yaml_unknown_target_refuses_but_valid_override_admits(
     if override:
         assert payload["action"]["status"] == "requested"
         check = next(c for c in payload["checks"] if c["name"] == "config")
-        assert check == {"name":"config", "ok":False, "detail":"unreadable: " + error_name}
+        assert check == {"name":"config", "ok":False, "detail":"configuration unavailable or invalid"}
         marker = target / cli.REINDEX_REQUEST
         assert marker.stat().st_mode & 0o777 == 0o600
         assert json.loads(marker.read_bytes())["by"] == "hermes zvec-memory reindex"
@@ -297,7 +297,7 @@ def test_readable_empty_or_absent_settings_establish_real_default(tmp_path, monk
     before = {p:p.read_bytes() if p.exists() else None for p in (native, legacy)}
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     assert dispatch(cli, ["reindex", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["checked"] is True and payload["action"]["status"] == "requested"
@@ -320,42 +320,12 @@ def test_readable_reserved_diagnostic_field_does_not_make_target_unknown(
     before = native.read_bytes()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     assert dispatch(cli, ["reindex", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["action"]["status"] == "requested" and payload["checked"] is True
     assert (target / cli.REINDEX_REQUEST).stat().st_mode & 0o777 == 0o600
     assert native.read_bytes() == before and not (native.parent / cli.REINDEX_REQUEST).exists()
-
-
-@pytest.mark.parametrize("raw", [None, False, 0], ids=["null", "false", "zero"])
-@pytest.mark.parametrize("store", ["native", "legacy"])
-def test_cold_provider_canonical_home_and_backup_share_falsey_default(
-        tmp_path, monkeypatch, raw, store):
-    import yaml
-    from test_provider import _mod
-
-    home = tmp_path / "cold-home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    config = {"vault":raw, "unknown":[None, False, 0]}
-    if store == "native":
-        source = home / "zvec-memory/config.json"
-        source.parent.mkdir()
-        source.write_text(json.dumps(config))
-    else:
-        source = home / "config.yaml"
-        source.write_text(yaml.safe_dump({"plugins":{"zvec-memory":config}}))
-    before = source.read_bytes()
-    provider = _mod.ZvecMemoryProvider()
-    default = (home / "zvec-memory").resolve()
-    assert provider._resolve_vault(None) == default
-    assert provider.backup_paths() == [str(default)]
-    assert type(provider._config["vault"]) is type(raw) and provider._config == config
-    assert provider._vault is None and provider._disk_worker is None and provider._index_worker is None
-    assert source.read_bytes() == before and not (home / "None").exists()
-    assert not (home / "False").exists() and not (home / "0").exists()
-    assert not (default / ".reindex-request.json").exists()
 
 
 @pytest.mark.parametrize("error", [PermissionError, OSError])
@@ -380,7 +350,7 @@ def test_native_read_failure_valid_cwd_override_still_admits_real_request(
         return real_read(path, *a, **k)
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     admitted = []
     real_request = cli._request_reindex
     def request(vault):
@@ -395,7 +365,7 @@ def test_native_read_failure_valid_cwd_override_still_admits_real_request(
     assert payload["checked"] is True and payload["action"]["completed"] is False
     assert payload["action"]["status"] == "requested"
     assert next(c for c in payload["checks"] if c["name"] == "config") == {
-        "name":"config", "ok":False, "detail":"unreadable: " + error.__name__}
+        "name":"config", "ok":False, "detail":"configuration unavailable or invalid"}
     marker = cwd / "override-vault" / cli.REINDEX_REQUEST
     assert marker.stat().st_mode & 0o777 == 0o600
     assert json.loads(marker.read_bytes())["by"] == "hermes zvec-memory reindex"
@@ -447,7 +417,7 @@ def test_truthy_nonstring_readable_diagnostic_preserves_known_target_json(
     cold = settings.load_settings(home)
     assert cold == config and type(cold["_config_error"]) is type(raw)
     monkeypatch.setattr(cli, "_default_runner", lambda *a, **k: (1, "", "fixture unavailable"))
-    monkeypatch.setattr(cli, "_task_ceiling", lambda: 256)
+    monkeypatch.setattr(cli, "_unit_tasks_max", lambda run: pytest.fail("Nonmanaged or unknown target must not query the managed unit"))
     real_state, real_request = cli.vault_state, cli._request_reindex
     observed, admitted = [], []
     def state(vault):
@@ -467,7 +437,7 @@ def test_truthy_nonstring_readable_diagnostic_preserves_known_target_json(
     assert admitted == ([external.resolve()] if command == "reindex" else [])
     assert payload["checked"] is True and payload["ok"] is False
     assert next(c for c in payload["checks"] if c["name"] == "config") == {
-        "name": "config", "ok": False, "detail": "unreadable: " + type(raw).__name__}
+        "name": "config", "ok": False, "detail": "configuration unavailable or invalid"}
     assert rc == (1 if command == "doctor" else 0)
     marker = external / cli.REINDEX_REQUEST
     if command == "reindex":

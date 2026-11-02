@@ -119,62 +119,6 @@ def managed(host, monkeypatch):
         manager.shutdown_all()
 
 
-def test_discovery_and_schema_are_cold_and_load_real_abc(host):
-    threads = set(threading.enumerate())
-    modules = set(sys.modules)
-    assert host.discovery.find_provider_dir("zvec-memory") == host.plugin
-    assert "zvec-memory" in host.discovery.list_memory_provider_names()
-    from plugins.memory.config_schema import get_provider_config_schema
-    schema = get_provider_config_schema("zvec-memory")
-    assert schema.name == "zvec-memory"
-    assert schema.storage == "flat_json"
-    # Schema loading must not import the provider runtime package.
-    assert not any(
-        getattr(sys.modules[name], "__file__", None) == str(host.plugin / "__init__.py")
-        for name in set(sys.modules) - modules
-    )
-    assert not (host.home / "zvec-memory").exists()
-    provider = load(host)
-    assert provider.name == "zvec-memory"
-    assert isinstance(provider.is_available(), bool)
-    assert provider.pre_compress_checkpoint_api_version == 1
-    assert set(threading.enumerate()) == threads
-    assert not (host.home / "zvec-memory").exists()
-    # The host's provider loader provisions <home>/skills in this checkout (its
-    # own profile bootstrap, even with register_skills=False); what must stay
-    # cold is plugin state and anything written under those braced directories.
-    assert not (host.home / "skills").exists() or not any((host.home / "skills").iterdir())
-
-
-def test_declared_json_writer_routes_to_fresh_runtime(host):
-    from plugins.memory.config_schema import get_provider_config_schema
-    from hermes_cli.web_routers.memory_providers import _write_provider_flat
-
-    schema = get_provider_config_schema("zvec-memory")
-    _write_provider_flat(schema, {"preview": "full"})
-    _write_provider_flat(schema, {"recall_limit": "9"})
-    path = host.home / "zvec-memory" / "config.json"
-    assert json.loads(path.read_text()) == {"preview": "full", "recall_limit": 9}
-    provider = load(host)
-    assert provider._recall_limit() == 9
-    assert provider._config["preview"] == "full"
-    assert not (host.home / "config.yaml").exists()
-
-
-def test_native_setup_save_merges_declared_json(host):
-    from plugins.memory.config_schema import get_provider_config_schema
-    from hermes_cli.web_routers.memory_providers import _write_provider_flat
-
-    _write_provider_flat(get_provider_config_schema("zvec-memory"),
-                         {"preview": "full", "recall_limit": "9"})
-    load(host).save_config({"context_chars": 321}, str(host.home))
-    provider = load(host)
-    assert provider._recall_limit() == 9
-    assert provider._config["preview"] == "full"
-    assert provider._config["context_chars"] == 321
-    assert not (host.home / "config.yaml").exists()
-
-
 def test_manager_routes_json_tools_and_keeps_prompt_static(managed):
     manager = managed.manager
     assert manager.get_all_tool_names() == {"memory_search", "memory_store"}
@@ -234,21 +178,3 @@ def test_host_toolset_gate_controls_advertisement(managed, disabled):
     assert inject_memory_provider_tools(agent) == (0 if disabled else 2)
     names = {tool["function"]["name"] for tool in agent.tools}
     assert names == (set() if disabled else {"memory_search", "memory_store"})
-
-
-def test_host_cold_backup_includes_external_vault_without_initialize(host):
-    from hermes_cli.backup import _collect_memory_provider_external_paths
-
-    external = host.tmp / "external-vault"
-    external.mkdir()
-    note = external / "existing.md"
-    note.write_text("Existing backup evidence", encoding="utf-8")
-    write_native(host, {"vault": str(external)})
-    # The real backup path reads the active selector; only this temp profile changes.
-    (host.home / "config.yaml").write_text("memory:\n  provider: zvec-memory\n", encoding="utf-8")
-    before_threads = set(threading.enumerate())
-    assert {p.resolve() for p in _collect_memory_provider_external_paths()} == {external.resolve()}
-    assert set(external.iterdir()) == {note}
-    assert note.read_text() == "Existing backup evidence"
-    assert set(threading.enumerate()) == before_threads
-    assert load(host)._vault is None

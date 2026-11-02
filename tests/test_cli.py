@@ -44,6 +44,18 @@ def healthy_vault(tmp_path: Path, *, embedding="local/potion-retrieval-32m", bin
     return vault
 
 
+def forbid_caller_cgroup(monkeypatch):
+    """Trip on the old caller-cgroup read without blocking fixture files."""
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if str(path) == "/proc/self/cgroup" or str(path).startswith("/sys/fs/cgroup/"):
+            pytest.fail("Caller cgroup must not be inspected")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+
+
 def fake_runner(engine_ok=True, index_ok=True):
     def run(args, timeout=15):
         if "--version" in [str(a) for a in args]:
@@ -216,9 +228,10 @@ def test_tasks_check_does_not_substitute_caller_for_missing_managed_service(tmp_
 def test_unmanaged_tasks_check_does_not_read_caller_cgroup(tmp_path, monkeypatch):
     from test_cli_health_finish import managed_fixture
     cli = load_cli()
-    def boom():
-        raise AssertionError("caller cgroup read")
-    monkeypatch.setattr(cli, "_task_ceiling", boom, raising=False)
+    def boom(run):
+        raise AssertionError("unmanaged target must not probe the managed unit")
+    monkeypatch.setattr(cli, "_unit_tasks_max", boom)
+    forbid_caller_cgroup(monkeypatch)
     _, config, _, _, run, _ = managed_fixture(cli, tmp_path, monkeypatch)
     config["zg_bin"] = "/not/the/managed/launcher"
     tasks = next(c for c in cli.collect_checks(healthy_vault(tmp_path), config, runner=run)
