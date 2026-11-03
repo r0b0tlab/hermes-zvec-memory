@@ -105,6 +105,18 @@ are not a sandbox against concurrent same-user parent-directory substitution,
 do not guarantee progress on a stalled filesystem, and do not authenticate the
 runtime or the code executed by the compatibility check.
 
+Managed artifact creation requires Linux `O_TMPFILE` and `linkat` support on
+both destination filesystems. It fails closed where those primitives are not
+available. Old `.zvec-tmp` entries and pending `.new` entries are conflicts;
+preserve and investigate them rather than deleting them automatically. Each
+missing member is published without replacing an existing name, but the six
+members are not a transaction: an I/O error or concurrent conflict can leave a
+partial matching generation. In particular, an error after publication (such
+as directory fsync or close failure) is reported and the published member is
+retained; inspect it before retrying. These checks do not defend against a
+concurrent same-user actor moving ancestor directories or modifying an already
+published member.
+
 ## Upgrading the plugin
 
 `scripts/upgrade.py` is retired, including `--dry-run`, `--rollback`, `--only`,

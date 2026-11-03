@@ -1,4 +1,51 @@
-# Owned built-in mirror reconciliation: detached offline operation
+# Owned built-in mirror reconciliation
+
+## Experimental offline live-target primitive — controller integration REQUIRED
+
+`scripts/live_mirror_reconcile.py` can prepare and then journal a reconciliation
+against its input vault; unlike the detached command below, **commit changes that
+vault**. This is a primitive, not a complete maintenance controller. It does not
+stop, fence, census, restart, or check readiness of any service. In particular,
+the separately developed code-only controller has no reconciliation hook and
+restarts services on success: invoking this script *after* that controller exits
+is unsafe. Integrate and test the primitive at the stopped-and-censused point of
+an independent controller before any production use. Independent review of the
+combined exact revision, complete restorable backup, runtime and reopen process
+is still required. No hostile same-user/root or concurrent/manual writers,
+foreign hosts, reboot, or filesystem failures are fenced by this code.
+
+Within the **same uninterrupted outage**, `prepare` takes a fresh private snapshot,
+checks source identity and every captured vault file against it, and emits a plan
+containing private memory. An explicitly confirmed plan is required for `commit`;
+it rechecks source, full captured file inventory and inbox bytes before opening
+the target inbox, then compares source, map, owned facts, all fact bytes, empty
+inbox and watermark against the snapshot. It archives old owned material, stages
+new entry facts, and uses the existing provider journal and refresh obligation.
+It verifies the resulting journal, owned and retained fact bytes, and source bytes
+before returning. It does not rename the vault or replace unknown files. Opening
+the target inbox may itself create or checkpoint SQLite sidecars even on refusal.
+
+The snapshot preserves copied bytes, including hidden files, but is **not a full
+restorable backup**: it omits transient lock/SHM, changes copied file modes, and
+excludes state.db, plugin/config/runtime and other profile data. Capture and verify
+an independent complete backup before the operation. In an error, keep admission
+closed and inspect the durable journal and staging: a post-replace error is
+ambiguous. The operator may recover forward via the native journal, or restore a
+verified complete pre-cutover backup while all writers remain fenced; this tool does
+neither automatically. Never roll back an old backup after reopening: fence and
+preserve any newer generation first. Recall remains withheld until a real refresh
+completes; fresh-session search and service readiness are separate gates. Failed
+or interrupted commands must not trigger automatic restart.
+
+Commands are deliberately not production recipes; `--offline-controller-active`
+is an operator attestation, **not** evidence of an outage:
+
+```sh
+python scripts/live_mirror_reconcile.py prepare --profile /stopped/profile --vault /stopped/vault --snapshot /private/new-snapshot --offline-controller-active
+python scripts/live_mirror_reconcile.py commit --snapshot /private/new-snapshot --confirm-plan-sha256 PLAN_HASH --offline-controller-active
+```
+
+## Detached offline operation
 
 The provider still refuses online legacy migration. A separate experimental tool
 can reconcile a **detached copy**, not a live vault. It cannot enforce or prove

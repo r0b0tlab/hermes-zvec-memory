@@ -239,6 +239,7 @@ def create_snapshot(profile, vault, destination):
     _write_new(destination / MARKER, json.dumps(marker, sort_keys=True).encode())
     for root, dirs, _ in os.walk(destination, topdown=False):
         _sync(root)
+    _sync(destination.parent)
     return marker
 
 
@@ -263,7 +264,9 @@ def _snapshot(root):
 def _fact_inventory(vault):
     root = _directory(vault / 'facts')
     result, total = {}, 0
-    for parent, dirs, files in os.walk(root, followlinks=False):
+    def walk_error(error):
+        raise error
+    for parent, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
         parent = Path(parent)
         for name in dirs:
             _directory(parent / name)
@@ -279,8 +282,9 @@ def _fact_inventory(vault):
     return result
 
 
-def _inventory(provider, root, marker):
-    vault = root / 'vault'
+def _inventory(provider, root, marker, *, profile=None, vault=None):
+    vault = vault if vault is not None else root / 'vault'
+    profile = profile if profile is not None else root / 'profile'
     for name in ('.mirror-delivery-failed.json', '.index-refresh.json', '.reindex-request.json'):
         if (vault / name).exists() or (vault / name).is_symlink():
             raise ValueError('Pending delivery or index work requires separate investigation')
@@ -300,7 +304,7 @@ def _inventory(provider, root, marker):
     facts = _fact_inventory(vault)
     sources, entries = {}, {}
     for target, name in (('memory', 'MEMORY.md'), ('user', 'USER.md')):
-        path = root / 'profile' / 'memories' / name
+        path = profile / 'memories' / name
         data = _read(path) if path.exists() or path.is_symlink() else b''
         sources[name] = {'sha256': _digest(data), 'identity': _identity(path) if path.exists() else None}
         # Match MemoryStore._read_raw_checked: utf-8-sig decoding plus text
@@ -360,11 +364,11 @@ def _inventory(provider, root, marker):
             'add': missing, 'retire': sorted(retire)}
 
 
-def _open_provider(root):
+def _open_provider(root, *, vault=None):
     # Construct only the journal machinery: no startup, workers, indexing or replay.
     from . import ZvecMemoryProvider
     provider = ZvecMemoryProvider(config={})
-    provider._vault = root / 'vault'
+    provider._vault = vault if vault is not None else root / 'vault'
     provider._vault_lock = VaultLock(provider._vault / '.mirror.lock')
     # Offline contenders must not initialize SQLite concurrently with a peer's
     # long reconciliation transaction. MirrorInbox setup precedes plan/apply's
@@ -388,33 +392,59 @@ def plan(root):
 
 def apply(root, expected_plan_sha256):
     """Apply only an exact reviewed proposal on the detached snapshot."""
+    return _apply(root, expected_plan_sha256)
+
+
+def _apply(root, expected_plan_sha256, *, profile=None, vault=None, live_check=None):
     root, marker = _snapshot(root)
-    provider = _open_provider(root)
+    if live_check is not None:
+        # Check before opening the live inbox, which itself may touch SQLite files.
+        live_check()
+    provider = _open_provider(root, vault=vault)
     try:
         with provider._vault_lock:
-            proposal = _inventory(provider, root, marker)
-            digest = _digest(json.dumps(proposal, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode())
-            if digest != expected_plan_sha256:
-                raise ValueError('Stale or unconfirmed plan')
+            if live_check is not None:
+                # Inbox opening can checkpoint SQLite, so compare semantic state below,
+                # not raw inbox bytes after that opening.
+                expected = plan(root)
+                if expected['plan_sha256'] != expected_plan_sha256:
+                    raise ValueError('Stale or unconfirmed plan')
+                proposal = _inventory(provider, root, marker, profile=profile, vault=vault)
+                def semantic(p):
+                    return {'sources': {k: v['sha256'] for k, v in p['sources'].items()},
+                            'map': p['map_sha256']['sha256'] if p['map_sha256'] else None,
+                            'facts': {k: v['sha256'] for k, v in p['facts'].items()},
+                            'owned': {k: v['sha256'] for k, v in p['owned'].items()},
+                            'watermark': p['watermark'], 'add': p['add'], 'retire': p['retire']}
+                if semantic(proposal) != semantic(expected):
+                    raise ValueError('Live state differs from snapshot')
+                digest = expected_plan_sha256
+            else:
+                proposal = _inventory(provider, root, marker)
+                digest = _digest(json.dumps(proposal, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode())
+                if digest != expected_plan_sha256:
+                    raise ValueError('Stale or unconfirmed plan')
+            profile = profile if profile is not None else root / 'profile'
+            vault = vault if vault is not None else root / 'vault'
             if not proposal['add'] and not proposal['retire']:
                 return {'status': 'unchanged', 'plan_sha256': digest}
             state = provider._mirror_state()
             # Save exact old bytes outside recall before publishing a journal.
-            archive_root = root / 'vault' / '.reconcile-archive'
+            archive_root = vault / '.reconcile-archive'
             archive_root.mkdir(mode=0o700, exist_ok=True)
             if archive_root.is_symlink() or archive_root.resolve() != archive_root:
                 raise ValueError('Aliased archive')
             archive = archive_root / uuid.uuid4().hex
             archive.mkdir(mode=0o700)
             for name in ('MEMORY.md', 'USER.md'):
-                path = root / 'profile' / 'memories' / name
+                path = profile / 'memories' / name
                 if path.exists():
                     _write_new(archive / name, _read(path))
-            map_path = root / 'vault' / '.mirror-map.json'
+            map_path = vault / '.mirror-map.json'
             if map_path.exists():
                 _write_new(archive / 'map.json', _read(map_path))
             for i, rel in enumerate(sorted(proposal['owned'])):
-                _write_new(archive / ('fact-%d.bin' % i), _read(root / 'vault' / rel))
+                _write_new(archive / ('fact-%d.bin' % i), _read(vault / rel))
             with provider._mirror_inbox.connect() as src:
                 dst = sqlite3.connect(archive / 'inbox.sqlite3')
                 try:
@@ -427,7 +457,7 @@ def apply(root, expected_plan_sha256):
             _write_new(archive / 'plan.json', json.dumps(proposal, ensure_ascii=False, sort_keys=True).encode())
             _sync(archive)
             _sync(archive_root)
-            _sync(root / 'vault')
+            _sync(vault)
             for target, content in proposal['add']:
                 key = _digest((target + '\0' + content).encode())
                 if key in state['records']:
@@ -435,13 +465,36 @@ def apply(root, expected_plan_sha256):
                 staged = provider._write_fact(content, 'user_pref' if target == 'user' else 'general', 'mirror', directory='.mirror-staging')
                 rel = 'facts/' + staged.name
                 state['records'][key] = {'target': target, 'content': content, 'path': rel}
-                state['pending_creates'].append({'staged': str(staged.relative_to(root / 'vault')), 'path': rel})
+                state['pending_creates'].append({'staged': str(staged.relative_to(vault)), 'path': rel})
             for key in proposal['retire']:
                 state['pending_deletes'].append(state['records'].pop(key)['path'])
             state['refresh_required'] = True
-            _sync(root / 'vault' / '.mirror-staging')
+            _sync(vault / '.mirror-staging')
             provider._save_mirror_state(state)
             provider._finish_mirror_deletes(state)
+            if live_check is not None:
+                # Verify the applied generation while admission is still closed.
+                actual = provider._mirror_state()
+                if actual != state or actual['pending_creates'] or actual['pending_deletes'] or not actual.get('refresh_required'):
+                    raise ValueError('Committed mirror journal verification failed')
+                facts_after = _fact_inventory(vault)
+                retained_paths = {r['path'] for r in actual['records'].values()}
+                retired_paths = set(proposal['owned']) - retained_paths
+                old_paths = set(proposal['facts']) - retired_paths
+                new_paths = retained_paths - set(proposal['facts'])
+                if set(facts_after) != old_paths | new_paths:
+                    raise ValueError('Committed fact inventory mismatch')
+                for rel in old_paths:
+                    if facts_after[rel]['sha256'] != proposal['facts'][rel]['sha256']:
+                        raise ValueError('Retained fact changed during commit')
+                for record in actual['records'].values():
+                    if not _owned_fact_exact(_read(vault / record['path']), record['content'], record['target']):
+                        raise ValueError('Committed owned fact mismatch')
+                for name, source in proposal['sources'].items():
+                    path = profile / 'memories' / name
+                    data = _read(path) if path.exists() or path.is_symlink() else b''
+                    if _digest(data) != source['sha256']:
+                        raise ValueError('Source changed during commit')
             return {'status': 'refresh_required', 'plan_sha256': digest, 'archive': str(archive)}
     finally:
         provider._mirror_inbox.close()

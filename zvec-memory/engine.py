@@ -12,6 +12,7 @@ provider own activation, ``post_setup`` must also persist ``memory.provider``.
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -222,17 +223,63 @@ def unit_template(hermes_home, config=None) -> str:
     )
 
 
-def _write_if_changed(path: Path, text: str, mode: int = 0o600) -> bool:
+def _link_unnamed(fd: int, directory_fd: int, name: str) -> None:
+    """Publish the open inode, atomically refusing an existing destination (Linux)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                       ctypes.c_char_p, ctypes.c_int]
+    linkat.restype = ctypes.c_int
+    if linkat(fd, b"", directory_fd, os.fsencode(name), 0x1000) != 0:  # AT_EMPTY_PATH
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+
+
+def _close_owned(fd: int, primary: BaseException | None) -> None:
+    # close may report an error after releasing the descriptor: never retry it.
     try:
-        if path.exists() and path.read_text(encoding="utf-8") == text:
-            return False
-    except OSError:
-        pass
+        os.close(fd)
+    except OSError as exc:
+        if primary is None:
+            raise
+        primary.add_note(f"Managed artifact close failed: {exc!r}")
+
+
+def _write_if_changed(path: Path, text: str, mode: int = 0o600) -> bool:
+    """Install only an absent artifact, without ever owning a temporary name.
+
+    An unnamed O_TMPFILE is private from creation through publication.  Unlike
+    a predictable pathname, it needs no unlink on failure and cannot be swapped
+    out from under the writer.  Unsupported filesystems fail closed; there is
+    deliberately no pathname or overwrite-capable fallback.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".zvec-tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    primary = None
+    try:
+        fd = os.open(".", os.O_TMPFILE | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        try:
+            data = memoryview(text.encode("utf-8"))
+            while data:
+                written = os.write(fd, data)
+                if written <= 0:
+                    raise OSError("short write to unnamed managed artifact")
+                data = data[written:]
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+            _link_unnamed(fd, directory_fd, path.name)
+            os.fsync(directory_fd)
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            _close_owned(fd, primary)
+    except BaseException as exc:
+        # This includes a file-close failure after an otherwise successful write.
+        primary = exc
+        raise
+    finally:
+        _close_owned(directory_fd, primary)
     return True
 
 
@@ -270,6 +317,16 @@ def _preflight_artifacts(artifacts):
     """Refuse edits, unsafe file kinds and permissions across the entire set."""
     for name, path, text, mode in artifacts:
         try:
+            # Old versions used this predictable name; never disturb or
+            # silently certify a generation containing an operator's file.
+            for suffix in (".new", ".zvec-tmp"):
+                pending = path.with_name(path.name + suffix)
+                try:
+                    pending.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ValueError(f"pending {suffix} artifact")
             if path.is_symlink():
                 raise ValueError("symlink")
             if not path.exists():
